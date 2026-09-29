@@ -20,6 +20,9 @@
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/numerics/rtree.h>
 
+#include <map>
+#include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -164,36 +167,90 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
       boxes.emplace_back(box, c);
     }
   const auto tree = pack_rtree(boxes);
-  std::vector<std::vector<unsigned int>> near_trial_cells(
-    near_test_cells.size());
-  n_near_pairs = 0;
-  for (unsigned int k = 0; k < near_test_cells.size(); ++k)
+  // Each unordered pair once: the kernel is symmetric, and the double layer
+  // of the exchanged pair comes from the same points. The third entry is a
+  // rough cost, by the kind of rule the pair needs.
+  std::vector<std::array<unsigned int, 3>> found;
+  for (const unsigned int t : near_test_cells)
     {
-      const unsigned int t = near_test_cells[k];
       std::vector<std::pair<BoundingBox<3>, unsigned int>> hits;
       tree.query(boost::geometry::index::intersects(boxes[t].first),
                  std::back_inserter(hits));
       for (const auto &hit : hits)
-        if (!integrator.is_far_regular_pair(cells[t], cells[hit.second]))
-          near_trial_cells[k].push_back(hit.second);
-      n_near_pairs += near_trial_cells[k].size();
+        {
+          const unsigned int r = hit.second;
+          if (r < t || integrator.is_far_regular_pair(cells[t], cells[r]))
+            continue;
+          const GalerkinPanelPairType type =
+            integrator.classify(cells[t], cells[r]);
+          const unsigned int cost =
+            type == GalerkinPanelPairType::same_panel         ? 6 :
+            type == GalerkinPanelPairType::common_edge ||
+                type == GalerkinPanelPairType::nonconforming_edge ? 5 :
+            type == GalerkinPanelPairType::common_vertex        ? 2 :
+                                                                  1;
+          found.push_back({{t, r, cost}});
+        }
     }
 
-  // Sparsity of the near field, condensed like the operator. The test cells
-  // belong to any process, and constraints write into the rows of the
-  // masters.
+  // Deal all pairs out by cost, the most expensive first to the least
+  // loaded process: the singular pairs cluster where the mesh is graded.
+  std::vector<std::array<unsigned int, 3>> all_pairs;
+  for (const auto &part :
+       Utilities::MPI::all_gather(mpi_communicator, found))
+    all_pairs.insert(all_pairs.end(), part.begin(), part.end());
+  std::sort(all_pairs.begin(),
+            all_pairs.end(),
+            [](const auto &x, const auto &y) {
+              return x[2] != y[2] ? x[2] > y[2] :
+                     x[0] != y[0] ? x[0] < y[0] :
+                                    x[1] < y[1];
+            });
+  std::vector<unsigned long> load(n_mpi_processes, 0);
+  std::map<unsigned int, std::vector<unsigned int>> my_pairs;
+  n_near_pairs = 0;
+  for (const auto &pair : all_pairs)
+    {
+      const unsigned int process =
+        std::min_element(load.begin(), load.end()) - load.begin();
+      load[process] += pair[2];
+      if (process == this_mpi_process)
+        {
+          my_pairs[pair[0]].push_back(pair[1]);
+          n_near_pairs += pair[0] == pair[1] ? 1 : 2;
+        }
+    }
+  near_test_cells.clear();
+  std::vector<std::vector<unsigned int>> near_trial_cells;
+  for (auto &[t, trials] : my_pairs)
+    {
+      near_test_cells.push_back(t);
+      near_trial_cells.push_back(std::move(trials));
+    }
+
+  // Sparsity of the near field, condensed like the operator: both blocks
+  // of every pair. The cells belong to any process, and constraints write
+  // into the rows of the masters.
   IndexSet                             writable_rows(dh.n_dofs());
   std::vector<types::global_dof_index> test_dofs(dpc), trial_dofs(dpc);
   writable_rows.add_indices(locally_owned_dofs);
-  for (const unsigned int t : near_test_cells)
+  auto add_rows = [&](const std::vector<types::global_dof_index> &dofs) {
+    for (const auto i : dofs)
+      {
+        writable_rows.add_index(i);
+        if (constraints.is_constrained(i))
+          for (const auto &entry : *constraints.get_constraint_entries(i))
+            writable_rows.add_index(entry.first);
+      }
+  };
+  for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
-      cells[t]->get_dof_indices(test_dofs);
-      for (const auto i : test_dofs)
+      cells[near_test_cells[k]]->get_dof_indices(test_dofs);
+      add_rows(test_dofs);
+      for (const unsigned int r : near_trial_cells[k])
         {
-          writable_rows.add_index(i);
-          if (constraints.is_constrained(i))
-            for (const auto &entry : *constraints.get_constraint_entries(i))
-              writable_rows.add_index(entry.first);
+          cells[r]->get_dof_indices(trial_dofs);
+          add_rows(trial_dofs);
         }
     }
   writable_rows.compress();
@@ -209,6 +266,10 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
           cells[r]->get_dof_indices(trial_dofs);
           constraints.add_entries_local_to_global(test_dofs,
                                                   trial_dofs,
+                                                  sparsity,
+                                                  true);
+          constraints.add_entries_local_to_global(trial_dofs,
+                                                  test_dofs,
                                                   sparsity,
                                                   true);
         }
@@ -227,9 +288,10 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
       shape(q, i) = fe.shape_value(i, quadrature.point(q));
 
   FullMatrix<double> exact(dpc, dpc), correction(dpc, dpc),
-    kernel(n_q_points, n_q_points), partial(dpc, n_q_points);
-  Vector<double>      exact_rhs(dpc), local(dpc);
-  std::vector<double> weighted(n_q_points);
+    transposed(dpc, dpc), kernel(n_q_points, n_q_points),
+    partial(dpc, n_q_points);
+  Vector<double> exact_test_rhs(dpc), exact_trial_rhs(dpc), local(dpc);
+  std::vector<double> test_side(n_q_points), trial_side(n_q_points);
   for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
       const unsigned int t = near_test_cells[k];
@@ -237,23 +299,33 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
       for (const unsigned int r : near_trial_cells[k])
         {
           cells[r]->get_dof_indices(trial_dofs);
+          const bool self = r == t;
 
           // Exact contributions: the single-layer block, and with it in one
-          // traversal the double-layer right-hand side.
+          // traversal the double-layer right-hand side of the test cell and,
+          // for two cells, of the trial cell.
           if (rhs.dirichlet != nullptr)
             {
               const FullMatrix<double> both =
-                integrator.integrate_single_and_double_layer(
-                  cells[t],
-                  cells[r],
-                  data.quadrature_order,
-                  *rhs.dirichlet,
-                  rhs.regularize);
+                self ? integrator.integrate_single_and_double_layer(
+                         cells[t],
+                         cells[r],
+                         data.quadrature_order,
+                         *rhs.dirichlet,
+                         rhs.regularize) :
+                       integrator.integrate_single_and_double_layer_both(
+                         cells[t],
+                         cells[r],
+                         data.quadrature_order,
+                         *rhs.dirichlet,
+                         rhs.regularize);
               for (unsigned int i = 0; i < dpc; ++i)
                 {
                   for (unsigned int j = 0; j < dpc; ++j)
                     exact(i, j) = both(i, j);
-                  exact_rhs[i] = both(i, dpc);
+                  exact_test_rhs[i] = both(i, dpc);
+                  if (!self)
+                    exact_trial_rhs[i] = both(i, dpc + 1);
                 }
             }
           else
@@ -262,11 +334,13 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                                                       data.quadrature_order);
 
           // The contributions that the point sums contain, without the
-          // coincident points of a cell with itself.
+          // coincident points of a cell with itself: the kernel block, and
+          // the dipole sums with either cell as target.
+          std::fill(test_side.begin(), test_side.end(), 0.);
+          std::fill(trial_side.begin(), trial_side.end(), 0.);
           for (unsigned int q = 0; q < n_q_points; ++q)
             {
-              const unsigned int a          = t * n_q_points + q;
-              double             dipole_sum = 0;
+              const unsigned int a = t * n_q_points + q;
               for (unsigned int s = 0; s < n_q_points; ++s)
                 {
                   const unsigned int b = r * n_q_points + s;
@@ -280,13 +354,19 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                   const double       weight    = inverse_4pi * JxW[a] * JxW[b];
                   kernel(q, s)                 = weight / distance;
                   if (rhs.dirichlet != nullptr)
-                    dipole_sum +=
-                      weight * (x_minus_y * normals[b]) /
-                      (distance * distance * distance) *
-                      (dirichlet_values[b] -
-                       (rhs.regularize ? dirichlet_values[a] : 0.));
+                    {
+                      const double cube = distance * distance * distance;
+                      test_side[q] +=
+                        weight * (x_minus_y * normals[b]) / cube *
+                        (dirichlet_values[b] -
+                         (rhs.regularize ? dirichlet_values[a] : 0.));
+                      if (!self)
+                        trial_side[s] -=
+                          weight * (x_minus_y * normals[a]) / cube *
+                          (dirichlet_values[a] -
+                           (rhs.regularize ? dirichlet_values[b] : 0.));
+                    }
                 }
-              weighted[q] = dipole_sum;
             }
           for (unsigned int i = 0; i < dpc; ++i)
             for (unsigned int s = 0; s < n_q_points; ++s)
@@ -312,6 +392,19 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                                                  test_dofs,
                                                  trial_dofs,
                                                  near_correction);
+          if (!self)
+            {
+              transposed.copy_transposed(exact);
+              constraints.distribute_local_to_global(transposed,
+                                                     trial_dofs,
+                                                     test_dofs,
+                                                     near_exact);
+              transposed.copy_transposed(correction);
+              constraints.distribute_local_to_global(transposed,
+                                                     trial_dofs,
+                                                     test_dofs,
+                                                     near_correction);
+            }
 
           if (rhs.dirichlet != nullptr)
             {
@@ -319,15 +412,29 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                 {
                   double sum = 0;
                   for (unsigned int q = 0; q < n_q_points; ++q)
-                    sum += shape(q, i) * weighted[q];
-                  local[i] = exact_rhs[i] - sum;
+                    sum += shape(q, i) * test_side[q];
+                  local[i] = exact_test_rhs[i] - sum;
                 }
               constraints.distribute_local_to_global(local,
                                                      test_dofs,
                                                      near_double_layer);
+              if (!self)
+                {
+                  for (unsigned int j = 0; j < dpc; ++j)
+                    {
+                      double sum = 0;
+                      for (unsigned int s = 0; s < n_q_points; ++s)
+                        sum += shape(s, j) * trial_side[s];
+                      local[j] = exact_trial_rhs[j] - sum;
+                    }
+                  constraints.distribute_local_to_global(local,
+                                                         trial_dofs,
+                                                         near_double_layer);
+                }
             }
           if (rhs.gradient != nullptr)
             {
+              // Diagnostic only: each direction with its own traversal.
               local = integrator.integrate_single_layer_flux(
                 cells[t], cells[r], data.quadrature_order, *rhs.gradient);
               for (unsigned int i = 0; i < dpc; ++i)
@@ -340,6 +447,24 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
               constraints.distribute_local_to_global(local,
                                                      test_dofs,
                                                      near_manufactured);
+              if (!self)
+                {
+                  local = integrator.integrate_single_layer_flux(
+                    cells[r], cells[t], data.quadrature_order, *rhs.gradient);
+                  // partial^T: the kernel block seen from the trial cell
+                  for (unsigned int j = 0; j < dpc; ++j)
+                    {
+                      double sum = 0;
+                      for (unsigned int s = 0; s < n_q_points; ++s)
+                        for (unsigned int q = 0; q < n_q_points; ++q)
+                          sum += shape(s, j) * kernel(q, s) *
+                                 flux_values[t * n_q_points + q];
+                      local[j] -= sum;
+                    }
+                  constraints.distribute_local_to_global(local,
+                                                         trial_dofs,
+                                                         near_manufactured);
+                }
             }
         }
     }

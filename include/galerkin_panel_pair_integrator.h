@@ -372,6 +372,24 @@ public:
     const Function<spacedim> &trial_function,
     const bool                regularize_trial_function) const;
 
+  /** The pair integrated once for both orders of its cells: the result of
+   * integrate_single_and_double_layer(), and in the column dofs_per_cell + 1
+   * the right-hand side of the trial cell, row j for its shape function j,
+   * that is the double layer with test and trial cell exchanged. The
+   * single-layer block of the exchanged pair is the transpose of the first
+   * one. A quadrature rule of the pair is a rule on the product of the two
+   * cells, whatever their roles, and integrates the exchanged kernel, which
+   * has the same singularity, as well: the pair costs one traversal instead
+   * of two. Needs the direct evaluation of the geometry.
+   */
+  FullMatrix<double>
+  integrate_single_and_double_layer_both(
+    const CellIterator       &test_cell,
+    const CellIterator       &trial_cell,
+    const unsigned int        order,
+    const Function<spacedim> &trial_function,
+    const bool                regularize_trial_function) const;
+
   /** Assemble the single-layer matrix and the double-layer right-hand side
    * together. The result equals assemble_single_layer() followed by
    * assemble_double_layer_rhs() up to rounding. The caller owns
@@ -426,7 +444,10 @@ private:
     // The single layer and the double-layer right-hand side of the same pair,
     // integrated together: the local result holds the single-layer block in
     // the first dofs_per_cell columns and the right-hand side in the last.
-    single_and_double_layer
+    single_and_double_layer,
+    // The same, and in one more column the right-hand side of the pair seen
+    // the other way round, trial cell as test cell, from the same points.
+    single_and_double_layer_both
   };
 
   struct ReferencePatch
@@ -661,7 +682,9 @@ private:
                    const Function<spacedim> *trial_function) const
   {
     const unsigned int dpc = finite_element.dofs_per_cell;
-    return operator_type == OperatorType::single_and_double_layer ? dpc + 1 :
+    return operator_type == OperatorType::single_and_double_layer_both ?
+             dpc + 2 :
+           operator_type == OperatorType::single_and_double_layer ? dpc + 1 :
            trial_function != nullptr                              ? 1 :
                                                                     dpc;
   }
@@ -805,6 +828,10 @@ private:
   // that checks the reconstructed geometry, and the tensor Gauss rules.
   mutable PointSet                                test_set;
   mutable PointSet                                trial_set;
+  /// Work arrays of evaluate_geometry(): basis values and derivatives in
+  /// the two directions, node by node, and the coordinates and tangents,
+  /// component by component, each over all points.
+  mutable std::vector<double> geometry_work;
   mutable std::unique_ptr<FEValues<2, spacedim>>  light_check_values;
   mutable std::map<unsigned int, QGauss<2>>       gauss_rules;
 

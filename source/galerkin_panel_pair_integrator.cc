@@ -894,6 +894,29 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_and_double_layer(
 
 template <int spacedim>
 FullMatrix<double>
+GalerkinPanelPairIntegrator<spacedim>::integrate_single_and_double_layer_both(
+  const CellIterator       &test_cell,
+  const CellIterator       &trial_cell,
+  const unsigned int        order,
+  const Function<spacedim> &trial_function,
+  const bool                regularize_trial_function) const
+{
+  AssertThrow(takes_light_path(OperatorType::single_and_double_layer_both,
+                               &trial_function),
+              ExcMessage("The pair integrated both ways needs the direct "
+                         "evaluation of the geometry (Galerkin light "
+                         "geometry = true)."));
+  return integrate_operator(test_cell,
+                            trial_cell,
+                            order,
+                            OperatorType::single_and_double_layer_both,
+                            &trial_function,
+                            regularize_trial_function);
+}
+
+
+template <int spacedim>
+FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate_adjoint_double_layer(
   const CellIterator &test_cell,
   const CellIterator &trial_cell,
@@ -1552,6 +1575,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
                            trial_function,
                            regularize_trial_function);
 
+  AssertThrow(operator_type != OperatorType::single_and_double_layer_both,
+              ExcMessage("The pair integrated both ways needs the direct "
+                         "evaluation of the geometry (Galerkin light "
+                         "geometry = true)."));
   const bool wants_gradients =
     operator_type == OperatorType::weak_hypersingular;
 
@@ -2274,28 +2301,75 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
   set.points.resize(m);
   set.normals.resize(m);
   set.jacobians.resize(m);
-  LagrangeValues v0, d0, v1, d1;
+
+  // All loops run over the points innermost, where they vectorize: the
+  // Lagrange basis and its derivative in each direction by Horner's scheme,
+  // then the sums over the nodes for the position and the two tangents.
+  geometry_work.resize((4 * n + 9) * m);
+  double *const v0 = geometry_work.data();
+  double *const d0 = v0 + n * m;
+  double *const v1 = d0 + n * m;
+  double *const d1 = v1 + n * m;
+  double *const x  = d1 + n * m; // 3 components, then x1, then x2
+  double *const x1 = x + 3 * m;
+  double *const x2 = x1 + 3 * m;
+  const double *coefficients = geometry_coefficients.data();
+  for (unsigned int direction = 0; direction < 2; ++direction)
+    {
+      double *const v = direction == 0 ? v0 : v1;
+      double *const d = direction == 0 ? d0 : d1;
+      for (unsigned int i = 0; i < n; ++i)
+        {
+          const double *c  = coefficients + i * n;
+          const double *cd = coefficients + (n + i) * n;
+          double       *vi = v + i * m;
+          double       *di = d + i * m;
+#pragma omp simd
+          for (unsigned int q = 0; q < m; ++q)
+            {
+              const double t     = reference_points[q][direction];
+              double       value = c[n - 1];
+              for (unsigned int k = n - 1; k > 0; --k)
+                value = value * t + c[k - 1];
+              double derivative = n > 1 ? cd[n - 2] : 0.0;
+              for (unsigned int k = n > 1 ? n - 2 : 0; k > 0; --k)
+                derivative = derivative * t + cd[k - 1];
+              vi[q] = value;
+              di[q] = derivative;
+            }
+        }
+    }
+  std::fill(x, x + 9 * m, 0.0);
+  for (unsigned int j = 0; j < n; ++j)
+    for (unsigned int i = 0; i < n; ++i)
+      {
+        const Tensor<1, spacedim> &node = data.nodes[i + n * j];
+        const double *vi = v0 + i * m, *di = d0 + i * m;
+        const double *vj = v1 + j * m, *dj = d1 + j * m;
+        for (unsigned int c = 0; c < 3; ++c)
+          {
+            const double value = node[c];
+            double      *xc = x + c * m, *x1c = x1 + c * m, *x2c = x2 + c * m;
+#pragma omp simd
+            for (unsigned int q = 0; q < m; ++q)
+              {
+                xc[q] += value * vi[q] * vj[q];
+                x1c[q] += value * di[q] * vj[q];
+                x2c[q] += value * vi[q] * dj[q];
+              }
+          }
+      }
   for (unsigned int q = 0; q < m; ++q)
     {
-      lagrange_basis(geometry_coefficients, geometry_nodes.size(), reference_points[q][0], v0, &d0);
-      lagrange_basis(geometry_coefficients, geometry_nodes.size(), reference_points[q][1], v1, &d1);
-      Tensor<1, spacedim> x, x1, x2;
-      for (unsigned int j = 0; j < n; ++j)
+      Tensor<1, spacedim> tangent1, tangent2;
+      for (unsigned int c = 0; c < 3; ++c)
         {
-          Tensor<1, spacedim> along, along_derivative;
-          for (unsigned int i = 0; i < n; ++i)
-            {
-              const Tensor<1, spacedim> &node = data.nodes[i + n * j];
-              along += v0[i] * node;
-              along_derivative += d0[i] * node;
-            }
-          x += v1[j] * along;
-          x1 += v1[j] * along_derivative;
-          x2 += d1[j] * along;
+          set.points[q][c] = x[c * m + q];
+          tangent1[c]      = x1[c * m + q];
+          tangent2[c]      = x2[c * m + q];
         }
-      const Tensor<1, spacedim> normal   = cross_product_3d(x1, x2);
+      const Tensor<1, spacedim> normal   = cross_product_3d(tangent1, tangent2);
       const double              jacobian = normal.norm();
-      set.points[q]    = Point<spacedim>(x);
       set.normals[q]   = (data.orientation / jacobian) * normal;
       set.jacobians[q] = jacobian;
     }
@@ -2342,7 +2416,8 @@ GalerkinPanelPairIntegrator<spacedim>::takes_light_path(
            trial_function == nullptr) ||
           operator_type == OperatorType::double_layer ||
           operator_type == OperatorType::adjoint_double_layer ||
-          operator_type == OperatorType::single_and_double_layer);
+          operator_type == OperatorType::single_and_double_layer ||
+          operator_type == OperatorType::single_and_double_layer_both);
 }
 
 
@@ -2612,7 +2687,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
   const unsigned int nx           = test.n;
   const unsigned int ny           = trial.n;
   const unsigned int dpc          = finite_element.dofs_per_cell;
-  const bool fused = operator_type == OperatorType::single_and_double_layer;
+  const bool both = operator_type == OperatorType::single_and_double_layer_both;
+  const bool fused =
+    operator_type == OperatorType::single_and_double_layer || both;
   // A matrix block, of the single, the double or the adjoint double layer,
   // and a column of the double layer applied to the trial function, or of
   // the adjoint double layer applied to the normal trace of a gradient.
@@ -2634,13 +2711,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
                              normal_trace(*trial_function, trial.points[qy],
                                           trial.normals[qy]) :
                              trial_function->value(trial.points[qy]);
-      if (regularize)
+      if (regularize || both)
         {
           test_values.resize(nx);
           for (unsigned int qx = 0; qx < nx; ++qx)
             test_values[qx] = trial_function->value(test.points[qx]);
         }
-      profile.function_calls += ny + (regularize ? nx : 0);
+      profile.function_calls += ny + (regularize || both ? nx : 0);
       profile.function_seconds +=
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       function_start)
@@ -2649,6 +2726,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
 
   std::vector<double> kernel(matrix_part ? nx * ny : 0);
   std::vector<double> weighted(function_part ? nx : 0);
+  // The exchanged pair: the test side at the trial points, the kernel
+  // dG/dn at the test points, the datum at the test points.
+  std::vector<double> exchanged_function(both ? ny : 0),
+    exchanged_kernel(both ? ny : 0);
   for (unsigned int qx = 0; qx < nx; ++qx)
     {
       double sum_function = 0.0;
@@ -2683,6 +2764,17 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
                 trial_values[qy];
               sum_kernel += trial_weights[qy] * laplace_double_layer;
             }
+          if (both)
+            {
+              // -(x - y).n_x / (4 pi r^3) with the displacement y - x
+              const double exchanged_double_layer =
+                (displacement * test.normals[qx]) /
+                (4.0 * numbers::PI * distance * distance * distance);
+              exchanged_function[qy] += test_weights[qx] *
+                                        exchanged_double_layer * factor *
+                                        test_values[qx];
+              exchanged_kernel[qy] += test_weights[qx] * exchanged_double_layer;
+            }
         }
       if (function_part)
         weighted[qx] =
@@ -2714,6 +2806,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
             const double *row = &partial[i * ny];
             const double *v   = &trial.shapes[j * ny];
             double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
             for (unsigned int qy = 0; qy < ny; ++qy)
               acc += row[qy] * v[qy];
             result(i, j) = acc;
@@ -2726,6 +2819,16 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
         for (unsigned int qx = 0; qx < nx; ++qx)
           acc += test.shapes[i * nx + qx] * weighted[qx];
         result(i, function_column) = acc;
+      }
+  if (both)
+    for (unsigned int j = 0; j < dpc; ++j)
+      {
+        double acc = 0.0;
+        for (unsigned int qy = 0; qy < ny; ++qy)
+          acc += trial.shapes[j * ny + qy] * trial_weights[qy] *
+                 (exchanged_function[qy] -
+                  (regularize ? exchanged_kernel[qy] * trial_values[qy] : 0.0));
+        result(j, dpc + 1) = acc;
       }
   profile.kernel_seconds += std::chrono::duration<double>(
                               std::chrono::steady_clock::now() - kernel_start)
@@ -2751,7 +2854,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
   const unsigned int dpc          = finite_element.dofs_per_cell;
   AssertDimension(test.n, n);
   AssertDimension(trial.n, n);
-  const bool fused = operator_type == OperatorType::single_and_double_layer;
+  const bool both = operator_type == OperatorType::single_and_double_layer_both;
+  const bool fused =
+    operator_type == OperatorType::single_and_double_layer || both;
   const bool adjoint       = operator_type == OperatorType::adjoint_double_layer;
   const bool matrix_part   = fused || trial_function == nullptr;
   const bool single_kernel = operator_type == OperatorType::single_layer || fused;
@@ -2770,13 +2875,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
                             normal_trace(*trial_function, trial.points[p],
                                          trial.normals[p]) :
                             trial_function->value(trial.points[p]);
-      if (regularize)
+      if (regularize || both)
         {
           test_values.resize(n);
           for (unsigned int p = 0; p < n; ++p)
             test_values[p] = trial_function->value(test.points[p]);
         }
-      profile.function_calls += n + (regularize ? n : 0);
+      profile.function_calls += n + (regularize || both ? n : 0);
       profile.function_seconds +=
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       function_start)
@@ -2785,6 +2890,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
 
   std::vector<double> matrix_weight(matrix_part ? n : 0);
   std::vector<double> function_weight(function_part ? n : 0);
+  std::vector<double> exchanged_weight(both ? n : 0);
+  bool                non_finite = false;
   for (unsigned int p = 0; p < n; ++p)
     {
       const Tensor<1, spacedim> displacement = trial.points[p] - test.points[p];
@@ -2802,9 +2909,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
           -(displacement * trial.normals[p]) /
             (4.0 * numbers::PI * distance * distance * distance) :
           0.0;
-      AssertThrow(std::isfinite(weight) && std::isfinite(distance) &&
-                    distance > 0.0,
-                  ExcMessage("Non-finite Galerkin panel-pair integrand."));
+      if (!(std::isfinite(weight) && std::isfinite(distance) &&
+            distance > 0.0))
+        non_finite = true;
       if (matrix_part)
         matrix_weight[p] =
           weight *
@@ -2814,8 +2921,16 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
         function_weight[p] =
           weight * laplace_double_layer *
           (factor * trial_values[p] - (regularize ? test_values[p] : 0.0));
+      if (both)
+        // the pair exchanged: -(x - y).n_x / (4 pi r^3), datum at x
+        exchanged_weight[p] =
+          weight * (displacement * test.normals[p]) /
+          (4.0 * numbers::PI * distance * distance * distance) *
+          (factor * test_values[p] - (regularize ? trial_values[p] : 0.0));
     }
 
+  AssertThrow(!non_finite,
+              ExcMessage("Non-finite Galerkin panel-pair integrand."));
   FullMatrix<double> result(dpc, n_result_columns(operator_type,
                                                   trial_function));
   if (matrix_part)
@@ -2830,6 +2945,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
             {
               const double *v   = &trial_shapes[j * n];
               double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
               for (unsigned int p = 0; p < n; ++p)
                 acc += weighted_test[p] * v[p];
               result(i, j) = acc;
@@ -2841,9 +2957,20 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
       {
         const double *u   = &test_shapes[i * n];
         double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
         for (unsigned int p = 0; p < n; ++p)
           acc += u[p] * function_weight[p];
         result(i, function_column) = acc;
+      }
+  if (both)
+    for (unsigned int j = 0; j < dpc; ++j)
+      {
+        const double *v   = &trial_shapes[j * n];
+        double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
+        for (unsigned int p = 0; p < n; ++p)
+          acc += v[p] * exchanged_weight[p];
+        result(j, dpc + 1) = acc;
       }
   profile.kernel_seconds += std::chrono::duration<double>(
                               std::chrono::steady_clock::now() - kernel_start)
