@@ -97,7 +97,7 @@ FOREACH(_build_type ${_d2_build_types})
     	ENDFOREACH()
 
 	# Benchmarks of the building blocks of the FMA
-	FOREACH(_bench fmm_expansions)
+	FOREACH(_bench fmm_expansions fmm_points)
 		SET(_exe "${_bench}${_p}")
 		ADD_EXECUTABLE(${_exe} benchmarks/${_bench}.cc)
 		TARGET_INCLUDE_DIRECTORIES(${_exe} PRIVATE

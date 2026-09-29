@@ -1,0 +1,7 @@
+
+DEAL::order 6, charges: relative error below 0.0156250: yes
+DEAL::order 6, dipoles: relative error below 0.0312500: yes
+DEAL::order 6, charges and dipoles: relative error below 0.0312500: yes
+DEAL::order 12, charges: relative error below 0.000244141: yes
+DEAL::order 12, dipoles: relative error below 0.000488281: yes
+DEAL::order 12, charges and dipoles: relative error below 0.000488281: yes
