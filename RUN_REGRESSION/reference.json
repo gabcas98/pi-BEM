@@ -23,6 +23,13 @@
   "iterations": "69",
   "rhs_norm": "0.8876459786385669"
  },
+ "dg_laplace_p1_fmm": {
+  "best_ratio": "1.08394",
+  "flux": "0.0135444",
+  "gradient": "0.0801264",
+  "iterations": "71",
+  "rhs_norm": "0.8876459786385669"
+ },
  "dg_laplace_p1_library_path": {
   "V_frobenius": "26.02570081209641",
   "flux": "0.0135444",
