@@ -591,6 +591,8 @@ BEMProblem<dim>::reinit()
 {
   // ENTRY
   Teuchos::TimeMonitor LocalTimer(*ReinitTime);
+  // The Galerkin FMM belongs to the previous mesh; the next solve sets it up.
+  galerkin_fmm.reset();
 
   fe          = createFiniteElementPointer<dim - 1, dim, false>(scalar_fe_type,
                                                        scalar_fe_order);
@@ -1767,9 +1769,20 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
     {
       AssertThrow(dim == 3,
                   ExcMessage("Galerkin assembly currently supports 3D only."));
-      AssertThrow(solution_method == "Direct",
-                  ExcMessage("Galerkin assembly requires Solution method = "
-                             "Direct."));
+      // Solution method = FMA applies the single layer through
+      // GalerkinFMMOperator; the rest of the Galerkin machinery, and the
+      // dense path, are unchanged.
+      AssertThrow(solution_method == "Direct" ||
+                    (kernel_type == "laplace" &&
+                     galerkin_neumann_formulation == "single_layer" &&
+                     linear_solver == "CG" &&
+                     (preconditioner_type == "None" ||
+                      preconditioner_type == "Jacobi" ||
+                      preconditioner_type == "BlockJacobi")),
+                  ExcMessage("The Galerkin FMM (Solution method = FMA) "
+                             "supports the Laplace kernel, the single-layer "
+                             "formulation, Linear solver = CG and "
+                             "Preconditioner = None, Jacobi or BlockJacobi."));
       // The screened kernel exp(-kappa r)/(4 pi r) enters the single-layer
       // formulation, its right-hand sides, the energy functional and the
       // gradient recovery. The second-kind and Calderon paths use the weak
@@ -2376,6 +2389,57 @@ BEMProblem<dim>::assemble_galerkin_system()
 
 template <int dim>
 void
+BEMProblem<dim>::setup_galerkin_fmm()
+{
+  Teuchos::TimeMonitor LocalTimer(*AssembleTime);
+  if constexpr (dim == 3)
+    {
+      pcout << "Setting up the Galerkin FMM: order "
+            << fma.truncation_order() << ", opening criterion "
+            << fma.opening_criterion() << ", at most "
+            << fma.points_per_leaf()
+            << " points per leaf; quadrature order "
+            << galerkin_quadrature_order << ", near field with singular order "
+            << galerkin_singular_quadrature_order << " using "
+            << galerkin_singular_quadrature << std::endl;
+      AffineConstraints<double> hanging_node_constraints;
+      DoFTools::make_hanging_node_constraints(dh, hanging_node_constraints);
+      hanging_node_constraints.close();
+      // The integrator of the dense path decides which pairs need special
+      // rules, and integrates them.
+      GalerkinPanelPairIntegrator<3> integrator(
+        *mapping,
+        *fe,
+        galerkin_singular_quadrature == "iterated_duffy" ?
+          GalerkinSingularQuadrature::iterated_duffy :
+          GalerkinSingularQuadrature::sauter_schwab,
+        galerkin_singular_quadrature_order,
+        galerkin_duffy_outer_subdivisions,
+        galerkin_near_singular_distance_ratio,
+        galerkin_near_singular_maximum_depth,
+        galerkin_near_singular_quadrature_order);
+      integrator.set_screening(galerkin_screening());
+      integrator.set_light_geometry(galerkin_light_geometry);
+
+      GalerkinFMMOperator::AdditionalData data;
+      data.quadrature_order         = galerkin_quadrature_order;
+      data.near_distance_ratio      = galerkin_near_singular_distance_ratio;
+      data.fmm.order                = fma.truncation_order();
+      data.fmm.theta                = fma.opening_criterion();
+      data.fmm.max_points_per_leaf  = fma.points_per_leaf();
+      galerkin_fmm = std::make_unique<GalerkinFMMOperator>(mpi_communicator);
+      galerkin_fmm->reinit(
+        dh, *mapping, hanging_node_constraints, integrator, this_cpu_set, data);
+      galerkin_fmm->print_statistics(pcout.get_stream());
+    }
+  else
+    AssertThrow(false, ExcMessage("The Galerkin FMM supports 3D only."));
+}
+
+
+
+template <int dim>
+void
 BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
   const Function<dim> &dirichlet_function,
   const Function<dim> *exact_gradient)
@@ -2483,12 +2547,16 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
       exact_regularized_dirichlet_rhs.compress(VectorOperation::add);
       {
         // Sixteen digits, so that two assemblies can be compared to rounding.
-        const auto old_precision = pcout.get_stream().precision();
+        // With the FMM the matrix is not formed.
+        const auto   old_precision = pcout.get_stream().precision();
+        const double rhs_norm      = exact_regularized_dirichlet_rhs.l2_norm();
         pcout << std::setprecision(16)
-              << "Galerkin assembly check: |b| "
-              << exact_regularized_dirichlet_rhs.l2_norm() << ", |V|_F "
-              << dirichlet_matrix.frobenius_norm()
-              << std::setprecision(old_precision) << std::endl;
+              << "Galerkin assembly check: |b| " << rhs_norm << ", |V|_F ";
+        if (galerkin_fmm)
+          pcout << "not formed (FMM)";
+        else
+          pcout << dirichlet_matrix.frobenius_norm();
+        pcout << std::setprecision(old_precision) << std::endl;
       }
 
       // The manufactured right-hand side is assembled whenever the exact
@@ -4370,7 +4438,8 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
   serv_phi.scale(neumann_nodes);
   serv_dphi_dn.scale(dirichlet_nodes);
 
-  if (solution_method == "Direct")
+  if (solution_method == "Direct" ||
+      boundary_integral_formulation == "galerkin")
     {
       apply_single_layer(dst, serv_dphi_dn);
       dst *= -1;
@@ -4414,7 +4483,10 @@ BEMProblem<dim>::apply_single_layer(
   TrilinosWrappers::MPI::Vector       &dst,
   const TrilinosWrappers::MPI::Vector &src) const
 {
-  dirichlet_matrix.vmult(dst, src);
+  if (galerkin_fmm)
+    galerkin_fmm->vmult(dst, src);
+  else
+    dirichlet_matrix.vmult(dst, src);
   if (laplace_patch_correction_initialized)
     for (unsigned int d = 0; d < dim; ++d)
       dst.add(laplace_patch_normal_components[d] * src,
@@ -6818,7 +6890,10 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
           pcout << "Iterative solver: CG with diagonal preconditioning"
                 << std::endl;
           const DiagonalPreconditioner diagonal_preconditioner(
-            dirichlet_matrix, this_cpu_set, mpi_communicator, constraints);
+            galerkin_preconditioner_matrix(),
+            this_cpu_set,
+            mpi_communicator,
+            constraints);
           solver.solve(negated_operator,
                        sol,
                        negated_rhs,
@@ -6842,7 +6917,8 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
                   cell_dofs.back().push_back(i);
               applies_cell.push_back(cell->subdomain_id() == this_mpi_process);
             }
-          const CellBlockPreconditioner block_preconditioner(dirichlet_matrix,
+          const CellBlockPreconditioner block_preconditioner(
+                                                             galerkin_preconditioner_matrix(),
                                                              cell_dofs,
                                                              applies_cell,
                                                              this_cpu_set,
@@ -6870,6 +6946,8 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
         }
       if (constraints.n_constraints() > 0)
         constraints.distribute(sol);
+      if (galerkin_fmm)
+        galerkin_fmm->print_statistics(pcout.get_stream());
       pcout << "CG iterations: " << cg_control.last_step()
             << ", final residual: " << cg_control.last_value()
             << " (relative to the right-hand side "
@@ -7124,7 +7202,8 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
                              "boundary function."));
       // The Galerkin assembly regularises the screened double layer too,
       // through the Laplace part of its kernel; the collocation one does not.
-      AssertThrow(solution_method == "Direct" &&
+      AssertThrow((solution_method == "Direct" ||
+                   boundary_integral_formulation == "galerkin") &&
                     (kernel_type == "laplace" ||
                      boundary_integral_formulation == "galerkin"),
                   ExcMessage("Exact regularized Dirichlet RHS currently "
@@ -7154,6 +7233,14 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
         assemble_exact_regularized_dirichlet_rhs(*dirichlet_function);
       // neumann_matrix.print(std::cout);
       // dirichlet_matrix.print(std::cout);
+    }
+  else if (boundary_integral_formulation == "galerkin")
+    {
+      // The single layer through the FMM; the right-hand side is assembled
+      // as in the dense path when it is not fused with the matrix.
+      setup_galerkin_fmm();
+      assemble_exact_galerkin_dirichlet_rhs(*dirichlet_function,
+                                            dirichlet_gradient);
     }
   else
     {
@@ -7879,7 +7966,7 @@ BEMProblem<dim>::compute_energy_norm_error(
           const double by_quadrature = energy_of(
             zero, minus_discrete, zero_diagonal, zero_far, zero_near);
           TrilinosWrappers::MPI::Vector image(this_cpu_set, mpi_communicator);
-          dirichlet_matrix.vmult(image, dphi_dn);
+          apply_single_layer(image, dphi_dn);
           const double by_matrix = image * dphi_dn;
           pcout << "Energy self-test: (V lambda_h, lambda_h) by quadrature "
                 << by_quadrature << ", by matrix " << by_matrix

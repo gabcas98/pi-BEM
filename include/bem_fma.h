@@ -211,6 +211,28 @@ public:
   FMA_preconditioner(const TrilinosWrappers::MPI::Vector &alpha,
                      AffineConstraints<double>           &c);
 
+  /// Truncation order of the expansions, shared by the collocation FMA and
+  /// the Galerkin FMM.
+  unsigned int
+  truncation_order() const
+  {
+    return trunc_order;
+  }
+
+  /// Opening criterion of the octree of the Galerkin FMM.
+  double
+  opening_criterion() const
+  {
+    return galerkin_opening_criterion;
+  }
+
+  /// Largest number of quadrature points in a leaf of the Galerkin FMM.
+  unsigned int
+  points_per_leaf() const
+  {
+    return galerkin_points_per_leaf;
+  }
+
 protected:
   /// Three pointers to the problem parameters to be set equal to
   /// the ones in the calling problem through the init function
@@ -223,6 +245,10 @@ protected:
   /// read from the parameters input file.
 
   unsigned int trunc_order;
+
+  /// Parameters of the octree of the Galerkin FMM (class LaplaceFMM).
+  double       galerkin_opening_criterion = 0.5;
+  unsigned int galerkin_points_per_leaf   = 64;
 
   /// Sparsity pattern for the
   /// initial preconditioning matrix

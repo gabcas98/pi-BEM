@@ -90,6 +90,19 @@ BEMFMA<dim>::declare_parameters(ParameterHandler &prm)
   prm.enter_subsection("FMA Params");
   {
     prm.declare_entry("FMA Truncation Order", "6", Patterns::Integer());
+    prm.declare_entry(
+      "Galerkin opening criterion",
+      "0.5",
+      Patterns::Double(0.0, 1.0),
+      "Galerkin FMM only: two boxes of the octree interact through their "
+      "expansions when the sum of their radii is below this fraction of the "
+      "distance of their centres. Smaller is more accurate and slower.");
+    prm.declare_entry(
+      "Galerkin maximum points per leaf",
+      "64",
+      Patterns::Integer(1),
+      "Galerkin FMM only: largest number of quadrature points in a leaf of "
+      "the octree.");
   }
   prm.leave_subsection();
 
@@ -117,6 +130,9 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
   prm.enter_subsection("FMA Params");
   {
     trunc_order = prm.get_integer("FMA Truncation Order");
+    galerkin_opening_criterion = prm.get_double("Galerkin opening criterion");
+    galerkin_points_per_leaf =
+      prm.get_integer("Galerkin maximum points per leaf");
   }
   prm.leave_subsection();
 

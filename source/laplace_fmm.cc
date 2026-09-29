@@ -481,13 +481,15 @@ LaplaceFMM::print_statistics(std::ostream &out) const
 
   if (this_mpi_process == 0)
     {
-      out << "LaplaceFMM: " << points.size() << " points, order "
+      const auto precision = out.precision();
+      out << std::setprecision(3) << "LaplaceFMM: " << points.size()
+          << " points, order "
           << data.order << ", theta " << data.theta << ", at most "
           << data.max_points_per_leaf << " points per leaf\n"
           << "  tree: " << boxes.size() << " boxes, " << n_leaves
           << " leaves, depth " << depth << "; setup " << setup_time << " s\n"
           << "  lists: " << m2l_pairs.size() << " M2L pairs (largest share "
-          << std::setprecision(3) << 100 * largest_share << "%), "
+          << 100 * largest_share << "%), "
           << p2p_pairs.size() << " P2P pairs with " << n_direct
           << " direct interactions ("
           << double(n_direct) / std::max<std::size_t>(1, points.size())
@@ -495,6 +497,7 @@ LaplaceFMM::print_statistics(std::ostream &out) const
           << "  seconds per evaluation, slowest process: P2M+M2M " << t[0]
           << ", sum of multipoles " << t[1] << ", M2L " << t[2]
           << ", L2L+L2P " << t[3] << ", P2P " << t[4]
-          << ", sum of potentials " << t[5] << '\n';
+          << ", sum of potentials " << t[5] << '\n'
+          << std::setprecision(precision);
     }
 }

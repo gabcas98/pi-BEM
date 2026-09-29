@@ -100,6 +100,7 @@
 
 #include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
+#include "../include/galerkin_fmm_operator.h"
 #include "../include/computational_domain.h"
 #include "../include/constrained_matrix.h"
 #include "../include/local_expansion.h"
@@ -211,6 +212,12 @@ public:
 
   void
   assemble_galerkin_system();
+
+  /// With Solution method = FMA, the Galerkin single-layer operator is
+  /// applied by GalerkinFMMOperator instead of the dense matrix, which is
+  /// then never allocated. This sets it up: geometry, octree, near field.
+  void
+  setup_galerkin_fmm();
 
   void
   initialize_calderon_dual_space();
@@ -672,6 +679,18 @@ public:
   bool have_dirichlet_bc;
 
   BEMFMA<dim> fma;
+
+  /// The Galerkin single-layer operator through the FMM; set up only for
+  /// the Galerkin formulation with Solution method = FMA.
+  std::unique_ptr<GalerkinFMMOperator> galerkin_fmm;
+
+  /// The matrix from which the Galerkin preconditioners take their entries:
+  /// the dense single layer, or its near field with the FMM.
+  const TrilinosWrappers::SparseMatrix &
+  galerkin_preconditioner_matrix() const
+  {
+    return galerkin_fmm ? galerkin_fmm->near_field_matrix() : dirichlet_matrix;
+  }
 };
 
 #endif
