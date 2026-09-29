@@ -2446,6 +2446,39 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
                            data,
                            rhs);
       galerkin_fmm->print_statistics(pcout.get_stream());
+      // Where the near field spends its time, as for the dense assembly.
+      const auto &profile = integrator.rhs_profile();
+      pcout << "  near field on the slowest process: rule construction "
+            << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
+            << " s (" << Utilities::MPI::sum(double(profile.uncached_pairs),
+                                             mpi_communicator)
+            << " pairs), kernel loops "
+            << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
+            << " s, Dirichlet datum "
+            << Utilities::MPI::max(profile.function_seconds, mpi_communicator)
+            << " s (" << Utilities::MPI::sum(double(profile.function_calls),
+                                             mpi_communicator)
+            << " evaluations)" << std::endl
+            << "  singular leaves "
+            << Utilities::MPI::sum(double(profile.singular_leaves),
+                                   mpi_communicator)
+            << " ("
+            << Utilities::MPI::sum(double(profile.singular_points),
+                                   mpi_communicator)
+            << " points) "
+            << Utilities::MPI::max(profile.singular_seconds, mpi_communicator)
+            << " s, regular leaves "
+            << Utilities::MPI::sum(double(profile.regular_leaves),
+                                   mpi_communicator)
+            << ' '
+            << Utilities::MPI::max(profile.regular_seconds, mpi_communicator)
+            << " s; near-singular adaptive pairs/leaves "
+            << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
+                                   mpi_communicator)
+            << '/'
+            << Utilities::MPI::sum(integrator.n_near_singular_leaves(),
+                                   mpi_communicator)
+            << std::endl;
     }
   else
     AssertThrow(false, ExcMessage("The Galerkin FMM supports 3D only."));
