@@ -127,6 +127,9 @@ protected:
 
   bool global_refinement;
 
+  /// build the mesh, report its cost and stop before allocating the matrix
+  bool mesh_only;
+
   const unsigned int n_mpi_processes;
   const unsigned int this_mpi_process;
 };

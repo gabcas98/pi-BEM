@@ -2,6 +2,23 @@
 
 #include "driver.h"
 
+#include <iostream>
+#include <streambuf>
+
+namespace
+{
+  /// Swallows everything written to it.
+  class NullBuffer : public std::streambuf
+  {
+  public:
+    int
+    overflow(int c) override
+    {
+      return c;
+    }
+  };
+} // namespace
+
 int
 main(int argc, char *argv[])
 {
@@ -13,6 +30,16 @@ main(int argc, char *argv[])
       else
         threads = atoi(argv[1]);
       Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, threads);
+
+      // Libraries we call write progress to std::cout from every rank, so
+      // the same line appeared once per process. The application's own
+      // output already goes through a rank-filtered stream, so silencing
+      // std::cout elsewhere loses nothing. std::cerr is left alone: a
+      // failure on any rank must still be visible. The buffer is static so
+      // that it outlives the stream it is attached to.
+      static NullBuffer null_buffer;
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) != 0)
+        std::cout.rdbuf(&null_buffer);
 
       std::string pname =
         "parameters_bem_" + std::to_string(DEAL_II_DIMENSION) + ".prm";

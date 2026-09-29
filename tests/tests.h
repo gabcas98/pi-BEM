@@ -20,7 +20,9 @@
 
 #include <deal.II/base/config.h>
 
-#include <deal.II/base/cuda.h>
+#ifdef DEAL_II_COMPILER_CUDA_AWARE
+#  include <deal.II/base/cuda.h>
+#endif
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/job_identifier.h>
 #include <deal.II/base/logstream.h>

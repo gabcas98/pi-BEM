@@ -66,6 +66,12 @@ void
 Driver<dim>::declare_parameters(ParameterHandler &prm)
 {
   prm.declare_entry("Set Global Refinement", "true", Patterns::Bool());
+
+  // Dry run: build the mesh, report its size and the memory the dense boundary
+  // element matrix would need, then stop before allocating anything. Lets a
+  // refinement setting be checked without paying for, or running out of memory
+  // on, a full solve.
+  prm.declare_entry("Mesh only", "false", Patterns::Bool());
 }
 
 template <int dim>
@@ -73,6 +79,7 @@ void
 Driver<dim>::parse_parameters(ParameterHandler &prm)
 {
   global_refinement = prm.get_bool("Set Global Refinement");
+  mesh_only         = prm.get_bool("Mesh only");
 }
 
 
@@ -90,17 +97,41 @@ Driver<dim>::run()
       if (global_refinement)
         {
           computational_domain.refine_and_resize(computational_domain.n_cycles);
+          //computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
         }
       else
         {
-          // computational_domain.conditional_refine_and_resize(1);
-          computational_domain.refine_and_resize(
-            computational_domain.pre_global_refinements);
+          //computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
+          //local_refinement_cycles = 0;
+          // refine_and_resize() applies pre_global_refinements itself.  The
+          // following cycles are driven by the adaptive estimator below.
+          computational_domain.refine_and_resize(0);
           local_refinement_cycles = computational_domain.n_cycles;
         }
       // computational_domain.generate_octree_blocking();
     }
     computational_domain.update_triangulation();
+
+    if (mesh_only)
+      {
+        // The dense matrix costs about 18 bytes per entry once the Trilinos
+        // column indices and container overhead are counted alongside the
+        // doubles; that constant was measured on this build, not assumed.
+        const types::global_dof_index cells =
+          computational_domain.tria.n_active_cells();
+        for (const unsigned int degree : {0u, 1u, 2u})
+          {
+            const types::global_dof_index dofs =
+              cells * (degree + 1) * (degree + 1);
+            computational_domain.pcout
+              << "Mesh only: FE_DGQ(" << degree << ") would give " << dofs
+              << " dofs, dense matrix about "
+              << 18.0 * double(dofs) * double(dofs) / 1e9 << " GB"
+              << std::endl;
+          }
+        return;
+      }
+
     for (unsigned int i = 0; i <= local_refinement_cycles; ++i)
       {
         {

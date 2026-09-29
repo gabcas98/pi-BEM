@@ -107,6 +107,58 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
     "0",
     Patterns::Integer());
 
+  // Uniform refinement keeps whatever resolution imbalance the input grid
+  // carries. These two entries refine a chosen set of material ids further,
+  // so that surfaces meshed coarsely in the input can be brought up to the
+  // resolution the solution actually needs.
+  prm.declare_entry("Extra refinement material ids",
+                    "",
+                    Patterns::List(Patterns::Integer(0)));
+
+  prm.declare_entry("Extra refinement cycles", "0", Patterns::Integer(0));
+
+  // A second set, refined after the first with its own number of cycles, so
+  // that two surfaces can be brought to different resolutions: for instance
+  // the sides of a box and a body facing it.
+  prm.declare_entry("Additional refinement material ids",
+                    "",
+                    Patterns::List(Patterns::Integer(0)));
+
+  prm.declare_entry("Additional refinement cycles",
+                    "0",
+                    Patterns::Integer(0));
+
+  // Graded refinement drives the cell size by distance from a focus point
+  // rather than refining uniformly, so that the far field, where the flux is
+  // negligible, is not refined along with the region that needs it.
+  prm.declare_entry("Graded refinement material ids",
+                    "",
+                    Patterns::List(Patterns::Integer(0)));
+
+  prm.declare_entry("Graded refinement focus",
+                    "0,0,0",
+                    Patterns::List(Patterns::Double(), dim, dim));
+
+  prm.declare_entry("Graded refinement size ratio",
+                    "0.5",
+                    Patterns::Double(0.0));
+
+  prm.declare_entry("Graded refinement minimum size",
+                    "0.1",
+                    Patterns::Double(0.0));
+
+  // Equidistributing the L2 error of a flux decaying like d^-3 wants the cell
+  // size to grow like d^((p+4)/(p+2)), i.e. 5/3 for piecewise linears. The
+  // default 1.0 is the plain distance-proportional law, which over-resolves
+  // the far field and makes the cell count grow like log of the domain size.
+  prm.declare_entry("Graded refinement growth exponent",
+                    "1.0",
+                    Patterns::Double(0.0));
+
+  prm.declare_entry("Graded refinement maximum cycles",
+                    "0",
+                    Patterns::Integer(0));
+
   prm.enter_subsection("Boundary Conditions ID Numbers");
   {
     prm.declare_entry("Dirichlet boundary ids",
@@ -142,6 +194,44 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
   cells_per_circle       = prm.get_double("Cells per circle");
   pre_global_refinements = prm.get_integer(
     "Number of global refinement to be executed before local refinement cycle");
+  extra_refinement_cycles = prm.get_integer("Extra refinement cycles");
+  extra_refinement_material_ids.clear();
+  for (const auto &id :
+       Utilities::split_string_list(prm.get("Extra refinement material ids")))
+    if (!id.empty())
+      extra_refinement_material_ids.insert(
+        static_cast<types::material_id>(Utilities::string_to_int(id)));
+
+  additional_refinement_cycles = prm.get_integer("Additional refinement cycles");
+  additional_refinement_material_ids.clear();
+  for (const auto &id : Utilities::split_string_list(
+         prm.get("Additional refinement material ids")))
+    if (!id.empty())
+      additional_refinement_material_ids.insert(
+        static_cast<types::material_id>(Utilities::string_to_int(id)));
+
+  graded_refinement_material_ids.clear();
+  for (const auto &id :
+       Utilities::split_string_list(prm.get("Graded refinement material ids")))
+    if (!id.empty())
+      graded_refinement_material_ids.insert(
+        static_cast<types::material_id>(Utilities::string_to_int(id)));
+  {
+    const std::vector<std::string> focus =
+      Utilities::split_string_list(prm.get("Graded refinement focus"));
+    AssertThrow(focus.size() == dim,
+                ExcMessage("Graded refinement focus needs one coordinate per "
+                           "space dimension."));
+    for (unsigned int d = 0; d < dim; ++d)
+      graded_refinement_focus[d] = Utilities::string_to_double(focus[d]);
+  }
+  graded_refinement_size_ratio = prm.get_double("Graded refinement size ratio");
+  graded_refinement_minimum_size =
+    prm.get_double("Graded refinement minimum size");
+  graded_refinement_growth_exponent =
+    prm.get_double("Graded refinement growth exponent");
+  graded_refinement_maximum_cycles =
+    prm.get_integer("Graded refinement maximum cycles");
   max_curvature_ref_cycles =
     prm.get_integer("Maximum number of curvature adaptive refinement cycles");
   cad_to_projectors_tolerance_ratio =
@@ -641,7 +731,40 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
               OpenCASCADE::ArclengthProjectionLineManifold<2, 3>>(cad_curves[i],
                                                                   tolerance));
         }
+      /////////////////////////////////////////
+      // these lines are placed to fix a problem that deal developers have
+      // created imposing that for each cell/face with a manifold_id,
+      // a manifold must be prescribed.
 
+      // in addition now if I set the manifold_id of a cell, its faces
+      // won't inherit that automatically.so we need to fix that mess too
+      Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
+      Triangulation<2, 3>::active_cell_iterator endc = tria.end();
+      std::set<unsigned int> detected_manifold_ids;
+      for (; cell != endc; ++cell)
+      {
+        if (cell->manifold_id() != numbers::flat_manifold_id)
+        {
+          detected_manifold_ids.insert(cell->manifold_id());
+          for (unsigned int f = 0; f < GeometryInfo<2>::faces_per_cell; ++f)
+            if (cell->face(f)->manifold_id() == numbers::flat_manifold_id)
+              cell->face(f)->set_manifold_id(cell->manifold_id());
+        }
+        for (unsigned int f = 0; f < GeometryInfo<2>::faces_per_cell; ++f)
+          if (cell->face(f)->manifold_id() != numbers::flat_manifold_id)
+            detected_manifold_ids.insert(cell->face(f)->manifold_id());
+      }
+
+      FlatManifold<2, 3> flat_manifold_default;
+      for (std::set<unsigned int>::iterator it = detected_manifold_ids.begin();
+           it != detected_manifold_ids.end();
+           it++)
+      {
+        pcout << "Manifold_id detected: " << *it << std::endl;
+        tria.set_manifold(*it, flat_manifold_default);
+      }
+      ////////////////////////////////////////
+      
       for (unsigned int i = 0; i < cad_surfaces.size(); ++i)
         {
           tria.set_manifold(1 + i, *normal_to_mesh_projectors[i]);
@@ -872,9 +995,196 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
         }
     }
   //*/
+  
+  if( input_grid_name == "../grids/sphere_box_flipped" ||
+      input_grid_name == "../grids/sphere_box_flipped_double_nodes" ||
+      input_grid_name == "../grids/sphere_box_flipped_new")
+  {
+    // These grids describe a unit sphere and planar box faces.  Analytical
+    // manifolds make high-order mappings exact here and avoid repeated IGES
+    // projections inside the adaptive quadrature.
+    static const SphericalManifold<dim - 1, dim> sphere_manifold{Point<dim>()};
+    static const FlatManifold<dim - 1, dim>      flat_manifold;
+    tria.set_manifold(1, sphere_manifold);
+    tria.set_manifold(2, flat_manifold);
+    tria.set_manifold(3, flat_manifold);
+    pcout << "Using analytical sphere-box manifolds" << std::endl;
 
+    if (pre_global_refinements > 0)
+    {
+      pcout << "Applying " << pre_global_refinements
+            << " global refinement cycle(s) before local gap refinement"
+            << std::endl;
+      tria.refine_global(pre_global_refinements);
+      make_edges_conformal();
+      pcout << "Cells after global refinement: "
+            << tria.n_active_cells() << std::endl;
+    }
 
-  tria.refine_global(refinement_level);
+    //////////  
+    // if you want to refine around a point
+    // first do one pass of global refinement
+    //tria.refine_global(1);
+    
+    // refine only bottom face of the box around (0,0,-1.003)
+    const Point<dim> refinement_center(0, 0, -1);
+    for (unsigned int step = 0; step < (refinement_level > 0 ? 4 : 0); ++step)
+    {
+      Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
+      Triangulation<2, 3>::active_cell_iterator endc = tria.end();
+      for (; cell != endc; ++cell)
+      {
+        for (unsigned int v = 0; v < GeometryInfo<dim - 1>::vertices_per_cell; ++v)
+        {
+          const double distance_from_center = refinement_center.distance(cell->vertex(v));
+          if((int(cell->material_id()) == 3) && (distance_from_center < 0.2))
+            cell->set_refine_flag();
+        }
+      }
+      tria.prepare_coarsening_and_refinement();
+      tria.execute_coarsening_and_refinement();
+      make_edges_conformal();
+    }
+    
+    // refine everything around (0,0,-1.003)
+    for (unsigned int step = 0; step < refinement_level; ++step)
+    {
+      Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
+      Triangulation<2, 3>::active_cell_iterator endc = tria.end();
+      for (; cell != endc; ++cell)
+      {
+        for (unsigned int v = 0; v < GeometryInfo<dim - 1>::vertices_per_cell; ++v)
+        {
+          const double distance_from_center = refinement_center.distance(cell->vertex(v));
+          if (distance_from_center < 0.1)
+          {
+            cell->set_refine_flag();
+            break;
+          }
+        }
+      }
+      tria.prepare_coarsening_and_refinement();
+      tria.execute_coarsening_and_refinement();
+      make_edges_conformal();
+    }
+
+    //////////
+  }
+  else
+  {
+    tria.refine_global(refinement_level);
+  }
+  
+  //else just do the global refinement
+  //tria.refine_global(refinement_level);
+
+  // Bring the selected material ids up to a finer resolution than the global
+  // level. Conformity is deliberately not restored afterwards:
+  // make_edges_conformal() propagates refinement across the double-node seams
+  // and would drag the remaining surfaces along, which is exactly what this
+  // option exists to avoid. Refining a set of materials that covers whole
+  // connected components keeps the mesh conforming anyway, and where it does
+  // not, the discontinuous trace space carries no hanging-node constraints and
+  // the panel-pair integrator handles non-conforming edges.
+  const auto refine_materials =
+    [&](const std::set<types::material_id> &material_ids,
+        const unsigned int                  cycles,
+        const std::string                  &name) {
+      if (cycles == 0 || material_ids.empty())
+        return;
+      for (unsigned int step = 0; step < cycles; ++step)
+        {
+          for (auto cell = tria.begin_active(); cell != tria.end(); ++cell)
+            if (material_ids.count(cell->material_id()) > 0)
+              cell->set_refine_flag();
+          tria.prepare_coarsening_and_refinement();
+          tria.execute_coarsening_and_refinement();
+        }
+
+      std::map<types::material_id, unsigned int> cells_per_material;
+      for (const auto &cell : tria.active_cell_iterators())
+        ++cells_per_material[cell->material_id()];
+      pcout << name << " refinement: " << cycles
+            << " cycle(s) on material ids";
+      for (const auto id : material_ids)
+        pcout << " " << static_cast<unsigned int>(id);
+      pcout << "; cells per material:";
+      for (const auto &entry : cells_per_material)
+        pcout << " " << static_cast<unsigned int>(entry.first) << "="
+              << entry.second;
+      pcout << std::endl;
+    };
+  refine_materials(extra_refinement_material_ids,
+                   extra_refinement_cycles,
+                   "Extra");
+  refine_materials(additional_refinement_material_ids,
+                   additional_refinement_cycles,
+                   "Additional");
+
+  // Graded refinement. The flux on a face looking at a nearby body varies on a
+  // scale set by the distance from the point of closest approach, so a target
+  // size proportional to that distance equidistributes the approximation error
+  // and leaves the far field, where the flux is flat and small, coarse.
+  //
+  // The level difference is limited to one: the panel-pair integrator handles a
+  // non-conforming edge by pairing a coarse cell with the children of its
+  // neighbour, which is only well defined across a single level.
+  if (graded_refinement_maximum_cycles > 0 &&
+      !graded_refinement_material_ids.empty())
+    {
+      tria.set_mesh_smoothing(
+        Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+
+      unsigned int cycle = 0;
+      for (; cycle < graded_refinement_maximum_cycles; ++cycle)
+        {
+          unsigned int flagged = 0;
+          for (const auto &cell : tria.active_cell_iterators())
+            if (graded_refinement_material_ids.count(cell->material_id()) > 0)
+              {
+                const double distance =
+                  graded_refinement_focus.distance(cell->center());
+                const double target = std::max(
+                  graded_refinement_minimum_size,
+                  graded_refinement_size_ratio *
+                    std::pow(distance, graded_refinement_growth_exponent));
+                if (cell->diameter() > target)
+                  {
+                    cell->set_refine_flag();
+                    ++flagged;
+                  }
+              }
+          if (flagged == 0)
+            break;
+          tria.prepare_coarsening_and_refinement();
+          tria.execute_coarsening_and_refinement();
+        }
+
+      double smallest = std::numeric_limits<double>::max();
+      double largest  = 0.0;
+      std::map<types::material_id, unsigned int> graded_cells;
+      for (const auto &cell : tria.active_cell_iterators())
+        {
+          ++graded_cells[cell->material_id()];
+          if (graded_refinement_material_ids.count(cell->material_id()) > 0)
+            {
+              smallest = std::min(smallest, cell->diameter());
+              largest  = std::max(largest, cell->diameter());
+            }
+        }
+      pcout << "Graded refinement: " << cycle << " cycle(s), ratio "
+            << graded_refinement_size_ratio << ", exponent "
+            << graded_refinement_growth_exponent << ", floor "
+            << graded_refinement_minimum_size << ", focus "
+            << graded_refinement_focus << std::endl
+            << "  graded cell size from " << smallest << " to " << largest
+            << "; cells per material:";
+      for (const auto &entry : graded_cells)
+        pcout << " " << static_cast<unsigned int>(entry.first) << "="
+              << entry.second;
+      pcout << std::endl;
+    }
+
   pcout << "We have a tria of " << tria.n_active_cells() << " cells."
         << std::endl;
   GridTools::partition_triangulation(n_mpi_processes, tria);
@@ -895,7 +1205,7 @@ ComputationalDomain<dim>::conditional_refine_and_resize(
 {
   pcout << "Conditionally refining and resizing mesh as required" << std::endl;
 
-  const Point<dim> center(0, 0, 0);
+  const Point<dim> center(0, 0, -1);
   compute_double_vertex_cache();
   make_edges_conformal();
 
@@ -910,7 +1220,7 @@ ComputationalDomain<dim>::conditional_refine_and_resize(
             {
               const double distance_from_center =
                 center.distance(cell->vertex(v));
-              if (std::fabs(distance_from_center) < 1.)
+              if (std::fabs(distance_from_center) < 0.1)
                 {
                   cell->set_refine_flag();
                   break;

@@ -92,10 +92,9 @@ template <class VEC, class MATRIX>
 void
 ConstrainedOperator<VEC, MATRIX>::vmult(VEC &dst, const VEC &src) const
 {
-  // Vector<double> loc_src(src);
-  VEC loc_src(constr_cpu_set);
-  loc_src.reinit(src, false, true);
-  // loc_src = src;
+  // The masters of a constrained unknown may belong to another process, so
+  // the constraint rows read them from a copy of the whole vector.
+  const Vector<double> loc_src(src);
 
   // std::cout<<"in vector "<<std::endl;
   // for (unsigned int i = 0; i < src.size(); i++)

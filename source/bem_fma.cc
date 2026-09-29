@@ -4,6 +4,8 @@
 #include "../include/bem_fma.h"
 
 #include <functional>
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
 
 #include "../include/laplace_kernel.h"
 #include "Teuchos_TimeMonitor.hpp"

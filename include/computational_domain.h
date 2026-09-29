@@ -212,6 +212,36 @@ public:
 
   unsigned int pre_global_refinements;
 
+  /// material ids refined further than the global level, and how many extra
+  /// cycles they receive. Used to correct a resolution imbalance already
+  /// present in the input grid, which uniform refinement would preserve.
+
+  std::set<types::material_id> extra_refinement_material_ids;
+
+  unsigned int extra_refinement_cycles;
+
+  /// a second set of material ids with its own number of cycles, refined
+  /// after the first
+  std::set<types::material_id> additional_refinement_material_ids;
+
+  unsigned int additional_refinement_cycles;
+
+  /// graded refinement: the cell size on these material ids is driven towards
+  /// size_ratio times the distance from the focus, with a floor at
+  /// minimum_size, so the far field stays coarse where the solution is flat.
+
+  std::set<types::material_id> graded_refinement_material_ids;
+
+  Point<dim> graded_refinement_focus;
+
+  double graded_refinement_size_ratio;
+
+  double graded_refinement_minimum_size;
+
+  double graded_refinement_growth_exponent;
+
+  unsigned int graded_refinement_maximum_cycles;
+
   /// maximum cell aspect ratio
 
   double max_element_aspect_ratio;

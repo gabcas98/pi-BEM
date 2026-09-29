@@ -1,2 +1,27 @@
 *~
 build/
+
+# Executables copied into the run folders, and their backups
+bem_fma_3d
+bem_fma_3d.*
+
+# Solver output
+*.vtu
+amesos-failure.dat
+
+# Python by-products
+__pycache__/
+*.pyc
+
+# Run folders hold data and results, not code. The regression suite is
+# the exception: its script, frozen input files and reference values are
+# tracked, what a run writes is not.
+/RUN*/
+!/RUN_REGRESSION/
+/RUN_REGRESSION/*.log
+/RUN_REGRESSION/*.inp
+/RUN_REGRESSION/parameters_bem_3.prm
+/RUN_REGRESSION/used_parameters_bem_3.prm
+
+# Old tarball checkpoints, superseded by git
+/checkpoints/

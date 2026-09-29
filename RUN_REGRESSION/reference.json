@@ -1,0 +1,49 @@
+{
+ "collocation_q1": {
+  "flux": "0.0708263",
+  "gradient": "0.301983",
+  "iterations": "47"
+ },
+ "continuous_laplace_q2": {
+  "V_frobenius": "31.86535695757822",
+  "best_ratio": "1.05349",
+  "energy": "0.0036827",
+  "flux": "0.00333076",
+  "gradient": "0.0189786",
+  "iterations": "64",
+  "rhs_norm": "0.9950078645655055"
+ },
+ "dg_laplace_p1": {
+  "V_frobenius": "26.0257008120964",
+  "best_ratio": "1.08394",
+  "energy": "0.0133982",
+  "flux": "0.0135444",
+  "gradient": "0.0801264",
+  "gradient_pointwise": "0.0799306",
+  "iterations": "69",
+  "rhs_norm": "0.8876459786385669"
+ },
+ "dg_laplace_p1_library_path": {
+  "V_frobenius": "26.02570081209641",
+  "flux": "0.0135444",
+  "gradient": "0.0801264",
+  "iterations": "190",
+  "rhs_norm": "0.8876459786385669"
+ },
+ "dg_screened_p2": {
+  "V_frobenius": "13.35323836807492",
+  "flux": "0.00242539",
+  "gradient": "0.0125097",
+  "iterations": "73",
+  "rhs_norm": "0.2879097321087652"
+ },
+ "far_field_tolerance_p2": {
+  "flux": "0.00242835",
+  "gradient": "0.014187",
+  "rhs_norm": "0.8854049111248115"
+ },
+ "representation_p2": {
+  "flux": "0.00242835",
+  "gradient": "0.0140545"
+ }
+}

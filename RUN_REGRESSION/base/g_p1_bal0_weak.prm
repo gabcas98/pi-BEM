@@ -1,0 +1,372 @@
+# Listing of Parameters
+# ---------------------
+subsection BEMFMA<3>
+  subsection FMA Params
+    set FMA Truncation Order                  = 6
+    set Granularity for TBB simple for cycles = 10
+  end
+
+  subsection Octree Params
+    set Maximum Number of Collocation Points per Childless Block = 20
+    set Number of Octree Levels                                  = 10
+  end
+
+end
+
+
+subsection BEMProblem<3>
+  # Legacy checkpoint: use None, MUMPS and FEDGQ in both FE subsections.
+  set Continuos gradient across edges = true
+  set Mapping Q Degree                = 2
+  set Mapping Type                    = Q
+  set Preconditioner                  = Jacobi
+  set Calderon stabilization          = 1.0
+  set Calderon dual bubble scaling    = 1.0
+  set Galerkin component RHS diagnostics = false
+  # Energy norm of the flux error, |lambda - lambda_h|_V. This is the
+  # norm in which the Galerkin method for the first-kind equation is
+  # quasi-optimal; the L2 norm is not, so on a graded mesh only this
+  # one can be compared against the theoretical rate. It also prints
+  # the energy distance to the best L2 projection, taken from the
+  # assembled operator and therefore exact.
+  set Compute energy norm error       = false
+  # Per-component, per-material and radial breakdowns of the error.
+  # Useful when locating where the error concentrates; about thirty
+  # lines of output, so off by default.
+  set Detailed error diagnostics      = false
+  # How the surface gradient is recovered: the L2 projection of the
+  # gradient rebuilt from the discrete fields, or the hypersingular
+  # boundary integral equation. The second is not yet usable with
+  # Galerkin - see the notes; it is left here as a switch, not as a
+  # working alternative.
+  set Gradient recovery               = weak
+  set Solution method                 = Direct
+  set Linear solver                   = CG
+  set MUMPS ordering                  = QAMD
+  set Boundary integral formulation   = galerkin
+  set Galerkin Neumann formulation    = single_layer
+  set Galerkin adjoint continuity     = material_wise
+  set Galerkin adjoint component weighting = false
+  set Galerkin adjoint primary material id = 1
+  set Galerkin adjoint primary material ids =
+  set Galerkin adjoint primary eta scale = 64.0
+  set Galerkin adjoint secondary eta scale = 1.0
+  set Galerkin adjoint local eta scaling = false
+  set Galerkin adjoint dual residual stabilization = false
+  set Galerkin adjoint dual residual lift = single_layer
+  set Galerkin adjoint block completion = false
+  set Galerkin adjoint hybrid system     = false
+  set Galerkin hybrid exact trace diagnostics = false
+  set Galerkin analytical hypersingular RHS = false
+  set Galerkin hybrid conforming complement = false
+  set Galerkin hybrid complement mass regularization = 0.0
+  set Galerkin hybrid local mass regularization = 0.0
+  set Galerkin hybrid local fluctuation regularization = 0.0
+  set Galerkin hybrid local jump regularization = 0.0
+  set Galerkin hybrid local jump h scaling = true
+  set Galerkin hybrid local mass material id = 3
+  set Galerkin hybrid local mass radius min = 0.35
+  set Galerkin hybrid local mass radius max = 1.5
+  set Galerkin hybrid first-kind polishing steps = 0
+  set Galerkin hybrid first-kind polishing relaxation = 0.25
+  set Kernel type                     = laplace
+  # nodal              : half the mass term plus the plain double layer.
+  # exact_regularized  : the double layer regularized with phi(y)-phi(x).
+  #                      The general-purpose choice: it needs only the
+  #                      Dirichlet datum.
+  # manufactured_flux  : <V lambda, phi_i> built from the exact flux
+  #                      through the single-layer kernel. It needs the
+  #                      exact solution, so it serves convergence
+  #                      studies only, but it is the right-hand side
+  #                      the Galerkin equations actually require and it
+  #                      avoids the double layer's 1/r^2 kernel. Either
+  #                      way the run prints the distance between the two
+  #                      constructions, which bounds how much of the
+  #                      error comes from the right-hand side.
+  set Dirichlet RHS treatment         = exact_regularized
+  set Hypersingular correction steps  = 0
+  set Hypersingular correction relaxation = 1.0
+  set Hypersingular correction maximum relative update = 0.25
+  set Enforce Laplace linear patch      = false
+  set Screened Kappa                  = 0.5
+
+  subsection Grid Refinement
+    set Coarsening threshold = 0.03
+    set Refinement threshold = 0.3
+  end
+
+  subsection Quadrature rules
+    set Galerkin quadrature order              = 6
+    set Galerkin singular quadrature           = sauter_schwab
+    set Galerkin singular quadrature order     = 7
+    set Galerkin Duffy outer subdivisions      = 4
+    set Galerkin near singular distance ratio  = 0.5
+    set Galerkin near singular maximum depth   = 6
+    set Galerkin near singular quadrature order = 4
+    set Quadrature order                       = 10
+    set Quadrature type                        = gauss
+    set Adaptive quadrature                    = true
+    set Adaptive quadrature absolute tolerance = 1.e-12
+    set Adaptive quadrature maximum order      = 128
+    set Adaptive quadrature order growth       = 1.5
+    set Adaptive quadrature relative tolerance = 1.e-8
+    set Quasi singular distance ratio          = 2.0
+    set Near singular subdivision              = false
+    set Near singular subdivision ratio        = 0.25
+    set Near singular subdivision maximum levels = 10
+    set Quasi singular Dirichlet quadrature order = 8
+    set Quasi singular Neumann quadrature order   = 8
+    set Quasi singular quadrature order           = 8
+    set Singular quadrature order                 = 40
+  end
+
+  subsection Scalar Finite Element
+    set Finite Element type  = FEDGQ
+    set Finite element order = 1
+  end
+
+  subsection Solver
+    set Log frequency = 1
+    set Log history   = false
+    set Log result    = true
+    set Max steps     = 2000
+    set Tolerance     = 1.e-10
+  end
+
+  subsection Vector Finite Element
+    set Finite Element type  = FEDGQ
+    set Finite element order = 1
+  end
+
+end
+
+
+subsection BoundaryConditions<3>
+  set Output file name = result
+
+
+  subsection Potential 2d
+    # Sometimes it is convenient to use symbolic constants in the expression
+    # that describes the function, rather than having to use its numeric value
+    # everywhere the constant appears. These values can be defined using this
+    # parameter, in the form `var1=value1, var2=value2, ...'.
+    # 
+    # A typical example would be to set this runtime parameter to
+    # `pi=3.1415926536' and then use `pi' in the expression of the actual
+    # formula. (That said, for convenience this class actually defines both
+    # `pi' and `Pi' by default, but you get the idea.)
+    # set Function constants  =
+    set Function constants  = kappa=0.5
+
+    # The formula that denotes the function you want to evaluate for
+    # particular values of the independent variables. This expression may
+    # contain any of the usual operations such as addition or multiplication,
+    # as well as all of the common functions such as `sin' or `cos'. In
+    # addition, it may contain expressions like `if(x>0, 1, -1)' where the
+    # expression evaluates to the second argument if the first argument is
+    # true, and to the third argument otherwise. For a full overview of
+    # possible expressions accepted see the documentation of the muparser
+    # library at http://muparser.beltoforion.de/.
+    # 
+    # If the function you are describing represents a vector-valued function
+    # with multiple components, then separate the expressions for individual
+    # components by a semicolon.
+    # set Function expression = x+y   # default: 0
+    set Function expression = exp( -kappa * (x + y) / sqrt(2) )
+
+    # The names of the variables as they will be used in the function,
+    # separated by commas. By default, the names of variables at which the
+    # function will be evaluated are `x' (in 1d), `x,y' (in 2d) or `x,y,z' (in
+    # 3d) for spatial coordinates and `t' for time. You can then use these
+    # variable names in your function expression and they will be replaced by
+    # the values of these variables at which the function is currently
+    # evaluated. However, you can also choose a different set of names for the
+    # independent variables at which to evaluate your function expression. For
+    # example, if you work in spherical coordinates, you may wish to set this
+    # input parameter to `r,phi,theta,t' and then use these variable names in
+    # your function expression.
+    set Variable names      = x,y,t
+  end
+
+  subsection Potential 3d
+    # Sometimes it is convenient to use symbolic constants in the expression
+    # that describes the function, rather than having to use its numeric value
+    # everywhere the constant appears. These values can be defined using this
+    # parameter, in the form `var1=value1, var2=value2, ...'.
+    # 
+    # A typical example would be to set this runtime parameter to
+    # `pi=3.1415926536' and then use `pi' in the expression of the actual
+    # formula. (That said, for convenience this class actually defines both
+    # `pi' and `Pi' by default, but you get the idea.)
+    # set Function constants  =
+    set Function constants  = kappa=0.5
+
+    # The formula that denotes the function you want to evaluate for
+    # particular values of the independent variables. This expression may
+    # contain any of the usual operations such as addition or multiplication,
+    # as well as all of the common functions such as `sin' or `cos'. In
+    # addition, it may contain expressions like `if(x>0, 1, -1)' where the
+    # expression evaluates to the second argument if the first argument is
+    # true, and to the third argument otherwise. For a full overview of
+    # possible expressions accepted see the documentation of the muparser
+    # library at http://muparser.beltoforion.de/.
+    # 
+    # If the function you are describing represents a vector-valued function
+    # with multiple components, then separate the expressions for individual
+    # components by a semicolon.
+    #set Function expression = x+y+z
+    set Function expression = 1/sqrt(x*x+y*y+z*z)
+    #set Function expression = exp( -kappa/sqrt(3) * (x + y + z) )
+
+    # The names of the variables as they will be used in the function,
+    # separated by commas. By default, the names of variables at which the
+    # function will be evaluated are `x' (in 1d), `x,y' (in 2d) or `x,y,z' (in
+    # 3d) for spatial coordinates and `t' for time. You can then use these
+    # variable names in your function expression and they will be replaced by
+    # the values of these variables at which the function is currently
+    # evaluated. However, you can also choose a different set of names for the
+    # independent variables at which to evaluate your function expression. For
+    # example, if you work in spherical coordinates, you may wish to set this
+    # input parameter to `r,phi,theta,t' and then use these variable names in
+    # your function expression.
+    set Variable names      = x,y,z,t
+  end
+
+  subsection Wind function 2d
+    # Sometimes it is convenient to use symbolic constants in the expression
+    # that describes the function, rather than having to use its numeric value
+    # everywhere the constant appears. These values can be defined using this
+    # parameter, in the form `var1=value1, var2=value2, ...'.
+    # 
+    # A typical example would be to set this runtime parameter to
+    # `pi=3.1415926536' and then use `pi' in the expression of the actual
+    # formula. (That said, for convenience this class actually defines both
+    # `pi' and `Pi' by default, but you get the idea.)
+    # set Function constants  = 
+    set Function constants  = kappa=0.5
+
+    # The formula that denotes the function you want to evaluate for
+    # particular values of the independent variables. This expression may
+    # contain any of the usual operations such as addition or multiplication,
+    # as well as all of the common functions such as `sin' or `cos'. In
+    # addition, it may contain expressions like `if(x>0, 1, -1)' where the
+    # expression evaluates to the second argument if the first argument is
+    # true, and to the third argument otherwise. For a full overview of
+    # possible expressions accepted see the documentation of the muparser
+    # library at http://muparser.beltoforion.de/.
+    # 
+    # If the function you are describing represents a vector-valued function
+    # with multiple components, then separate the expressions for individual
+    # components by a semicolon.
+    # set Function expression = 1; 1  # default: 0; 0
+    set Function expression = -kappa/sqrt(2) * exp(-kappa/sqrt(2)*(x + y)); -kappa/sqrt(2) * exp(-kappa/sqrt(2)*(x + y))
+
+    # The names of the variables as they will be used in the function,
+    # separated by commas. By default, the names of variables at which the
+    # function will be evaluated are `x' (in 1d), `x,y' (in 2d) or `x,y,z' (in
+    # 3d) for spatial coordinates and `t' for time. You can then use these
+    # variable names in your function expression and they will be replaced by
+    # the values of these variables at which the function is currently
+    # evaluated. However, you can also choose a different set of names for the
+    # independent variables at which to evaluate your function expression. For
+    # example, if you work in spherical coordinates, you may wish to set this
+    # input parameter to `r,phi,theta,t' and then use these variable names in
+    # your function expression.
+    set Variable names      = x,y,t
+  end
+
+  subsection Wind function 3d
+    # Sometimes it is convenient to use symbolic constants in the expression
+    # that describes the function, rather than having to use its numeric value
+    # everywhere the constant appears. These values can be defined using this
+    # parameter, in the form `var1=value1, var2=value2, ...'.
+    # 
+    # A typical example would be to set this runtime parameter to
+    # `pi=3.1415926536' and then use `pi' in the expression of the actual
+    # formula. (That said, for convenience this class actually defines both
+    # `pi' and `Pi' by default, but you get the idea.)
+    # set Function constants  = 
+    set Function constants  = kappa=0.5
+
+    # The formula that denotes the function you want to evaluate for
+    # particular values of the independent variables. This expression may
+    # contain any of the usual operations such as addition or multiplication,
+    # as well as all of the common functions such as `sin' or `cos'. In
+    # addition, it may contain expressions like `if(x>0, 1, -1)' where the
+    # expression evaluates to the second argument if the first argument is
+    # true, and to the third argument otherwise. For a full overview of
+    # possible expressions accepted see the documentation of the muparser
+    # library at http://muparser.beltoforion.de/.
+    # 
+    # If the function you are describing represents a vector-valued function
+    # with multiple components, then separate the expressions for individual
+    # components by a semicolon.
+    #set Function expression = 1; 1; 1
+    set Function expression = -x/pow(x*x+y*y+z*z,1.5); -y/pow(x*x+y*y+z*z,1.5); -z/pow(x*x+y*y+z*z,1.5)
+    #set Function expression = -kappa/sqrt(3) * exp(-kappa/sqrt(3)*(x + y + z)); -kappa/sqrt(3) * exp(-kappa/sqrt(3)*(x + y + z)); -kappa/sqrt(3) * exp(-kappa/sqrt(3)*(x + y + z))
+
+    # The names of the variables as they will be used in the function,
+    # separated by commas. By default, the names of variables at which the
+    # function will be evaluated are `x' (in 1d), `x,y' (in 2d) or `x,y,z' (in
+    # 3d) for spatial coordinates and `t' for time. You can then use these
+    # variable names in your function expression and they will be replaced by
+    # the values of these variables at which the function is currently
+    # evaluated. However, you can also choose a different set of names for the
+    # independent variables at which to evaluate your function expression. For
+    # example, if you work in spherical coordinates, you may wish to set this
+    # input parameter to `r,phi,theta,t' and then use these variable names in
+    # your function expression.
+    set Variable names      = x,y,z,t
+  end
+
+end
+
+
+subsection ComputationalDomain<3>
+  set Axis x dimension                                                         = 1.
+  set Axis y dimension                                                         = 1.
+  set Axis z dimension                                                         = 1.
+  set Cad tolerance to projectors tolerance ratio                              = 100
+  set Cells per circle                                                         = 12
+  set Input grid format                                                        = inp
+  set Input grid name                                                          = ../grids/sphere_box_flipped_new
+  set Input path to CAD files                                                  = ./
+  set Max aspect ratio                                                         = 100.75
+  set Maximum number of curvature adaptive refinement cycles                   = 0
+  set Number of cycles                                                         = 0
+  set Number of global refinement to be executed before local refinement cycle = 1
+  # Radial grading about the source. Uniform refinement preserves the
+  # resolution imbalance of the input grid, in which the enclosing box
+  # carries two orders of magnitude fewer cells per unit area than the
+  # sphere; grading the box recovers the theoretical rate. The growth
+  # exponent equidistributes the approximation error of degree p:
+  # (p+4)/(p+2), that is 1.667 for p=1 and 1.5 for p=2.
+  set Extra refinement material ids                                            = 2
+  set Extra refinement cycles                                                  = 0
+  set Graded refinement material ids                                           = 3
+  set Graded refinement focus                                                  = 0,0,0
+  set Graded refinement size ratio                                             = 0.8
+  set Graded refinement minimum size                                           = 0.001
+  set Graded refinement growth exponent                                        = 1.667
+  set Graded refinement maximum cycles                                         = 16
+  set Surface curvature adaptive refinement                                    = false
+  set Use a spheroid                                                           = true
+  set Use iges surfaces and curves                                             = true  #default: false
+
+
+  subsection Boundary Conditions ID Numbers
+    set Dirichlet boundary ids = 1,2,3,110,110  # if coarse sphere double nodes: 1,2,3
+    set Neumann boundary ids   = 110,110
+  end
+
+end
+
+
+subsection Driver<3>
+  set Set Global Refinement = true #if not conditional_refinement: true
+  # Build the mesh, report the dense-matrix memory each element degree would
+  # need, and stop before allocating anything. Worth a few seconds before a
+  # large run: the dense operator costs about 18 bytes per entry, so memory
+  # grows as the square of the unknowns and overruns arrive without warning.
+  set Mesh only             = false
+end
