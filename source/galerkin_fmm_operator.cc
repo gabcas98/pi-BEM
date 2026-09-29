@@ -18,7 +18,6 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
-#include <deal.II/lac/vector.h>
 #include <deal.II/numerics/rtree.h>
 
 #include <chrono>
@@ -37,32 +36,46 @@ namespace
                                          start)
       .count();
   }
+
+  void
+  sum_over_processes(Vector<double> &v, const MPI_Comm comm)
+  {
+    Utilities::MPI::sum(ArrayView<const double>(v.begin(), v.size()),
+                        comm,
+                        ArrayView<double>(v.begin(), v.size()));
+  }
+
+  constexpr double inverse_4pi = 1. / (4. * numbers::PI);
 } // namespace
 
 
 
 GalerkinFMMOperator::GalerkinFMMOperator(const MPI_Comm comm)
   : mpi_communicator(comm)
+  , n_mpi_processes(Utilities::MPI::n_mpi_processes(comm))
   , this_mpi_process(Utilities::MPI::this_mpi_process(comm))
   , fmm(comm)
+  , rhs_fmm(comm)
 {}
 
 
 
 void
-GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
-                            const Mapping<2, 3>                  &mapping,
-                            const AffineConstraints<double>      &constraints_in,
+GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
+                            const Mapping<2, 3>             &mapping,
+                            const AffineConstraints<double> &constraints_in,
                             const GalerkinPanelPairIntegrator<3> &integrator,
-                            const IndexSet &locally_owned_dofs,
-                            const AdditionalData &data)
+                            const IndexSet          &locally_owned_dofs,
+                            const AdditionalData    &data,
+                            const RightHandSideData &rhs)
 {
   dof_handler = &dh;
   constraints.copy_from(constraints_in);
+  regularize                     = rhs.regularize;
   const FiniteElement<2, 3> &fe  = dh.get_fe();
   const unsigned int         dpc = fe.dofs_per_cell;
 
-  // Geometry of the quadrature points of every cell.
+  // Geometry and data at the quadrature points of every cell.
   auto start = std::chrono::steady_clock::now();
   cells.clear();
   own_cells.clear();
@@ -73,55 +86,90 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
       cells.push_back(cell);
     }
   const QGauss<2> quadrature(data.quadrature_order);
-  n_q_points = quadrature.size();
-  mapping_info =
-    std::make_unique<NonMatching::MappingInfo<2, 3>>(mapping,
-                                                     update_values |
-                                                       update_JxW_values |
-                                                       update_quadrature_points);
+  n_q_points   = quadrature.size();
+  mapping_info = std::make_unique<NonMatching::MappingInfo<2, 3>>(
+    mapping,
+    update_values | update_JxW_values | update_quadrature_points |
+      update_normal_vectors);
   std::vector<Triangulation<2, 3>::cell_iterator> tria_cells(cells.begin(),
                                                              cells.end());
   mapping_info->reinit_cells(tria_cells,
                              std::vector<Quadrature<2>>(cells.size(),
                                                         quadrature));
   evaluator = std::make_unique<FEPointEvaluation<1, 2, 3>>(*mapping_info, fe);
-  std::vector<Point<3>> points(cells.size() * n_q_points);
-  JxW.resize(points.size());
+  const unsigned int    n_points = cells.size() * n_q_points;
+  std::vector<Point<3>> points(n_points);
+  JxW.resize(n_points);
+  normals.resize(n_points);
   for (unsigned int c = 0; c < cells.size(); ++c)
     {
       evaluator->reinit(c);
       for (unsigned int q = 0; q < n_q_points; ++q)
         {
-          points[c * n_q_points + q] = evaluator->quadrature_point(q);
-          JxW[c * n_q_points + q]    = evaluator->JxW(q);
+          points[c * n_q_points + q]  = evaluator->quadrature_point(q);
+          JxW[c * n_q_points + q]     = evaluator->JxW(q);
+          normals[c * n_q_points + q] = evaluator->normal_vector(q);
+        }
+    }
+  dirichlet_values.clear();
+  if (rhs.dirichlet != nullptr)
+    {
+      dirichlet_values.resize(n_points);
+      for (unsigned int p = 0; p < n_points; ++p)
+        dirichlet_values[p] = rhs.dirichlet->value(points[p]);
+    }
+  flux_values.clear();
+  if (rhs.gradient != nullptr)
+    {
+      flux_values.resize(n_points);
+      Vector<double> gradient(3);
+      for (unsigned int p = 0; p < n_points; ++p)
+        {
+          rhs.gradient->vector_value(points[p], gradient);
+          flux_values[p] = gradient[0] * normals[p][0] +
+                           gradient[1] * normals[p][1] +
+                           gradient[2] * normals[p][2];
         }
     }
   setup_geometry = seconds_since(start);
 
   start = std::chrono::steady_clock::now();
   fmm.reinit(points, data.fmm);
+  if (rhs.dirichlet != nullptr)
+    {
+      LaplaceFMM::AdditionalData rhs_data = data.fmm;
+      rhs_data.order += data.rhs_order_increase;
+      rhs_fmm.reinit(points, rhs_data);
+    }
   setup_tree = seconds_since(start);
+
+  // The test cells of the near field of this process: every n-th cell, so
+  // that the pairs near the contact, where the mesh is graded, are shared.
+  start = std::chrono::steady_clock::now();
+  std::vector<unsigned int> near_test_cells;
+  for (unsigned int c = this_mpi_process; c < cells.size();
+       c += n_mpi_processes)
+    near_test_cells.push_back(c);
 
   // Candidate pairs: cells whose bounding boxes, each enlarged by the ratio
   // times its own diagonal, intersect. Any pair within the ratio times the
   // larger diameter is among them; the integrator then decides.
-  start = std::chrono::steady_clock::now();
   std::vector<std::pair<BoundingBox<3>, unsigned int>> boxes;
   for (unsigned int c = 0; c < cells.size(); ++c)
     {
-      BoundingBox<3> box = mapping.get_bounding_box(cells[c]);
-      const double   diagonal =
-        box.get_boundary_points().first.distance(
-          box.get_boundary_points().second);
+      BoundingBox<3> box      = mapping.get_bounding_box(cells[c]);
+      const double   diagonal = box.get_boundary_points().first.distance(
+        box.get_boundary_points().second);
       box.extend(data.near_distance_ratio * diagonal + 1e-12 * diagonal);
       boxes.emplace_back(box, c);
     }
   const auto tree = pack_rtree(boxes);
-
-  std::vector<std::vector<unsigned int>> near_trial_cells(own_cells.size());
-  for (unsigned int k = 0; k < own_cells.size(); ++k)
+  std::vector<std::vector<unsigned int>> near_trial_cells(
+    near_test_cells.size());
+  n_near_pairs = 0;
+  for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
-      const unsigned int                                   t = own_cells[k];
+      const unsigned int t = near_test_cells[k];
       std::vector<std::pair<BoundingBox<3>, unsigned int>> hits;
       tree.query(boost::geometry::index::intersects(boxes[t].first),
                  std::back_inserter(hits));
@@ -131,13 +179,13 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
       n_near_pairs += near_trial_cells[k].size();
     }
 
-  // Sparsity of the near field, condensed like the operator. A continuous
-  // element writes into rows of other processes, and constraints into the
-  // rows of the masters.
+  // Sparsity of the near field, condensed like the operator. The test cells
+  // belong to any process, and constraints write into the rows of the
+  // masters.
   IndexSet                             writable_rows(dh.n_dofs());
   std::vector<types::global_dof_index> test_dofs(dpc), trial_dofs(dpc);
   writable_rows.add_indices(locally_owned_dofs);
-  for (const unsigned int t : own_cells)
+  for (const unsigned int t : near_test_cells)
     {
       cells[t]->get_dof_indices(test_dofs);
       for (const auto i : test_dofs)
@@ -153,18 +201,23 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
                                              locally_owned_dofs,
                                              writable_rows,
                                              mpi_communicator);
-  for (unsigned int k = 0; k < own_cells.size(); ++k)
+  for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
-      cells[own_cells[k]]->get_dof_indices(test_dofs);
+      cells[near_test_cells[k]]->get_dof_indices(test_dofs);
       for (const unsigned int r : near_trial_cells[k])
         {
           cells[r]->get_dof_indices(trial_dofs);
-          constraints.add_entries_local_to_global(test_dofs, trial_dofs, sparsity, true);
+          constraints.add_entries_local_to_global(test_dofs,
+                                                  trial_dofs,
+                                                  sparsity,
+                                                  true);
         }
     }
   sparsity.compress();
   near_exact.reinit(sparsity);
   near_correction.reinit(sparsity);
+  near_double_layer.reinit(rhs.dirichlet != nullptr ? dh.n_dofs() : 0);
+  near_manufactured.reinit(rhs.gradient != nullptr ? dh.n_dofs() : 0);
 
   // Shape values at the reference quadrature points, the same on every
   // cell for a Lagrange element.
@@ -173,33 +226,68 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
     for (unsigned int i = 0; i < dpc; ++i)
       shape(q, i) = fe.shape_value(i, quadrature.point(q));
 
-  const double       inverse_4pi = 1. / (4. * numbers::PI);
-  FullMatrix<double> exact, point_rule(dpc, dpc), kernel(n_q_points,
-                                                          n_q_points),
-    partial(dpc, n_q_points);
-  for (unsigned int k = 0; k < own_cells.size(); ++k)
+  FullMatrix<double> exact(dpc, dpc), correction(dpc, dpc),
+    kernel(n_q_points, n_q_points), partial(dpc, n_q_points);
+  Vector<double>      exact_rhs(dpc), local(dpc);
+  std::vector<double> weighted(n_q_points);
+  for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
-      const unsigned int t = own_cells[k];
+      const unsigned int t = near_test_cells[k];
       cells[t]->get_dof_indices(test_dofs);
       for (const unsigned int r : near_trial_cells[k])
         {
           cells[r]->get_dof_indices(trial_dofs);
-          exact = integrator.integrate_single_layer(cells[t],
-                                                    cells[r],
-                                                    data.quadrature_order);
 
-          // The block that the point sum contains, without the coincident
-          // points of a cell with itself.
+          // Exact contributions: the single-layer block, and with it in one
+          // traversal the double-layer right-hand side.
+          if (rhs.dirichlet != nullptr)
+            {
+              const FullMatrix<double> both =
+                integrator.integrate_single_and_double_layer(
+                  cells[t],
+                  cells[r],
+                  data.quadrature_order,
+                  *rhs.dirichlet,
+                  rhs.regularize);
+              for (unsigned int i = 0; i < dpc; ++i)
+                {
+                  for (unsigned int j = 0; j < dpc; ++j)
+                    exact(i, j) = both(i, j);
+                  exact_rhs[i] = both(i, dpc);
+                }
+            }
+          else
+            exact = integrator.integrate_single_layer(cells[t],
+                                                      cells[r],
+                                                      data.quadrature_order);
+
+          // The contributions that the point sums contain, without the
+          // coincident points of a cell with itself.
           for (unsigned int q = 0; q < n_q_points; ++q)
-            for (unsigned int s = 0; s < n_q_points; ++s)
-              {
-                const unsigned int a = t * n_q_points + q;
-                const unsigned int b = r * n_q_points + s;
-                kernel(q, s) =
-                  a == b ? 0. :
-                           inverse_4pi * JxW[a] * JxW[b] /
-                             points[a].distance(points[b]);
-              }
+            {
+              const unsigned int a          = t * n_q_points + q;
+              double             dipole_sum = 0;
+              for (unsigned int s = 0; s < n_q_points; ++s)
+                {
+                  const unsigned int b = r * n_q_points + s;
+                  if (a == b)
+                    {
+                      kernel(q, s) = 0;
+                      continue;
+                    }
+                  const Tensor<1, 3> x_minus_y = points[a] - points[b];
+                  const double       distance  = x_minus_y.norm();
+                  const double       weight    = inverse_4pi * JxW[a] * JxW[b];
+                  kernel(q, s)                 = weight / distance;
+                  if (rhs.dirichlet != nullptr)
+                    dipole_sum +=
+                      weight * (x_minus_y * normals[b]) /
+                      (distance * distance * distance) *
+                      (dirichlet_values[b] -
+                       (rhs.regularize ? dirichlet_values[a] : 0.));
+                }
+              weighted[q] = dipole_sum;
+            }
           for (unsigned int i = 0; i < dpc; ++i)
             for (unsigned int s = 0; s < n_q_points; ++s)
               {
@@ -214,27 +302,92 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>               &dh,
                 double sum = 0;
                 for (unsigned int s = 0; s < n_q_points; ++s)
                   sum += partial(i, s) * shape(s, j);
-                point_rule(i, j) = sum;
+                correction(i, j) = exact(i, j) - sum;
               }
-
           constraints.distribute_local_to_global(exact,
-                                       test_dofs,
-                                       trial_dofs,
-                                       near_exact);
-          FullMatrix<double> correction(exact);
-          correction.add(-1., point_rule);
+                                                 test_dofs,
+                                                 trial_dofs,
+                                                 near_exact);
           constraints.distribute_local_to_global(correction,
-                                       test_dofs,
-                                       trial_dofs,
-                                       near_correction);
+                                                 test_dofs,
+                                                 trial_dofs,
+                                                 near_correction);
+
+          if (rhs.dirichlet != nullptr)
+            {
+              for (unsigned int i = 0; i < dpc; ++i)
+                {
+                  double sum = 0;
+                  for (unsigned int q = 0; q < n_q_points; ++q)
+                    sum += shape(q, i) * weighted[q];
+                  local[i] = exact_rhs[i] - sum;
+                }
+              constraints.distribute_local_to_global(local,
+                                                     test_dofs,
+                                                     near_double_layer);
+            }
+          if (rhs.gradient != nullptr)
+            {
+              local = integrator.integrate_single_layer_flux(
+                cells[t], cells[r], data.quadrature_order, *rhs.gradient);
+              for (unsigned int i = 0; i < dpc; ++i)
+                {
+                  double sum = 0;
+                  for (unsigned int s = 0; s < n_q_points; ++s)
+                    sum += partial(i, s) * flux_values[r * n_q_points + s];
+                  local[i] -= sum;
+                }
+              constraints.distribute_local_to_global(local,
+                                                     test_dofs,
+                                                     near_manufactured);
+            }
         }
     }
+  const double own_near_time = seconds_since(start);
   near_exact.compress(VectorOperation::add);
   near_correction.compress(VectorOperation::add);
+  if (near_double_layer.size() > 0)
+    sum_over_processes(near_double_layer, mpi_communicator);
+  if (near_manufactured.size() > 0)
+    sum_over_processes(near_manufactured, mpi_communicator);
   setup_near = seconds_since(start);
+  setup_near_imbalance =
+    Utilities::MPI::max(own_near_time, mpi_communicator) /
+    std::max(1e-300,
+             Utilities::MPI::sum(own_near_time, mpi_communicator) /
+               n_mpi_processes);
 
-  time_evaluate = time_fmm = time_test = time_near = 0;
-  n_vmult                                        = 0;
+  time_evaluate = time_fmm = time_test = time_near = time_rhs = 0;
+  n_vmult                                                     = 0;
+}
+
+
+
+void
+GalerkinFMMOperator::test_potentials(const std::vector<double> &values,
+                                     const Vector<double>      &near_field,
+                                     const double               sign,
+                                     TrilinosWrappers::MPI::Vector &dst) const
+{
+  const unsigned int dpc = dof_handler->get_fe().dofs_per_cell;
+  std::vector<types::global_dof_index> dofs(dpc);
+  std::vector<double>                  local(dpc);
+  Vector<double>                       y(dof_handler->n_dofs());
+  for (const unsigned int c : own_cells)
+    {
+      evaluator->reinit(c);
+      for (unsigned int q = 0; q < n_q_points; ++q)
+        evaluator->submit_value(values[c * n_q_points + q], q);
+      evaluator->test_and_sum(local, EvaluationFlags::values);
+      cells[c]->get_dof_indices(dofs);
+      constraints.distribute_local_to_global(local, dofs, y);
+    }
+  sum_over_processes(y, mpi_communicator);
+  if (near_field.size() > 0)
+    y += near_field;
+  for (const auto i : dst.locally_owned_elements())
+    dst[i] = sign * y[i];
+  dst.compress(VectorOperation::insert);
 }
 
 
@@ -243,8 +396,7 @@ void
 GalerkinFMMOperator::vmult(TrilinosWrappers::MPI::Vector       &dst,
                            const TrilinosWrappers::MPI::Vector &src) const
 {
-  const FiniteElement<2, 3> &fe  = dof_handler->get_fe();
-  const unsigned int         dpc = fe.dofs_per_cell;
+  const unsigned int dpc = dof_handler->get_fe().dofs_per_cell;
   std::vector<types::global_dof_index> dofs(dpc);
   std::vector<double>                  local(dpc);
 
@@ -253,7 +405,6 @@ GalerkinFMMOperator::vmult(TrilinosWrappers::MPI::Vector       &dst,
   Vector<double> x(src);
   if (constraints.n_constraints() > 0)
     constraints.distribute(x);
-  const double        inverse_4pi = 1. / (4. * numbers::PI);
   std::vector<double> charges(cells.size() * n_q_points);
   for (unsigned int c = 0; c < cells.size(); ++c)
     {
@@ -273,27 +424,10 @@ GalerkinFMMOperator::vmult(TrilinosWrappers::MPI::Vector       &dst,
   fmm.evaluate(charges, {}, potentials);
   time_fmm += seconds_since(start);
 
-  // Potential tested against the shape functions of the own cells,
-  // condensed onto the masters, then summed over the processes.
   start = std::chrono::steady_clock::now();
-  Vector<double> y(dof_handler->n_dofs());
-  for (const unsigned int c : own_cells)
-    {
-      evaluator->reinit(c);
-      for (unsigned int q = 0; q < n_q_points; ++q)
-        evaluator->submit_value(potentials[c * n_q_points + q] *
-                                  JxW[c * n_q_points + q],
-                                q);
-      evaluator->test_and_sum(local, EvaluationFlags::values);
-      cells[c]->get_dof_indices(dofs);
-      constraints.distribute_local_to_global(local, dofs, y);
-    }
-  Utilities::MPI::sum(ArrayView<const double>(y.begin(), y.size()),
-                      mpi_communicator,
-                      ArrayView<double>(y.begin(), y.size()));
-  for (const auto i : dst.locally_owned_elements())
-    dst[i] = y[i];
-  dst.compress(VectorOperation::insert);
+  for (unsigned int p = 0; p < potentials.size(); ++p)
+    potentials[p] *= JxW[p];
+  test_potentials(potentials, Vector<double>(), 1., dst);
   time_test += seconds_since(start);
 
   start = std::chrono::steady_clock::now();
@@ -307,27 +441,78 @@ GalerkinFMMOperator::vmult(TrilinosWrappers::MPI::Vector       &dst,
 
 
 void
+GalerkinFMMOperator::double_layer_rhs(TrilinosWrappers::MPI::Vector &rhs) const
+{
+  AssertThrow(!dirichlet_values.empty(),
+              ExcMessage("The Dirichlet datum was not given to reinit()."));
+  const auto                start = std::chrono::steady_clock::now();
+  const unsigned int        n     = JxW.size();
+  std::vector<Tensor<1, 3>> dipoles(n);
+  std::vector<double>       with_datum, without_datum;
+  for (unsigned int p = 0; p < n; ++p)
+    dipoles[p] = inverse_4pi * JxW[p] * dirichlet_values[p] * normals[p];
+  rhs_fmm.evaluate({}, dipoles, with_datum);
+  if (regularize)
+    {
+      for (unsigned int p = 0; p < n; ++p)
+        dipoles[p] = inverse_4pi * JxW[p] * normals[p];
+      rhs_fmm.evaluate({}, dipoles, without_datum);
+    }
+  for (unsigned int p = 0; p < n; ++p)
+    with_datum[p] =
+      JxW[p] * (with_datum[p] -
+                (regularize ? dirichlet_values[p] * without_datum[p] : 0.));
+  test_potentials(with_datum, near_double_layer, -1., rhs);
+  time_rhs += seconds_since(start);
+}
+
+
+
+void
+GalerkinFMMOperator::manufactured_rhs(TrilinosWrappers::MPI::Vector &rhs) const
+{
+  AssertThrow(!flux_values.empty(),
+              ExcMessage("The exact gradient was not given to reinit()."));
+  const auto          start = std::chrono::steady_clock::now();
+  const unsigned int  n     = JxW.size();
+  std::vector<double> charges(n), potentials;
+  for (unsigned int p = 0; p < n; ++p)
+    charges[p] = inverse_4pi * JxW[p] * flux_values[p];
+  fmm.evaluate(charges, {}, potentials);
+  for (unsigned int p = 0; p < n; ++p)
+    potentials[p] *= JxW[p];
+  test_potentials(potentials, near_manufactured, 1., rhs);
+  time_rhs += seconds_since(start);
+}
+
+
+
+void
 GalerkinFMMOperator::print_statistics(std::ostream &out) const
 {
   const unsigned long pairs =
     Utilities::MPI::sum(n_near_pairs, mpi_communicator);
-  const unsigned int  calls = std::max(1u, n_vmult);
-  const double        te =
+  const unsigned int calls = std::max(1u, n_vmult);
+  const double       te =
     Utilities::MPI::max(time_evaluate / calls, mpi_communicator);
   const double tf = Utilities::MPI::max(time_fmm / calls, mpi_communicator);
   const double tt = Utilities::MPI::max(time_test / calls, mpi_communicator);
   const double tn = Utilities::MPI::max(time_near / calls, mpi_communicator);
+  const double tr = Utilities::MPI::max(time_rhs, mpi_communicator);
   const double sg = Utilities::MPI::max(setup_geometry, mpi_communicator);
   const double st = Utilities::MPI::max(setup_tree, mpi_communicator);
   const double sn = Utilities::MPI::max(setup_near, mpi_communicator);
   fmm.print_statistics(out);
   const auto precision = out.precision();
   if (this_mpi_process == 0)
-    out << std::setprecision(3) << "Galerkin FMM: " << cells.size() << " cells, " << n_q_points
-        << " points each; " << pairs << " near pairs corrected, "
-        << near_exact.n_nonzero_elements() << " near-field entries\n"
-        << "  setup: geometry " << sg << " s, tree " << st
-        << " s, near field " << sn << " s\n"
+    out << std::setprecision(3) << "Galerkin FMM: " << cells.size()
+        << " cells, " << n_q_points << " points each; " << pairs
+        << " near pairs corrected, " << near_exact.n_nonzero_elements()
+        << " near-field entries\n"
+        << "  setup: geometry " << sg << " s, trees " << st
+        << " s, near field " << sn << " s (slowest process "
+        << setup_near_imbalance << " times the mean)\n"
+        << "  right-hand sides " << tr << " s\n"
         << "  seconds per product, slowest process (" << n_vmult
         << " products): density " << te << ", FMM " << tf << ", testing "
         << tt << ", near correction " << tn << '\n'

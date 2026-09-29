@@ -15,12 +15,14 @@
 #ifndef galerkin_fmm_operator_h
 #define galerkin_fmm_operator_h
 
+#include <deal.II/base/function.h>
 #include <deal.II/base/index_set.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/mapping.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/vector.h>
 #include <deal.II/matrix_free/fe_point_evaluation.h>
 #include <deal.II/non_matching/mapping_info.h>
 
@@ -32,10 +34,12 @@
 #include "laplace_fmm.h"
 
 /**
- * The Galerkin single-layer operator of the Laplace kernel, applied without
- * forming its matrix: the operator that the dense path assembles in
- * GalerkinPanelPairIntegrator::assemble_single_layer(), up to the truncation
- * of the fast multipole method.
+ * The Galerkin single-layer operator of the Laplace kernel and the
+ * right-hand sides of the Dirichlet problem, without forming a dense
+ * matrix: the quantities that the dense path assembles in
+ * GalerkinPanelPairIntegrator::assemble_single_layer_and_double_layer_rhs()
+ * and assemble_single_layer_flux_rhs(), up to the truncation of the fast
+ * multipole method.
  *
  * The dense assembly integrates a panel pair with the tensor Gauss rule of
  * the given order on both cells unless the integrator marks it as singular
@@ -46,12 +50,23 @@
  *     \frac{w_r\, \mu(x_r)}{4\pi |x_q - x_r|},
  * @f]
  * which LaplaceFMM evaluates with the charges $w_r \mu(x_r) / 4\pi$. The
- * pairs that the integrator treats specially enter through a sparse
- * correction: their exact block minus the block of the point rule, which is
- * what the multipole method has included for them. The coincident points
- * of a cell with itself are left out of both.
+ * regularised double-layer right-hand side is, in the same way,
+ * @f[
+ *   b_i = -\sum_q \psi_i(x_q) w_q \bigl(A(x_q) - \varphi(x_q) B(x_q)\bigr),
+ *   \quad A(x) = \sum_{r} \frac{w_r \varphi(x_r)\, n_r \cdot (x - x_r)}
+ *                              {4\pi |x - x_r|^3},
+ * @f]
+ * and $B$ the same with $\varphi = 1$: two evaluations with dipoles. The
+ * manufactured right-hand side $\langle V\lambda, \psi_i \rangle$ is one
+ * with the charges $w_r \lambda(x_r) / 4\pi$. The pairs that the
+ * integrator treats specially enter through sparse corrections: their
+ * exact contribution minus the one of the point rule, which is what the
+ * multipole method has included for them. The coincident points of a cell
+ * with itself are left out of both. The exact single-layer block and the
+ * double-layer contribution of a pair come from one traversal of the
+ * integrator, as in the fused dense assembly.
  *
- * The density is evaluated at the quadrature points, and the potential
+ * The density is evaluated at the quadrature points, and the potentials
  * tested against the shape functions, with FEPointEvaluation on the
  * geometry that NonMatching::MappingInfo computes once for all cells; the
  * matrix-free FEEvaluation of deal.II needs a DoFHandler whose dimension
@@ -65,7 +80,10 @@
  * take their entries.
  *
  * Every process evaluates the density on all cells, since the multipole
- * method needs all charges, and tests the potential on its own cells.
+ * method needs all charges, and tests the potentials on its own cells. The
+ * pairs of the near field, which cluster where the mesh is graded, are
+ * gathered from all processes and dealt out in turn, so that each process
+ * integrates the same number of them whatever its cells.
  */
 class GalerkinFMMOperator
 {
@@ -78,16 +96,33 @@ public:
     /// Near-singular distance ratio of the integrator: pairs closer than
     /// this ratio times the larger diameter may need the special rules.
     double near_distance_ratio = 0.0;
+    /// The expansions of the operator. The right-hand sides use the same
+    /// tree with an order higher by rhs_order_increase, because dipoles
+    /// converge one order more slowly than charges.
     LaplaceFMM::AdditionalData fmm;
+    unsigned int               rhs_order_increase = 4;
+  };
+
+  /// The data of the right-hand sides whose near field is integrated
+  /// together with that of the operator; either may be absent.
+  struct RightHandSideData
+  {
+    /// Dirichlet datum of the double-layer right-hand side, and whether it
+    /// is regularised by subtracting its value at the test point.
+    const Function<3> *dirichlet  = nullptr;
+    bool               regularize = true;
+    /// Exact gradient, whose normal component is the flux of the
+    /// manufactured right-hand side.
+    const Function<3> *gradient = nullptr;
   };
 
   explicit GalerkinFMMOperator(const MPI_Comm comm);
 
   /**
    * Compute the geometry of the quadrature points, build the multipole
-   * tree, find the pairs of cells that the integrator treats specially and
-   * integrate their corrections. The test cells of this process are those
-   * of its subdomain, as in the dense assembly.
+   * trees, find the pairs of cells that the integrator treats specially and
+   * integrate their corrections, for the operator and the requested
+   * right-hand sides.
    */
   void
   reinit(const DoFHandler<2, 3>               &dof_handler,
@@ -95,12 +130,21 @@ public:
          const AffineConstraints<double>      &constraints,
          const GalerkinPanelPairIntegrator<3> &integrator,
          const IndexSet                       &locally_owned_dofs,
-         const AdditionalData                 &data);
+         const AdditionalData                 &data,
+         const RightHandSideData              &rhs);
 
   /// dst = V src, with the constrained entries of src ignored.
   void
   vmult(TrilinosWrappers::MPI::Vector       &dst,
         const TrilinosWrappers::MPI::Vector &src) const;
+
+  /// The double-layer right-hand side, with the sign of the dense path.
+  void
+  double_layer_rhs(TrilinosWrappers::MPI::Vector &rhs) const;
+
+  /// The manufactured right-hand side <V lambda, psi_i>.
+  void
+  manufactured_rhs(TrilinosWrappers::MPI::Vector &rhs) const;
 
   /// The exact single-layer blocks of the pairs integrated specially,
   /// condensed like the operator, for preconditioners.
@@ -115,8 +159,17 @@ public:
   print_statistics(std::ostream &out) const;
 
 private:
+  /// Test the potentials at all points against the shape functions of the
+  /// own cells, condense, add the near-field vector and sum over the
+  /// processes into dst, multiplied by sign.
+  void
+  test_potentials(const std::vector<double>     &values_times_JxW,
+                  const Vector<double>          &near_field,
+                  const double                   sign,
+                  TrilinosWrappers::MPI::Vector &dst) const;
+
   MPI_Comm     mpi_communicator;
-  unsigned int this_mpi_process;
+  unsigned int n_mpi_processes, this_mpi_process;
 
   ObserverPointer<const DoFHandler<2, 3>> dof_handler;
   /// A copy of the hanging-node constraints of the caller.
@@ -127,19 +180,26 @@ private:
   /// Cells whose test integrals this process computes.
   std::vector<unsigned int> own_cells;
 
-  std::unique_ptr<NonMatching::MappingInfo<2, 3>>   mapping_info;
+  std::unique_ptr<NonMatching::MappingInfo<2, 3>>     mapping_info;
   mutable std::unique_ptr<FEPointEvaluation<1, 2, 3>> evaluator;
-  /// Quadrature weights times Jacobians, cell by cell.
-  std::vector<double> JxW;
+  /// Data at the quadrature points, cell by cell.
+  std::vector<double>       JxW;
+  std::vector<Tensor<1, 3>> normals;
+  std::vector<double>       dirichlet_values, flux_values;
+  bool                      regularize = true;
 
-  LaplaceFMM fmm;
+  LaplaceFMM fmm, rhs_fmm;
 
   TrilinosWrappers::SparseMatrix near_exact, near_correction;
+  /// Near-field corrections of the right-hand sides, without the sign of
+  /// the double layer, summed over the processes.
+  Vector<double> near_double_layer, near_manufactured;
 
-  unsigned long n_near_pairs = 0;
-  double        setup_geometry = 0, setup_tree = 0, setup_near = 0;
-  mutable double       time_evaluate = 0, time_fmm = 0, time_test = 0,
-                 time_near = 0;
+  unsigned long  n_near_pairs = 0;
+  double         setup_geometry = 0, setup_tree = 0, setup_near = 0,
+         setup_near_imbalance = 0;
+  mutable double time_evaluate = 0, time_fmm = 0, time_test = 0,
+                 time_near = 0, time_rhs = 0;
   mutable unsigned int n_vmult = 0;
 };
 

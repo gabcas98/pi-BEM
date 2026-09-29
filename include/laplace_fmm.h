@@ -132,17 +132,34 @@ private:
   void
   traverse(const unsigned int a, const unsigned int b);
 
+  /**
+   * Deal the subtrees of the targets out to the processes. The cost of a
+   * subtree is modelled as a M2L time per translation, a P2P time per
+   * interaction and a time per point for its multipoles and local
+   * evaluations, and each process receives work in proportion to its
+   * speed. Before the first evaluation the model uses rough constants and
+   * equal speeds; after it, both come from the measured times, which also
+   * captures processors of different speed, such as the performance and
+   * efficiency cores of a hybrid chip.
+   */
   void
-  distribute_work();
+  distribute_work() const;
+
+  /// Calibrate the cost model and the speeds on the last evaluation, and
+  /// deal the work out again; collective.
+  void
+  rebalance(const std::array<double, 6> &times) const;
 
   /// Direct interaction of the points of the source leaf b with those of
-  /// the target leaf a, in sorted numbering.
+  /// the target leaf a, in sorted numbering; q holds the charges and d the
+  /// three components of the dipoles, each of the used kinds.
+  template <bool with_charges, bool with_dipoles>
   void
-  particle_to_particle(const unsigned int         a,
-                       const unsigned int         b,
-                       const double              *q,
-                       const dealii::Tensor<1, 3> *d,
-                       double                    *u) const;
+  particle_to_particle(const unsigned int a,
+                       const unsigned int b,
+                       const double      *q,
+                       const double      *d,
+                       double            *u) const;
 
   MPI_Comm     mpi_communicator;
   unsigned int n_mpi_processes, this_mpi_process;
@@ -153,6 +170,9 @@ private:
   std::vector<dealii::Point<3>> points, sorted_points;
   /// sorted_points[i] = points[permutation[i]]
   std::vector<unsigned int> permutation;
+  /// The sorted coordinates, one array per component, for the direct
+  /// interactions, which run over them in vectorized loops.
+  std::array<std::vector<double>, 3> sorted_coordinates;
 
   /// Boxes in breadth-first order: parents precede their children, which
   /// are consecutive.
@@ -162,17 +182,46 @@ private:
   std::vector<std::pair<unsigned int, unsigned int>> m2l_pairs, p2p_pairs;
 
   /// Process that computes the targets of each box, or invalid for the
-  /// boxes above the subtrees, which every process handles.
-  std::vector<unsigned int> owner;
+  /// boxes above the subtrees, which every process handles. The split
+  /// adapts to the measured speeds, hence mutable.
+  mutable std::vector<unsigned int> owner;
   /// Work of this process: leaves whose multipoles and potentials it forms,
   /// M2L and P2P pairs whose target it owns (or shares), boxes whose
   /// expansions it translates.
-  std::vector<unsigned int>                          my_leaves, my_boxes;
-  std::vector<std::pair<unsigned int, unsigned int>> my_m2l_pairs,
+  mutable std::vector<unsigned int>                          my_leaves, my_boxes;
+  mutable std::vector<std::pair<unsigned int, unsigned int>> my_m2l_pairs,
     my_p2p_pairs;
+
+  /**
+   * The M2L pairs of this process grouped by their offset: in units u of
+   * half the side of the smaller box, the offset of the centres is an
+   * integer vector tau, and the pairs with the same tau share one
+   * translation operator (see
+   * LaplaceExpansions::multipole_to_local_operator()), which is built once
+   * per group and applied to the pairs in batches.
+   */
+  struct M2LGroup
+  {
+    dealii::Tensor<1, 3> tau;
+    unsigned int         begin, end; // range in m2l_order
+  };
+  mutable std::vector<M2LGroup>     m2l_groups;
+  mutable std::vector<unsigned int> m2l_order;
+  /// The unit u of every pair of my_m2l_pairs.
+  mutable std::vector<double> m2l_unit;
 
   /// Expansions of all boxes, n_coefficients(order) each.
   mutable std::vector<LaplaceExpansions::complex> multipoles, locals;
+
+  /// Cost model: seconds per M2L, per P2P interaction and per point, and
+  /// the relative speed of every process.
+  mutable double              cost_m2l = 1., cost_p2p = 1. / 1500.,
+                 cost_point = 0.05;
+  mutable std::vector<double> speed;
+  /// Counts per box, for the cost model: M2L translations and P2P
+  /// interactions for which the box is the target.
+  std::vector<unsigned int>  m2l_count;
+  std::vector<unsigned long> p2p_count;
 
   /// Wall-clock time of the phases, summed over the calls of evaluate().
   mutable std::array<double, 6> phase_time = {{0, 0, 0, 0, 0, 0}};

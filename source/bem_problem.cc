@@ -2389,7 +2389,8 @@ BEMProblem<dim>::assemble_galerkin_system()
 
 template <int dim>
 void
-BEMProblem<dim>::setup_galerkin_fmm()
+BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
+                                    const Function<dim> *exact_gradient)
 {
   Teuchos::TimeMonitor LocalTimer(*AssembleTime);
   if constexpr (dim == 3)
@@ -2427,9 +2428,23 @@ BEMProblem<dim>::setup_galerkin_fmm()
       data.fmm.order                = fma.truncation_order();
       data.fmm.theta                = fma.opening_criterion();
       data.fmm.max_points_per_leaf  = fma.points_per_leaf();
+      // The near field of the right-hand sides is integrated together with
+      // that of the operator: the double layer of the Dirichlet datum, and
+      // the manufactured single layer when it is used or compared.
+      GalerkinFMMOperator::RightHandSideData rhs;
+      rhs.dirichlet  = dirichlet_function;
+      rhs.regularize = dirichlet_rhs_treatment != "nodal";
+      if (dirichlet_rhs_treatment == "manufactured_flux" ||
+          std::getenv("PIBEM_COMPARE_RHS") != nullptr)
+        rhs.gradient = exact_gradient;
       galerkin_fmm = std::make_unique<GalerkinFMMOperator>(mpi_communicator);
-      galerkin_fmm->reinit(
-        dh, *mapping, hanging_node_constraints, integrator, this_cpu_set, data);
+      galerkin_fmm->reinit(dh,
+                           *mapping,
+                           hanging_node_constraints,
+                           integrator,
+                           this_cpu_set,
+                           data,
+                           rhs);
       galerkin_fmm->print_statistics(pcout.get_stream());
     }
   else
@@ -2479,7 +2494,9 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
                                  mass_quadrature,
                                  update_values | update_quadrature_points |
                                    update_JxW_values);
-      if (!from_fused)
+      if (galerkin_fmm)
+        galerkin_fmm->double_layer_rhs(exact_regularized_dirichlet_rhs);
+      else if (!from_fused)
       {
       integrator.assemble_double_layer_rhs(dh,
                                            hanging_node_constraints,
@@ -2571,12 +2588,16 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
           TrilinosWrappers::MPI::Vector manufactured_rhs(this_cpu_set,
                                                          mpi_communicator);
           manufactured_rhs = 0.0;
-          integrator.assemble_single_layer_flux_rhs(dh,
-                                                    hanging_node_constraints,
-                                                    manufactured_rhs,
-                                                    galerkin_quadrature_order,
-                                                    *exact_gradient,
-                                                    this_mpi_process);
+          if (galerkin_fmm)
+            galerkin_fmm->manufactured_rhs(manufactured_rhs);
+          else
+            integrator.assemble_single_layer_flux_rhs(
+              dh,
+              hanging_node_constraints,
+              manufactured_rhs,
+              galerkin_quadrature_order,
+              *exact_gradient,
+              this_mpi_process);
           manufactured_rhs.compress(VectorOperation::add);
           // The regularized assembly carries an overall sign, so compare the
           // two on the same footing before reporting their distance.
@@ -7238,7 +7259,7 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
     {
       // The single layer through the FMM; the right-hand side is assembled
       // as in the dense path when it is not fused with the matrix.
-      setup_galerkin_fmm();
+      setup_galerkin_fmm(dirichlet_function, dirichlet_gradient);
       assemble_exact_galerkin_dirichlet_rhs(*dirichlet_function,
                                             dirichlet_gradient);
     }

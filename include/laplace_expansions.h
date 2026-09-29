@@ -153,25 +153,47 @@ namespace LaplaceExpansions
     explicit Workspace(const unsigned int p)
       : p(p)
       , harmonics(n_coefficients(2 * p))
-      , full_harmonics((2 * p + 1) * (2 * p + 1))
-      , full_expansion((p + 1) * (p + 1))
+      , harmonics_re((2 * p + 1) * (2 * p + 1))
+      , harmonics_im((2 * p + 1) * (2 * p + 1))
+      , expansion_re((p + 1) * (p + 1))
+      , expansion_im((p + 1) * (p + 1))
     {}
 
     const unsigned int   p;
     std::vector<complex> harmonics;
-    /// Harmonics for all -n <= m <= n, at n * n + n + m.
-    std::vector<complex> full_harmonics;
-    /// Expansion coefficients for all -n <= m <= n, at n * n + n + m.
-    std::vector<complex> full_expansion;
+    /// Real and imaginary parts of harmonics and expansion coefficients for
+    /// all -n <= m <= n, at n * n + n + m: the translations run over them
+    /// in real arithmetic, which vectorizes, where std::complex does not.
+    std::vector<double> harmonics_re, harmonics_im;
+    std::vector<double> expansion_re, expansion_im;
   };
 
-  /// Unfold the stored coefficients of order p to all -n <= m <= n.
+  /// Unfold the stored coefficients of order p to all -n <= m <= n, split
+  /// into real and imaginary parts, conjugated if asked.
   inline void
-  unfold(const unsigned int p, const complex *c, complex *full)
+  unfold(const unsigned int p,
+         const complex     *c,
+         double            *re,
+         double            *im,
+         const bool         conjugate = false)
   {
+    const double s = conjugate ? -1. : 1.;
     for (unsigned int n = 0; n <= p; ++n)
-      for (int m = -int(n); m <= int(n); ++m)
-        full[n * n + n + m] = get(c, n, m);
+      {
+        double *r = re + n * n + n, *i = im + n * n + n;
+        for (unsigned int m = 0; m <= n; ++m)
+          {
+            const complex v = c[index(n, m)];
+            r[m]            = v.real();
+            i[m]            = s * v.imag();
+            if (m == 0)
+              continue;
+            // c_n^{-m} = (-1)^m conj(c_n^m)
+            const double sign = (m & 1) ? -1. : 1.;
+            r[-int(m)]        = sign * v.real();
+            i[-int(m)]        = -sign * s * v.imag();
+          }
+      }
   }
 
   /// P2M: add a charge q at the offset y - z to the multipole M.
@@ -263,24 +285,37 @@ namespace LaplaceExpansions
   {
     const unsigned int p = w.p;
     regular_harmonics(p, z_minus_z_new, w.harmonics.data());
-    unfold(p, w.harmonics.data(), w.full_harmonics.data());
-    unfold(p, M, w.full_expansion.data());
-    const complex *R  = w.full_harmonics.data();
-    const complex *Mf = w.full_expansion.data();
+    // conj(R)
+    unfold(p,
+           w.harmonics.data(),
+           w.harmonics_re.data(),
+           w.harmonics_im.data(),
+           true);
+    unfold(p, M, w.expansion_re.data(), w.expansion_im.data());
+    const double *Rr = w.harmonics_re.data(), *Ri = w.harmonics_im.data();
+    const double *Mr = w.expansion_re.data(), *Mi = w.expansion_im.data();
     for (unsigned int n = 0; n <= p; ++n)
       for (int m = 0; m <= int(n); ++m)
         {
-          complex sum = 0.;
+          double sr = 0, si = 0;
           for (unsigned int k = 0; k <= n; ++k)
             {
               const int nk = n - k;
               // |l| <= k and |m - l| <= n - k
-              const int l_min = std::max(-int(k), m - nk);
-              const int l_max = std::min(int(k), m + nk);
+              const int     l_min = std::max(-int(k), m - nk);
+              const int     l_max = std::min(int(k), m + nk);
+              const double *ar    = Rr + k * k + k;
+              const double *ai    = Ri + k * k + k;
+              const double *br    = Mr + nk * nk + nk + m;
+              const double *bi    = Mi + nk * nk + nk + m;
+#pragma omp simd reduction(+ : sr, si)
               for (int l = l_min; l <= l_max; ++l)
-                sum += std::conj(R[k * k + k + l]) * Mf[nk * nk + nk + m - l];
+                {
+                  sr += ar[l] * br[-l] - ai[l] * bi[-l];
+                  si += ar[l] * bi[-l] + ai[l] * br[-l];
+                }
             }
-          M_out[index(n, m)] += sum;
+          M_out[index(n, m)] += complex(sr, si);
         }
   }
 
@@ -296,23 +331,33 @@ namespace LaplaceExpansions
   {
     const unsigned int p = w.p;
     irregular_harmonics(2 * p, zL_minus_zM, w.harmonics.data());
-    unfold(2 * p, w.harmonics.data(), w.full_harmonics.data());
-    unfold(p, M, w.full_expansion.data());
-    const complex *I  = w.full_harmonics.data();
-    const complex *Mf = w.full_expansion.data();
+    unfold(2 * p,
+           w.harmonics.data(),
+           w.harmonics_re.data(),
+           w.harmonics_im.data());
+    unfold(p, M, w.expansion_re.data(), w.expansion_im.data());
+    const double *Ir = w.harmonics_re.data(), *Ii = w.harmonics_im.data();
+    const double *Mr = w.expansion_re.data(), *Mi = w.expansion_im.data();
     for (unsigned int k = 0; k <= p; ++k)
       for (int l = 0; l <= int(k); ++l)
         {
-          complex sum = 0.;
+          double sr = 0, si = 0;
           for (unsigned int n = 0; n <= p; ++n)
             {
-              const unsigned int nk  = n + k;
-              const complex     *Ink = I + nk * nk + nk + l;
-              const complex     *Mn  = Mf + n * n + n;
+              const unsigned int nk = n + k;
+              const double      *ar = Mr + n * n + n;
+              const double      *ai = Mi + n * n + n;
+              const double      *br = Ir + nk * nk + nk + l;
+              const double      *bi = Ii + nk * nk + nk + l;
+#pragma omp simd reduction(+ : sr, si)
               for (int m = -int(n); m <= int(n); ++m)
-                sum += Mn[m] * Ink[m];
+                {
+                  sr += ar[m] * br[m] - ai[m] * bi[m];
+                  si += ar[m] * bi[m] + ai[m] * br[m];
+                }
             }
-          L[index(k, l)] += (k & 1) ? -sum : sum;
+          const double sign = (k & 1) ? -1. : 1.;
+          L[index(k, l)] += complex(sign * sr, sign * si);
         }
   }
 
@@ -328,26 +373,123 @@ namespace LaplaceExpansions
   {
     const unsigned int p = w.p;
     regular_harmonics(p, z_new_minus_z, w.harmonics.data());
-    unfold(p, w.harmonics.data(), w.full_harmonics.data());
-    unfold(p, L, w.full_expansion.data());
-    const complex *R  = w.full_harmonics.data();
-    const complex *Lf = w.full_expansion.data();
+    // conj(R)
+    unfold(p,
+           w.harmonics.data(),
+           w.harmonics_re.data(),
+           w.harmonics_im.data(),
+           true);
+    unfold(p, L, w.expansion_re.data(), w.expansion_im.data());
+    const double *Rr = w.harmonics_re.data(), *Ri = w.harmonics_im.data();
+    const double *Lr = w.expansion_re.data(), *Li = w.expansion_im.data();
     for (unsigned int j = 0; j <= p; ++j)
       for (int i = 0; i <= int(j); ++i)
         {
-          complex sum = 0.;
+          double sr = 0, si = 0;
           for (unsigned int k = j; k <= p; ++k)
             {
               const int kj = k - j;
               // |l| <= k and |l - i| <= k - j
-              const int l_min = std::max(-int(k), i - kj);
-              const int l_max = std::min(int(k), i + kj);
+              const int     l_min = std::max(-int(k), i - kj);
+              const int     l_max = std::min(int(k), i + kj);
+              const double *ar    = Lr + k * k + k;
+              const double *ai    = Li + k * k + k;
+              const double *br    = Rr + kj * kj + kj - i;
+              const double *bi    = Ri + kj * kj + kj - i;
+#pragma omp simd reduction(+ : sr, si)
               for (int l = l_min; l <= l_max; ++l)
-                sum +=
-                  Lf[k * k + k + l] * std::conj(R[kj * kj + kj + l - i]);
+                {
+                  sr += ar[l] * br[l] - ai[l] * bi[l];
+                  si += ar[l] * bi[l] + ai[l] * br[l];
+                }
             }
-          L_out[index(j, i)] += sum;
+          L_out[index(j, i)] += complex(sr, si);
         }
+  }
+  /**
+   * The M2L operator of the offset tau in the scaled form used for batches:
+   * for boxes at distance u tau, with u a length, the local expansion is
+   * L_k^l = u^{-(k+1)} sum_{n,m} T_{(k,l),(n,m)} u^{-n} M_n^m with
+   * T_{(k,l),(n,m)} = (-1)^k I_{n+k}^{m+l}(tau), by the homogeneity
+   * I_j(u tau) = u^{-(j+1)} I_j(tau). T depends on tau only, so all pairs
+   * of boxes with the same tau, whatever their size, share it. Rows are
+   * index(k, l), columns n * n + n + m, real and imaginary parts apart.
+   */
+  inline void
+  multipole_to_local_operator(Workspace                  &w,
+                              const dealii::Tensor<1, 3> &tau,
+                              double                     *T_re,
+                              double                     *T_im)
+  {
+    const unsigned int p       = w.p;
+    const unsigned int columns = (p + 1) * (p + 1);
+    irregular_harmonics(2 * p, tau, w.harmonics.data());
+    unfold(2 * p,
+           w.harmonics.data(),
+           w.harmonics_re.data(),
+           w.harmonics_im.data());
+    for (unsigned int k = 0; k <= p; ++k)
+      for (unsigned int l = 0; l <= k; ++l)
+        {
+          const double sign = (k & 1) ? -1. : 1.;
+          double      *tr   = T_re + index(k, l) * columns;
+          double      *ti   = T_im + index(k, l) * columns;
+          for (unsigned int n = 0; n <= p; ++n)
+            {
+              const unsigned int nk = n + k;
+              const double *hr = w.harmonics_re.data() + nk * nk + nk + l;
+              const double *hi = w.harmonics_im.data() + nk * nk + nk + l;
+              for (int m = -int(n); m <= int(n); ++m)
+                {
+                  tr[n * n + n + m] = sign * hr[m];
+                  ti[n * n + n + m] = sign * hi[m];
+                }
+            }
+        }
+  }
+
+  /**
+   * Y = T X for a batch of B expansions: X holds the (p + 1)^2 unfolded
+   * coefficients of each of them, coefficient by coefficient (X[c * B + j]
+   * for the expansion j), and Y the n_coefficients(p) results the same
+   * way. The loop over the batch runs innermost, where it vectorizes, and
+   * the B partial sums of a row stay in registers.
+   */
+  template <unsigned int B>
+  inline void
+  multipole_to_local_batch(const unsigned int p,
+                           const double      *T_re,
+                           const double      *T_im,
+                           const double      *X_re,
+                           const double      *X_im,
+                           double            *Y_re,
+                           double            *Y_im)
+  {
+    const unsigned int rows    = n_coefficients(p);
+    const unsigned int columns = (p + 1) * (p + 1);
+    for (unsigned int r = 0; r < rows; ++r)
+      {
+        double        yr[B] = {}, yi[B] = {};
+        const double *tr    = T_re + r * columns;
+        const double *ti    = T_im + r * columns;
+        for (unsigned int c = 0; c < columns; ++c)
+          {
+            const double  a  = tr[c], b = ti[c];
+            const double *xr = X_re + c * B;
+            const double *xi = X_im + c * B;
+#pragma omp simd
+            for (unsigned int j = 0; j < B; ++j)
+              {
+                yr[j] += a * xr[j] - b * xi[j];
+                yi[j] += a * xi[j] + b * xr[j];
+              }
+          }
+        for (unsigned int j = 0; j < B; ++j)
+          {
+            Y_re[r * B + j] = yr[j];
+            Y_im[r * B + j] = yi[j];
+          }
+      }
   }
 } // namespace LaplaceExpansions
 

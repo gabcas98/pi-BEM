@@ -215,9 +215,11 @@ public:
 
   /// With Solution method = FMA, the Galerkin single-layer operator is
   /// applied by GalerkinFMMOperator instead of the dense matrix, which is
-  /// then never allocated. This sets it up: geometry, octree, near field.
+  /// then never allocated. This sets it up: geometry, octree, near field of
+  /// the operator and of the right-hand sides that the solve will need.
   void
-  setup_galerkin_fmm();
+  setup_galerkin_fmm(const Function<dim> *dirichlet_function,
+                     const Function<dim> *exact_gradient);
 
   void
   initialize_calderon_dual_space();

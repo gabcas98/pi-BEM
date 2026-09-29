@@ -63,6 +63,26 @@ endif()
 OPTION(BEM_ENABLE_TESTING 
 "Enable deal.II style tests in this application." ON)
 
+# The kernels of the fast multipole method are loops over arrays of doubles
+# that vectorize; deal.II is often compiled for the oldest instruction set
+# of its architecture. These files exchange no vectorized types with
+# deal.II, so they can target the processor of the build machine.
+OPTION(BEM_NATIVE_FMM
+"Compile the FMM kernels for the processor of the build machine." ON)
+SET(_fmm_kernel_files
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/laplace_fmm.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_expansions.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_points.cc)
+# At -O2 GCC vectorizes only loops it deems very cheap, which the kernels
+# are not; the dynamic cost model vectorizes them without raising the
+# optimization level. Without errno, sqrt vectorizes too.
+SET(_fmm_kernel_options "-fno-math-errno;-fvect-cost-model=dynamic")
+IF(BEM_NATIVE_FMM)
+  LIST(APPEND _fmm_kernel_options "-march=native")
+ENDIF()
+SET_SOURCE_FILES_PROPERTIES(${_fmm_kernel_files} PROPERTIES
+  COMPILE_OPTIONS "${_fmm_kernel_options}")
+
 
 # We one library and one target for each type of deal.II library
 # we found. If you compiled deal.II with both Release and Debug
