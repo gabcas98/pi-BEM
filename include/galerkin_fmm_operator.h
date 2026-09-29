@@ -154,6 +154,26 @@ public:
     return near_exact;
   }
 
+  /**
+   * Set up the additive Schwarz preconditioner on overlapping patches: the
+   * patch of a cell is the cell with the cells that share a vertex with
+   * it, and its block is the principal submatrix of the condensed operator
+   * on the free unknowns of the patch, exact for the pairs of the near
+   * field and from the point rule, which is the rule of the dense path for
+   * them, for the others. Principal submatrices of a positive definite
+   * matrix are positive definite, so the preconditioner is, whatever the
+   * truncation of the near field. Each process sets up the patches of its
+   * own cells; collective.
+   */
+  void
+  setup_patch_preconditioner();
+
+  /// dst = sum over the patches of R^T B^{-1} R src, with the constrained
+  /// entries of dst set to those of src; collective.
+  void
+  apply_patch_preconditioner(TrilinosWrappers::MPI::Vector       &dst,
+                             const TrilinosWrappers::MPI::Vector &src) const;
+
   /// Sizes, times of the setup and mean times of vmult(); collective.
   void
   print_statistics(std::ostream &out) const;
@@ -183,6 +203,7 @@ private:
   std::unique_ptr<NonMatching::MappingInfo<2, 3>>     mapping_info;
   mutable std::unique_ptr<FEPointEvaluation<1, 2, 3>> evaluator;
   /// Data at the quadrature points, cell by cell.
+  std::vector<Point<3>>     quadrature_points;
   std::vector<double>       JxW;
   std::vector<Tensor<1, 3>> normals;
   std::vector<double>       dirichlet_values, flux_values;
@@ -194,6 +215,20 @@ private:
   /// Near-field corrections of the right-hand sides, without the sign of
   /// the double layer, summed over the processes.
   Vector<double> near_double_layer, near_manufactured;
+
+  /// Shape values at the reference quadrature points, shape(q, i).
+  FullMatrix<double> reference_shapes;
+
+  /// The exact single-layer blocks integrated by this process, pair (t, r)
+  /// with t <= r, row by row, kept until the patches are set up.
+  std::vector<std::pair<unsigned int, unsigned int>> computed_pairs;
+  std::vector<double>                                computed_blocks;
+
+  /// The patches of the own cells: free unknowns, and the inverse of the
+  /// block.
+  std::vector<std::vector<types::global_dof_index>> patch_dofs;
+  std::vector<FullMatrix<double>>                   patch_inverses;
+  double                                            setup_patches = 0;
 
   unsigned long  n_near_pairs = 0;
   double         setup_geometry = 0, setup_tree = 0, setup_near = 0,

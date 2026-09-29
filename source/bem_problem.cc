@@ -1326,8 +1326,8 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
   prm.declare_entry("Preconditioner",
                     "ILU",
                     Patterns::Selection(
-                      "None|ILU|AMG|Jacobi|BlockJacobi|Calderon|"
-                      "CalderonDual"));
+                      "None|ILU|AMG|Jacobi|BlockJacobi|PatchSchwarz|"
+                      "Calderon|CalderonDual"));
 
   prm.declare_entry("Calderon stabilization",
                     "1.0",
@@ -1778,11 +1778,18 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
                      linear_solver == "CG" &&
                      (preconditioner_type == "None" ||
                       preconditioner_type == "Jacobi" ||
-                      preconditioner_type == "BlockJacobi")),
+                      preconditioner_type == "BlockJacobi" ||
+                      preconditioner_type == "PatchSchwarz")),
                   ExcMessage("The Galerkin FMM (Solution method = FMA) "
                              "supports the Laplace kernel, the single-layer "
                              "formulation, Linear solver = CG and "
-                             "Preconditioner = None, Jacobi or BlockJacobi."));
+                             "Preconditioner = None, Jacobi, BlockJacobi or "
+                             "PatchSchwarz."));
+      AssertThrow(preconditioner_type != "PatchSchwarz" ||
+                    solution_method == "FMA",
+                  ExcMessage("Preconditioner = PatchSchwarz builds its blocks "
+                             "from the near field of the Galerkin FMM "
+                             "(Solution method = FMA)."));
       // The screened kernel exp(-kappa r)/(4 pi r) enters the single-layer
       // formulation, its right-hand sides, the energy functional and the
       // gradient recovery. The second-kind and Calderon paths use the weak
@@ -6983,13 +6990,38 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
                        negated_rhs,
                        block_preconditioner);
         }
+      else if (preconditioner_type == "PatchSchwarz")
+        {
+          // Additive Schwarz on overlapping patches of cells, from the near
+          // field of the FMM.
+          AssertThrow(galerkin_fmm != nullptr, ExcInternalError());
+          pcout << "Iterative solver: CG with additive Schwarz on "
+                   "overlapping patches (a cell and its vertex neighbours)"
+                << std::endl;
+          galerkin_fmm->setup_patch_preconditioner();
+          struct PatchPreconditioner
+          {
+            const GalerkinFMMOperator &fmm_operator;
+            void
+            vmult(TrilinosWrappers::MPI::Vector       &dst,
+                  const TrilinosWrappers::MPI::Vector &src) const
+            {
+              fmm_operator.apply_patch_preconditioner(dst, src);
+            }
+          };
+          const PatchPreconditioner patch_preconditioner{*galerkin_fmm};
+          solver.solve(negated_operator,
+                       sol,
+                       negated_rhs,
+                       patch_preconditioner);
+        }
       else
         {
           AssertThrow(preconditioner_type == "None",
                       ExcMessage("The conjugate gradient path supports "
-                                 "Preconditioner = None, Jacobi or "
-                                 "BlockJacobi; the other preconditioners are "
-                                 "not symmetric."));
+                                 "Preconditioner = None, Jacobi, BlockJacobi "
+                                 "or PatchSchwarz; the other preconditioners "
+                                 "are not symmetric."));
           pcout << "Iterative solver: CG without preconditioning"
                 << std::endl;
           PreconditionIdentity identity_preconditioner;

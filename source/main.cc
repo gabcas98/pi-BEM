@@ -2,11 +2,26 @@
 
 #include "driver.h"
 
+#include <dlfcn.h>
+
 #include <iostream>
 #include <streambuf>
 
 namespace
 {
+  /// Limit the threads of the BLAS that is loaded, whichever it is, found at
+  /// run time. A threaded BLAS in every MPI process oversubscribes the
+  /// cores: on eight processes a LAPACK inverse of an 81 x 81 block took
+  /// 20 ms instead of 0.1.
+  void
+  limit_blas_threads(const int n_threads)
+  {
+    using Setter = void (*)(int);
+    for (const char *name : {"openblas_set_num_threads", "MKL_Set_Num_Threads"})
+      if (const auto set = reinterpret_cast<Setter>(dlsym(RTLD_DEFAULT, name)))
+        set(n_threads);
+  }
+
   /// Swallows everything written to it.
   class NullBuffer : public std::streambuf
   {
@@ -30,6 +45,12 @@ main(int argc, char *argv[])
       else
         threads = atoi(argv[1]);
       Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, threads);
+      // The threads of the BLAS as those of the program: the given number,
+      // or one per process when there are several.
+      if (threads != numbers::invalid_unsigned_int)
+        limit_blas_threads(threads);
+      else if (Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD) > 1)
+        limit_blas_threads(1);
 
       // Libraries we call write progress to std::cout from every rank, so
       // the same line appeared once per process. The application's own

@@ -17,12 +17,14 @@
 #include <deal.II/base/bounding_box.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/grid/grid_tools.h>
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
 #include <deal.II/numerics/rtree.h>
 
 #include <map>
 #include <array>
 #include <algorithm>
+#include <set>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -114,6 +116,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
           normals[c * n_q_points + q] = evaluator->normal_vector(q);
         }
     }
+  quadrature_points = points;
   dirichlet_values.clear();
   if (rhs.dirichlet != nullptr)
     {
@@ -282,10 +285,15 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
 
   // Shape values at the reference quadrature points, the same on every
   // cell for a Lagrange element.
-  FullMatrix<double> shape(n_q_points, dpc);
+  reference_shapes.reinit(n_q_points, dpc);
   for (unsigned int q = 0; q < n_q_points; ++q)
     for (unsigned int i = 0; i < dpc; ++i)
-      shape(q, i) = fe.shape_value(i, quadrature.point(q));
+      reference_shapes(q, i) = fe.shape_value(i, quadrature.point(q));
+  const FullMatrix<double> &shape = reference_shapes;
+  computed_pairs.clear();
+  computed_blocks.clear();
+  patch_dofs.clear();
+  patch_inverses.clear();
 
   FullMatrix<double> exact(dpc, dpc), correction(dpc, dpc),
     transposed(dpc, dpc), kernel(n_q_points, n_q_points),
@@ -332,6 +340,10 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
             exact = integrator.integrate_single_layer(cells[t],
                                                       cells[r],
                                                       data.quadrature_order);
+          computed_pairs.emplace_back(t, r);
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              computed_blocks.push_back(exact(i, j));
 
           // The contributions that the point sums contain, without the
           // coincident points of a cell with itself: the kernel block, and
@@ -489,6 +501,252 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
 
 
 void
+GalerkinFMMOperator::setup_patch_preconditioner()
+{
+  const auto         start = std::chrono::steady_clock::now();
+  const unsigned int dpc   = dof_handler->get_fe().dofs_per_cell;
+
+  // The exact blocks of all near pairs, from all processes, gathered as
+  // plain arrays (a serializing gather of these megabytes takes seconds).
+  std::vector<unsigned int> my_pairs;
+  for (const auto &[t, r] : computed_pairs)
+    {
+      my_pairs.push_back(t);
+      my_pairs.push_back(r);
+    }
+  auto gather = [&](const auto &mine, const MPI_Datatype type) {
+    using T         = typename std::decay_t<decltype(mine)>::value_type;
+    const int count = mine.size();
+    std::vector<int> counts(n_mpi_processes), offsets(n_mpi_processes, 0);
+    int ierr = MPI_Allgather(
+      &count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi_communicator);
+    AssertThrowMPI(ierr);
+    for (unsigned int p = 1; p < n_mpi_processes; ++p)
+      offsets[p] = offsets[p - 1] + counts[p - 1];
+    std::vector<T> all(offsets.back() + counts.back());
+    ierr = MPI_Allgatherv(mine.data(),
+                          count,
+                          type,
+                          all.data(),
+                          counts.data(),
+                          offsets.data(),
+                          type,
+                          mpi_communicator);
+    AssertThrowMPI(ierr);
+    return all;
+  };
+  const std::vector<unsigned int> all_pairs = gather(my_pairs, MPI_UNSIGNED);
+  const std::vector<double>       all_blocks =
+    gather(computed_blocks, MPI_DOUBLE);
+  std::map<std::pair<unsigned int, unsigned int>, const double *> exact;
+  for (unsigned int k = 0; 2 * k < all_pairs.size(); ++k)
+    exact[{all_pairs[2 * k], all_pairs[2 * k + 1]}] =
+      &all_blocks[k * dpc * dpc];
+
+  // The single-layer block of a pair of cells: exact from the near field,
+  // or from the point rule, the rule of the dense path for a far pair.
+  FullMatrix<double> kernel(n_q_points, n_q_points), partial(dpc, n_q_points);
+  const double       inverse_4pi = 1. / (4. * numbers::PI);
+  auto               block       = [&](const unsigned int a,
+                         const unsigned int b,
+                         FullMatrix<double> &result) {
+    result.reinit(dpc, dpc);
+    const auto hit = exact.find({std::min(a, b), std::max(a, b)});
+    if (hit != exact.end())
+      {
+        for (unsigned int i = 0; i < dpc; ++i)
+          for (unsigned int j = 0; j < dpc; ++j)
+            result(i, j) = a <= b ? hit->second[i * dpc + j] :
+                                    hit->second[j * dpc + i];
+        return;
+      }
+    for (unsigned int q = 0; q < n_q_points; ++q)
+      for (unsigned int s = 0; s < n_q_points; ++s)
+        {
+          const unsigned int x = a * n_q_points + q, y = b * n_q_points + s;
+          kernel(q, s)         = inverse_4pi * JxW[x] * JxW[y] /
+                         quadrature_points[x].distance(quadrature_points[y]);
+        }
+    for (unsigned int i = 0; i < dpc; ++i)
+      for (unsigned int s = 0; s < n_q_points; ++s)
+        {
+          double sum = 0;
+          for (unsigned int q = 0; q < n_q_points; ++q)
+            sum += reference_shapes(q, i) * kernel(q, s);
+          partial(i, s) = sum;
+        }
+    for (unsigned int i = 0; i < dpc; ++i)
+      for (unsigned int j = 0; j < dpc; ++j)
+        {
+          double sum = 0;
+          for (unsigned int s = 0; s < n_q_points; ++s)
+            sum += partial(i, s) * reference_shapes(s, j);
+          result(i, j) = sum;
+        }
+  };
+
+  // A local unknown expands into free unknowns: itself, or the masters of
+  // its constraint with their weights; computed once per cell.
+  std::vector<std::vector<std::vector<std::pair<types::global_dof_index,
+                                                double>>>>
+                                       expansion(cells.size());
+  std::vector<types::global_dof_index> dofs(dpc);
+  auto expand = [&](const unsigned int c) -> const auto & {
+    auto &e = expansion[c];
+    if (e.empty())
+      {
+        cells[c]->get_dof_indices(dofs);
+        e.resize(dpc);
+        for (unsigned int i = 0; i < dpc; ++i)
+          if (!constraints.is_constrained(dofs[i]))
+            e[i].emplace_back(dofs[i], 1.);
+          else
+            for (const auto &entry :
+                 *constraints.get_constraint_entries(dofs[i]))
+              e[i].push_back(entry);
+      }
+    return e;
+  };
+
+  // The blocks of the pairs, each computed once although the patches
+  // overlap.
+  std::map<std::pair<unsigned int, unsigned int>, FullMatrix<double>> blocks;
+  auto pair_block = [&](const unsigned int a,
+                        const unsigned int b) -> const FullMatrix<double> & {
+    auto hit = blocks.find({a, b});
+    if (hit == blocks.end())
+      {
+        hit = blocks.emplace(std::make_pair(a, b), FullMatrix<double>()).first;
+        block(a, b, hit->second);
+      }
+    return hit->second;
+  };
+
+  // The support of every free unknown: the cells with a local unknown that
+  // expands into it. A patch keeps only the unknowns whose support it
+  // contains, for which its block is complete: with continuous elements an
+  // unknown on the rim of a patch also lives in cells outside it, and the
+  // block would miss their share, lose the property of a principal
+  // submatrix and, as it turned out, its definiteness.
+  std::vector<unsigned int> support_size(dof_handler->n_dofs(), 0);
+  std::vector<types::global_dof_index> cell_support;
+  auto support_of = [&](const unsigned int c) {
+    cell_support.clear();
+    for (const auto &terms : expand(c))
+      for (const auto &term : terms)
+        cell_support.push_back(term.first);
+    std::sort(cell_support.begin(), cell_support.end());
+    cell_support.erase(std::unique(cell_support.begin(), cell_support.end()),
+                       cell_support.end());
+    return cell_support;
+  };
+  std::vector<std::vector<unsigned int>> support(dof_handler->n_dofs());
+  for (unsigned int c = 0; c < cells.size(); ++c)
+    for (const auto f : support_of(c))
+      {
+        ++support_size[f];
+        support[f].push_back(c);
+      }
+
+  const auto vertex_cells =
+    GridTools::vertex_to_cell_map(dof_handler->get_triangulation());
+  patch_dofs.resize(own_cells.size());
+  patch_inverses.resize(own_cells.size());
+  std::vector<std::vector<std::vector<std::pair<int, double>>>> local;
+  for (unsigned int k = 0; k < own_cells.size(); ++k)
+    {
+      // The cells around the vertices of the cell, and those that share an
+      // unknown with it, directly or through a constraint: then the
+      // unknowns of the cell are always in its patch.
+      const unsigned int     c = own_cells[k];
+      std::set<unsigned int> patch_set;
+      for (const unsigned int v : cells[c]->vertex_indices())
+        for (const auto &other : vertex_cells[cells[c]->vertex_index(v)])
+          patch_set.insert(other->active_cell_index());
+      for (const auto f : support_of(c))
+        patch_set.insert(support[f].begin(), support[f].end());
+      const std::vector<unsigned int> patch_cells(patch_set.begin(),
+                                                  patch_set.end());
+
+      // The free unknowns of the patch, and where each unknown of each
+      // cell goes among them.
+      std::vector<types::global_dof_index> &free = patch_dofs[k];
+      std::map<types::global_dof_index, unsigned int> in_patch;
+      for (const unsigned int a : patch_cells)
+        for (const auto f : support_of(a))
+          ++in_patch[f];
+      free.clear();
+      for (const auto &[f, count] : in_patch)
+        if (count == support_size[f])
+          free.push_back(f);
+      local.assign(patch_cells.size(), {});
+      for (unsigned int a = 0; a < patch_cells.size(); ++a)
+        {
+          local[a].resize(dpc);
+          const auto &e = expand(patch_cells[a]);
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (const auto &[f, w] : e[i])
+              {
+                const auto it = std::lower_bound(free.begin(), free.end(), f);
+                if (it != free.end() && *it == f)
+                  local[a][i].emplace_back(it - free.begin(), w);
+              }
+        }
+
+      // The condensed operator on them, pair of cells by pair of cells.
+      FullMatrix<double> patch(free.size(), free.size());
+      for (unsigned int a = 0; a < patch_cells.size(); ++a)
+        for (unsigned int b = 0; b < patch_cells.size(); ++b)
+          {
+            const FullMatrix<double> &v =
+              pair_block(patch_cells[a], patch_cells[b]);
+            for (unsigned int i = 0; i < dpc; ++i)
+              for (const auto &[row, wi] : local[a][i])
+                for (unsigned int j = 0; j < dpc; ++j)
+                  for (const auto &[column, wj] : local[b][j])
+                    patch(row, column) += wi * wj * v(i, j);
+          }
+      // Gauss-Jordan in place: FullMatrix::invert() may call a threaded
+      // LAPACK, which on eight processes oversubscribes the cores and makes
+      // an 81 x 81 inverse take 20 ms instead of 0.1.
+      patch.gauss_jordan();
+      patch_inverses[k] = std::move(patch);
+    }
+  computed_pairs.clear();
+  computed_blocks.clear();
+  setup_patches = seconds_since(start);
+}
+
+
+
+void
+GalerkinFMMOperator::apply_patch_preconditioner(
+  TrilinosWrappers::MPI::Vector       &dst,
+  const TrilinosWrappers::MPI::Vector &src) const
+{
+  const Vector<double> x(src);
+  Vector<double>       y(x.size());
+  Vector<double>       local_x, local_y;
+  for (unsigned int k = 0; k < patch_dofs.size(); ++k)
+    {
+      const auto &free = patch_dofs[k];
+      local_x.reinit(free.size());
+      local_y.reinit(free.size());
+      for (unsigned int i = 0; i < free.size(); ++i)
+        local_x[i] = x[free[i]];
+      patch_inverses[k].vmult(local_y, local_x);
+      for (unsigned int i = 0; i < free.size(); ++i)
+        y[free[i]] += local_y[i];
+    }
+  sum_over_processes(y, mpi_communicator);
+  for (const auto i : dst.locally_owned_elements())
+    dst[i] = constraints.is_constrained(i) ? x[i] : y[i];
+  dst.compress(VectorOperation::insert);
+}
+
+
+
+void
 GalerkinFMMOperator::test_potentials(const std::vector<double> &values,
                                      const Vector<double>      &near_field,
                                      const double               sign,
@@ -627,6 +885,7 @@ GalerkinFMMOperator::print_statistics(std::ostream &out) const
   const double sg = Utilities::MPI::max(setup_geometry, mpi_communicator);
   const double st = Utilities::MPI::max(setup_tree, mpi_communicator);
   const double sn = Utilities::MPI::max(setup_near, mpi_communicator);
+  const double sp = Utilities::MPI::max(setup_patches, mpi_communicator);
   fmm.print_statistics(out);
   const auto precision = out.precision();
   if (this_mpi_process == 0)
@@ -636,7 +895,8 @@ GalerkinFMMOperator::print_statistics(std::ostream &out) const
         << " near-field entries\n"
         << "  setup: geometry " << sg << " s, trees " << st
         << " s, near field " << sn << " s (slowest process "
-        << setup_near_imbalance << " times the mean)\n"
+        << setup_near_imbalance << " times the mean), patches " << sp
+        << " s\n"
         << "  right-hand sides " << tr << " s\n"
         << "  seconds per product, slowest process (" << n_vmult
         << " products): density " << te << ", FMM " << tf << ", testing "
