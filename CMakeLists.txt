@@ -96,7 +96,15 @@ FOREACH(_build_type ${_d2_build_types})
 		DEAL_II_SETUP_TARGET(${_exe} ${_BUILD_TYPE})
     	ENDFOREACH()
 
-
+	# Benchmarks of the building blocks of the FMA
+	FOREACH(_bench fmm_expansions)
+		SET(_exe "${_bench}${_p}")
+		ADD_EXECUTABLE(${_exe} benchmarks/${_bench}.cc)
+		TARGET_INCLUDE_DIRECTORIES(${_exe} PRIVATE
+		  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+		TARGET_LINK_LIBRARIES(${_exe} ${_lib})
+		DEAL_II_SETUP_TARGET(${_exe} ${_BUILD_TYPE})
+	ENDFOREACH()
 
 	DEAL_II_SETUP_TARGET(${_lib} ${_BUILD_TYPE})
   SET(TEST_LIBRARIES_${_BUILD_TYPE} ${_lib})
