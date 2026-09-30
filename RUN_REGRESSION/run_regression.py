@@ -97,6 +97,16 @@ CASES = {
                                    'FMA Truncation Order': '10'},
                                   ['rhs_norm', 'flux', 'gradient',
                                    'best_ratio', 'iterations']),
+    'dg_screened_p2_fmm': ('screened_p2_bal0_weak.prm',
+                           {'Preconditioner': 'PatchSchwarz',
+                            'Solution method': 'FMA',
+                            'FMA Truncation Order': '10'},
+                           ['rhs_norm', 'flux', 'gradient', 'iterations']),
+    # kappa = 10 plane wave with exponential refinement towards the corner of
+    # the box, screened FMM of order 8 (the base file sets it all).
+    'dg_screened_plane_p1_fmm': ('screened_plane_exponential_p1.prm', {},
+                                 ['rhs_norm', 'flux', 'gradient',
+                                  'iterations']),
     'collocation_q1': ('g_p1_bal0_weak.prm',
                        {'Boundary integral formulation': 'collocation',
                         'Finite Element type': 'FEQ',

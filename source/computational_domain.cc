@@ -159,6 +159,28 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
                     "0",
                     Patterns::Integer(0));
 
+  // Exponential refinement, for a solution that varies like e^{-k.x}, such
+  // as a plane wave of the screened equation: the cell diameter is driven
+  // towards minimum_size e^{g k.(x - x*)}, x* the point of the mesh where the
+  // solution is largest. The L2 error of piecewise polynomials of degree p
+  // on a surface is equidistributed by g = 1/(p+2): each cell then carries
+  // the same share, h^{p+2} e^{-k.x} constant.
+  prm.declare_entry("Exponential refinement decay vector",
+                    "",
+                    Patterns::List(Patterns::Double(), 0, dim));
+
+  prm.declare_entry("Exponential refinement minimum size",
+                    "0.1",
+                    Patterns::Double(0.0));
+
+  prm.declare_entry("Exponential refinement grading",
+                    "0.3333333333333333",
+                    Patterns::Double(0.0));
+
+  prm.declare_entry("Exponential refinement maximum cycles",
+                    "0",
+                    Patterns::Integer(0));
+
   prm.enter_subsection("Boundary Conditions ID Numbers");
   {
     prm.declare_entry("Dirichlet boundary ids",
@@ -232,6 +254,22 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
     prm.get_double("Graded refinement growth exponent");
   graded_refinement_maximum_cycles =
     prm.get_integer("Graded refinement maximum cycles");
+  exponential_refinement_decay_vector.clear();
+  for (const auto &k : Utilities::split_string_list(
+         prm.get("Exponential refinement decay vector")))
+    if (!k.empty())
+      exponential_refinement_decay_vector.push_back(
+        Utilities::string_to_double(k));
+  AssertThrow(exponential_refinement_decay_vector.empty() ||
+                exponential_refinement_decay_vector.size() == dim,
+              ExcMessage("Exponential refinement decay vector needs one "
+                         "component per space dimension, or none."));
+  exponential_refinement_minimum_size =
+    prm.get_double("Exponential refinement minimum size");
+  exponential_refinement_grading =
+    prm.get_double("Exponential refinement grading");
+  exponential_refinement_maximum_cycles =
+    prm.get_integer("Exponential refinement maximum cycles");
   max_curvature_ref_cycles =
     prm.get_integer("Maximum number of curvature adaptive refinement cycles");
   cad_to_projectors_tolerance_ratio =
@@ -1180,6 +1218,62 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
             << "  graded cell size from " << smallest << " to " << largest
             << "; cells per material:";
       for (const auto &entry : graded_cells)
+        pcout << " " << static_cast<unsigned int>(entry.first) << "="
+              << entry.second;
+      pcout << std::endl;
+    }
+
+  // Exponential refinement, with the level difference limited to one as for
+  // the graded refinement.
+  if (exponential_refinement_maximum_cycles > 0 &&
+      !exponential_refinement_decay_vector.empty())
+    {
+      tria.set_mesh_smoothing(
+        Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+      Tensor<1, dim> k;
+      for (unsigned int d = 0; d < dim; ++d)
+        k[d] = exponential_refinement_decay_vector[d];
+      // k.x*: the smallest k.x over the vertices, where e^{-k.x} is largest.
+      double k_x_star = std::numeric_limits<double>::max();
+      for (const auto &v : tria.get_vertices())
+        k_x_star = std::min(k_x_star, k * v);
+      const auto target = [&](const auto &cell) {
+        double k_x = std::numeric_limits<double>::max();
+        for (const unsigned int v : cell->vertex_indices())
+          k_x = std::min(k_x, k * cell->vertex(v));
+        return exponential_refinement_minimum_size *
+               std::exp(exponential_refinement_grading * (k_x - k_x_star));
+      };
+
+      unsigned int cycle = 0;
+      for (; cycle < exponential_refinement_maximum_cycles; ++cycle)
+        {
+          unsigned int flagged = 0;
+          for (const auto &cell : tria.active_cell_iterators())
+            if (cell->diameter() > target(cell))
+              {
+                cell->set_refine_flag();
+                ++flagged;
+              }
+          if (flagged == 0)
+            break;
+          tria.prepare_coarsening_and_refinement();
+          tria.execute_coarsening_and_refinement();
+        }
+
+      double smallest = std::numeric_limits<double>::max();
+      std::map<types::material_id, unsigned int> cells_per_material;
+      for (const auto &cell : tria.active_cell_iterators())
+        {
+          ++cells_per_material[cell->material_id()];
+          smallest = std::min(smallest, cell->diameter());
+        }
+      pcout << "Exponential refinement: " << cycle << " cycle(s), decay "
+            << k << ", minimum size "
+            << exponential_refinement_minimum_size << ", grading "
+            << exponential_refinement_grading << "; smallest cell "
+            << smallest << "; cells per material:";
+      for (const auto &entry : cells_per_material)
         pcout << " " << static_cast<unsigned int>(entry.first) << "="
               << entry.second;
       pcout << std::endl;

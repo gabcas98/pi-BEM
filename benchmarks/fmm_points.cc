@@ -13,6 +13,9 @@
 // Usage: mpirun -np P fmm_points [n_points max_points_per_leaf]
 //        followed by pairs "order theta" (default: a small sweep)
 //
+// The screening parameter kappa of the kernel e^{-kappa r}/r is read from
+// the environment variable FMM_KAPPA; without it the kernel is 1/r.
+//
 // ---------------------------------------------------------------------
 
 #include <deal.II/base/mpi.h>
@@ -117,6 +120,8 @@ main(int argc, char **argv)
   const MPI_Comm                   comm = MPI_COMM_WORLD;
   const bool root = Utilities::MPI::this_mpi_process(comm) == 0;
 
+  const char        *kappa_variable = std::getenv("FMM_KAPPA");
+  const double       kappa = kappa_variable ? std::atof(kappa_variable) : 0.;
   const unsigned int n    = argc > 1 ? std::atoi(argv[1]) : 100000;
   const unsigned int leaf = argc > 2 ? std::atoi(argv[2]) : 64;
   std::vector<std::pair<unsigned int, double>> settings;
@@ -149,6 +154,7 @@ main(int argc, char **argv)
       data.order               = order;
       data.theta               = theta;
       data.max_points_per_leaf = leaf;
+      data.kappa               = kappa;
       fmm.reinit(points, data);
 
       std::vector<double> potentials;
@@ -186,8 +192,14 @@ main(int argc, char **argv)
                         << error / scale << std::defaultfloat << '\n';
             }
         }
+      const auto again = std::chrono::steady_clock::now();
+      fmm.evaluate(charges, dipoles, potentials);
+      const double seconds_again =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      again)
+          .count();
       if (root)
         std::cout << "  first evaluation " << std::setprecision(3) << seconds
-                  << " s\n\n";
+                  << " s, after rebalancing " << seconds_again << " s\n\n";
     }
 }

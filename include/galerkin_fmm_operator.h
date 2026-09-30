@@ -66,6 +66,14 @@
  * double-layer contribution of a pair come from one traversal of the
  * integrator, as in the fused dense assembly.
  *
+ * With the screened kernel $e^{-\kappa r}/(4\pi r)$ of the integrator
+ * (GalerkinPanelPairIntegrator::set_screening()) the point sums use the
+ * screened fast multipole method, and the regularised double layer is,
+ * as in the dense assembly, that of the Laplace kernel against
+ * $E(r)\varphi(y) - \varphi(x)$ with $E(r) = (1 + \kappa r) e^{-\kappa r}$:
+ * $A$ with the screened dipoles, $B$ with the unscreened ones, which the
+ * solid-angle identity of the Laplace kernel regularizes.
+ *
  * The density is evaluated at the quadrature points, and the potentials
  * tested against the shape functions, with FEPointEvaluation on the
  * geometry that NonMatching::MappingInfo computes once for all cells; the
@@ -208,8 +216,12 @@ private:
   std::vector<Tensor<1, 3>> normals;
   std::vector<double>       dirichlet_values, flux_values;
   bool                      regularize = true;
+  /// Screening parameter of the kernel, that of the integrator.
+  double kappa = 0.;
 
-  LaplaceFMM fmm, rhs_fmm;
+  /// The operator, the right-hand sides, and with screening the
+  /// unscreened dipole sum that regularizes the double layer.
+  LaplaceFMM fmm, rhs_fmm, rhs_laplace_fmm;
 
   TrilinosWrappers::SparseMatrix near_exact, near_correction;
   /// Near-field corrections of the right-hand sides, without the sign of

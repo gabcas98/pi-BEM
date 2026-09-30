@@ -13,7 +13,10 @@
 // ---------------------------------------------------------------------
 
 // LaplaceFMM on points of two nearby spheres against the direct sum, for
-// charges, dipoles and both, at two truncation orders.
+// charges, dipoles and both, at two truncation orders, for the Laplace
+// kernel and for the screened one with kappa = 3 and 30: the boxes then
+// span up to about 2 and 20 screening lengths, and with kappa = 30 the
+// pairs of boxes more than 4/3 apart are dropped.
 
 #include <random>
 
@@ -50,13 +53,15 @@ main(int argc, char **argv)
   for (unsigned int i = 0; i < points.size(); i += 37)
     targets.push_back(i);
 
-  for (const unsigned int order : {6u, 12u})
+  for (const double kappa : {0., 3., 30.})
+    for (const unsigned int order : {6u, 12u})
     {
       LaplaceFMM                 fmm;
       LaplaceFMM::AdditionalData data;
       data.order               = order;
       data.theta               = 0.5;
       data.max_points_per_leaf = 32;
+      data.kappa               = kappa;
       fmm.reinit(points, data);
       for (const unsigned int kind : {0u, 1u, 2u})
         {
@@ -78,7 +83,7 @@ main(int argc, char **argv)
           // Loose bounds: charges converge like theta^(p+1), dipoles one
           // order slower; a wrong translation gives an error of order one.
           const double bound = std::pow(0.5, order - (kind == 0 ? 0. : 1.));
-          deallog << "order " << order << ", "
+          deallog << "kappa " << kappa << ", order " << order << ", "
                   << (kind == 0 ? "charges" :
                       kind == 1 ? "dipoles" :
                                   "charges and dipoles")

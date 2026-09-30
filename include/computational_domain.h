@@ -242,6 +242,18 @@ public:
 
   unsigned int graded_refinement_maximum_cycles;
 
+  /// exponential refinement, for a solution that varies like e^{-k.x}: the
+  /// cell diameter is driven towards minimum_size e^{g k.(x - x*)}, x* the
+  /// point of the mesh where the solution is largest; empty k disables it.
+
+  std::vector<double> exponential_refinement_decay_vector;
+
+  double exponential_refinement_minimum_size;
+
+  double exponential_refinement_grading;
+
+  unsigned int exponential_refinement_maximum_cycles;
+
   /// maximum cell aspect ratio
 
   double max_element_aspect_ratio;

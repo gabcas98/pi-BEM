@@ -57,6 +57,18 @@
   "iterations": "73",
   "rhs_norm": "0.2879097321087652"
  },
+ "dg_screened_p2_fmm": {
+  "flux": "0.00242538",
+  "gradient": "0.0125097",
+  "iterations": "46",
+  "rhs_norm": "0.2879097330903183"
+ },
+ "dg_screened_plane_p1_fmm": {
+  "flux": "0.0453569",
+  "gradient": "8.32474e+33",
+  "iterations": "25",
+  "rhs_norm": "2.547026117757461e+32"
+ },
  "far_field_tolerance_p2": {
   "flux": "0.00242835",
   "gradient": "0.014187",

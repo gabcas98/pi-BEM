@@ -61,6 +61,7 @@ GalerkinFMMOperator::GalerkinFMMOperator(const MPI_Comm comm)
   , this_mpi_process(Utilities::MPI::this_mpi_process(comm))
   , fmm(comm)
   , rhs_fmm(comm)
+  , rhs_laplace_fmm(comm)
 {}
 
 
@@ -77,6 +78,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
   dof_handler = &dh;
   constraints.copy_from(constraints_in);
   regularize                     = rhs.regularize;
+  kappa                          = integrator.get_screening();
   const FiniteElement<2, 3> &fe  = dh.get_fe();
   const unsigned int         dpc = fe.dofs_per_cell;
 
@@ -140,12 +142,19 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
   setup_geometry = seconds_since(start);
 
   start = std::chrono::steady_clock::now();
-  fmm.reinit(points, data.fmm);
+  LaplaceFMM::AdditionalData fmm_data = data.fmm;
+  fmm_data.kappa                      = kappa;
+  fmm.reinit(points, fmm_data);
   if (rhs.dirichlet != nullptr)
     {
-      LaplaceFMM::AdditionalData rhs_data = data.fmm;
+      LaplaceFMM::AdditionalData rhs_data = fmm_data;
       rhs_data.order += data.rhs_order_increase;
       rhs_fmm.reinit(points, rhs_data);
+      if (kappa > 0 && rhs.regularize)
+        {
+          rhs_data.kappa = 0.;
+          rhs_laplace_fmm.reinit(points, rhs_data);
+        }
     }
   setup_tree = seconds_since(start);
 
@@ -364,18 +373,23 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                   const Tensor<1, 3> x_minus_y = points[a] - points[b];
                   const double       distance  = x_minus_y.norm();
                   const double       weight    = inverse_4pi * JxW[a] * JxW[b];
-                  kernel(q, s)                 = weight / distance;
+                  const double       screening = std::exp(-kappa * distance);
+                  kernel(q, s) = weight * screening / distance;
                   if (rhs.dirichlet != nullptr)
                     {
+                      // The Laplace dipole against E(r) phi(y) - phi(x),
+                      // E = (1 + kappa r) e^{-kappa r}, as in the dense
+                      // assembly and in double_layer_rhs().
                       const double cube = distance * distance * distance;
+                      const double E    = (1. + kappa * distance) * screening;
                       test_side[q] +=
                         weight * (x_minus_y * normals[b]) / cube *
-                        (dirichlet_values[b] -
+                        (E * dirichlet_values[b] -
                          (rhs.regularize ? dirichlet_values[a] : 0.));
                       if (!self)
                         trial_side[s] -=
                           weight * (x_minus_y * normals[a]) / cube *
-                          (dirichlet_values[a] -
+                          (E * dirichlet_values[a] -
                            (rhs.regularize ? dirichlet_values[b] : 0.));
                     }
                 }
@@ -564,8 +578,10 @@ GalerkinFMMOperator::setup_patch_preconditioner()
       for (unsigned int s = 0; s < n_q_points; ++s)
         {
           const unsigned int x = a * n_q_points + q, y = b * n_q_points + s;
-          kernel(q, s)         = inverse_4pi * JxW[x] * JxW[y] /
-                         quadrature_points[x].distance(quadrature_points[y]);
+          const double       distance =
+            quadrature_points[x].distance(quadrature_points[y]);
+          kernel(q, s) = inverse_4pi * JxW[x] * JxW[y] *
+                         std::exp(-kappa * distance) / distance;
         }
     for (unsigned int i = 0; i < dpc; ++i)
       for (unsigned int s = 0; s < n_q_points; ++s)
@@ -837,9 +853,11 @@ GalerkinFMMOperator::double_layer_rhs(TrilinosWrappers::MPI::Vector &rhs) const
   rhs_fmm.evaluate({}, dipoles, with_datum);
   if (regularize)
     {
+      // The regularization uses the Laplace kernel, screened or not.
       for (unsigned int p = 0; p < n; ++p)
         dipoles[p] = inverse_4pi * JxW[p] * normals[p];
-      rhs_fmm.evaluate({}, dipoles, without_datum);
+      (kappa > 0 ? rhs_laplace_fmm : rhs_fmm)
+        .evaluate({}, dipoles, without_datum);
     }
   for (unsigned int p = 0; p < n; ++p)
     with_datum[p] =

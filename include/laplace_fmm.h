@@ -21,11 +21,14 @@
 #include <mpi.h>
 
 #include <array>
+#include <cmath>
 #include <iosfwd>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "laplace_expansions.h"
+#include "yukawa_expansions.h"
 
 /**
  * Fast multipole method for the Laplace kernel on a fixed set of points,
@@ -35,11 +38,20 @@
  *         + \frac{d_j \cdot (x_i - x_j)}{|x_i - x_j|^3},
  * @f]
  * with charges $q_j$ and dipole moments $d_j$; the second term is
- * $d_j \cdot \nabla_y |x_i - y|^{-1}$ at $y = x_j$. Nothing in the class
- * knows about boundary elements: in a Galerkin method the points are the
- * quadrature points, the charges and dipoles carry the density and the
- * quadrature weights, and the self-interaction $j = i$ is the one that the
- * singular quadrature replaces.
+ * $d_j \cdot \nabla_y |x_i - y|^{-1}$ at $y = x_j$. With a screening
+ * parameter $\kappa > 0$ the kernel is instead the screened one,
+ * $e^{-\kappa r}/r$, of the modified Helmholtz equation
+ * $-\Delta u + \kappa^2 u = 0$, and the dipole term
+ * $d_j \cdot (x_i - x_j)(1 + \kappa r) e^{-\kappa r} / r^3$; the tree, the
+ * lists and the split of the work are the same, the expansions those of
+ * yukawa_expansions.h. Pairs of boxes so far apart that
+ * $e^{-\kappa (|c_A - c_B| - R_A - R_B)}$ is below $10^{-17}$ are dropped:
+ * their interaction is negligible against that of the near sources.
+ *
+ * Nothing in the class knows about boundary elements: in a Galerkin method
+ * the points are the quadrature points, the charges and dipoles carry the
+ * density and the quadrature weights, and the self-interaction $j = i$ is
+ * the one that the singular quadrature replaces.
  *
  * The points are sorted into an adaptive octree whose leaves hold at most
  * a given number of points. A dual traversal of the tree pairs target and
@@ -52,9 +64,9 @@
  * The lists of both kinds of pairs are built once, in reinit().
  *
  * Every process holds the whole tree and all points. The work is split by
- * subtrees of the targets: the subtrees rooted at the first level with
- * enough boxes are distributed over the processes, balancing their points,
- * and the few boxes above that level are handled by every process. All
+ * subtrees of the targets, each small enough against the total work, which
+ * are distributed over the processes by their modelled cost; the few boxes
+ * above the subtrees are handled by every process. All
  * steps are linear in the sources, so each process forms the multipoles of
  * its own leaves, the partial expansions are summed over the processes, and
  * each process computes the potentials of its own points; a final sum over
@@ -71,6 +83,9 @@ public:
     unsigned int max_points_per_leaf = 64;
     /// Opening criterion of the dual traversal, in (0, 1).
     double theta = 0.5;
+    /// Screening parameter kappa of the kernel e^{-kappa r}/r; zero for the
+    /// Laplace kernel.
+    double kappa = 0.;
   };
 
   explicit LaplaceFMM(const MPI_Comm comm = MPI_COMM_WORLD);
@@ -136,11 +151,15 @@ private:
    * Deal the subtrees of the targets out to the processes. The cost of a
    * subtree is modelled as a M2L time per translation, a P2P time per
    * interaction and a time per point for its multipoles and local
-   * evaluations, and each process receives work in proportion to its
-   * speed. Before the first evaluation the model uses rough constants and
-   * equal speeds; after it, both come from the measured times, which also
-   * captures processors of different speed, such as the performance and
-   * efficiency cores of a hybrid chip.
+   * evaluations. Starting from the whole tree, the heaviest subtree is
+   * split into those of its children until each carries at most
+   * 1/(16 n_processes) of the total or is a leaf, which adapts the cut to
+   * graded meshes, where the work gathers in a few deep subtrees. The
+   * subtrees are then dealt out, heaviest first, and each process receives
+   * work in proportion to its speed. Before the first evaluation the model
+   * uses rough constants and equal speeds; after it, both come from the
+   * measured times, which also captures processors of different speed,
+   * such as the performance and efficiency cores of a hybrid chip.
    */
   void
   distribute_work() const;
@@ -153,13 +172,32 @@ private:
   /// Direct interaction of the points of the source leaf b with those of
   /// the target leaf a, in sorted numbering; q holds the charges and d the
   /// three components of the dipoles, each of the used kinds.
-  template <bool with_charges, bool with_dipoles>
+  template <bool with_charges, bool with_dipoles, bool screened>
   void
   particle_to_particle(const unsigned int a,
                        const unsigned int b,
                        const double      *q,
                        const double      *d,
                        double            *u) const;
+
+  /// The far field through the expansions, from the multipoles of the own
+  /// leaves to the potentials u at the own points, for each kernel; the
+  /// times of the phases are added to phase_time[0..3].
+  void
+  far_field_laplace(const std::vector<double>               &q,
+                    const std::vector<dealii::Tensor<1, 3>> &d,
+                    std::vector<double>                     &u) const;
+  void
+  far_field_yukawa(const std::vector<double>               &q,
+                   const std::vector<dealii::Tensor<1, 3>> &d,
+                   std::vector<double>                     &u) const;
+
+  /// Normalization radius of the screened expansions of a box.
+  static double
+  yukawa_radius(const Box &box)
+  {
+    return std::sqrt(3.) * box.half_side;
+  }
 
   MPI_Comm     mpi_communicator;
   unsigned int n_mpi_processes, this_mpi_process;
@@ -212,6 +250,29 @@ private:
 
   /// Expansions of all boxes, n_coefficients(order) each.
   mutable std::vector<LaplaceExpansions::complex> multipoles, locals;
+
+  /// The screened expansions of all boxes, and their translations: the
+  /// operators of the order, and the dense M2M and L2L matrices of a child
+  /// at each level in each octant of its parent, at (level * 8 + octant)
+  /// times the square of the number of coefficients.
+  std::unique_ptr<YukawaExpansions::Operators> yukawa;
+  mutable std::vector<double>                  yukawa_multipoles, yukawa_locals;
+  std::vector<double>                          yukawa_m2m, yukawa_l2l;
+  /// The normalization of the screened expansions of each level, 1/k_n and
+  /// i_n of kappa times its radius, at level * (order + 1) + n: the M2L
+  /// translations work between the unnormalized bases.
+  std::vector<double> yukawa_outgoing_scale, yukawa_local_scale;
+  /**
+   * The screened M2L translations along z of this process: one for each
+   * distance |tau| u of its pairs, stored one after another, and the start
+   * of the one of each pair of my_m2l_pairs. A group shares the rotation of
+   * its offset tau; its pairs, of different sizes, may need different
+   * translations along z.
+   */
+  mutable std::vector<double>       yukawa_tz;
+  mutable std::vector<unsigned int> m2l_tz;
+  /// Pairs of boxes dropped because the screening makes them negligible.
+  unsigned long n_screened_out = 0;
 
   /// Cost model: seconds per M2L, per P2P interaction and per point, and
   /// the relative speed of every process.

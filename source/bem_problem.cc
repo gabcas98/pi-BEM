@@ -1773,7 +1773,8 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
       // GalerkinFMMOperator; the rest of the Galerkin machinery, and the
       // dense path, are unchanged.
       AssertThrow(solution_method == "Direct" ||
-                    (kernel_type == "laplace" &&
+                    ((kernel_type == "laplace" ||
+                      kernel_type == "screened") &&
                      galerkin_neumann_formulation == "single_layer" &&
                      linear_solver == "CG" &&
                      (preconditioner_type == "None" ||
@@ -1781,7 +1782,8 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
                       preconditioner_type == "BlockJacobi" ||
                       preconditioner_type == "PatchSchwarz")),
                   ExcMessage("The Galerkin FMM (Solution method = FMA) "
-                             "supports the Laplace kernel, the single-layer "
+                             "supports the Laplace and screened kernels, the "
+                             "single-layer "
                              "formulation, Linear solver = CG and "
                              "Preconditioner = None, Jacobi, BlockJacobi or "
                              "PatchSchwarz."));

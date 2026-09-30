@@ -1,7 +1,19 @@
 
-DEAL::order 6, charges: relative error below 0.0156250: yes
-DEAL::order 6, dipoles: relative error below 0.0312500: yes
-DEAL::order 6, charges and dipoles: relative error below 0.0312500: yes
-DEAL::order 12, charges: relative error below 0.000244141: yes
-DEAL::order 12, dipoles: relative error below 0.000488281: yes
-DEAL::order 12, charges and dipoles: relative error below 0.000488281: yes
+DEAL::kappa 0.00000, order 6, charges: relative error below 0.0156250: yes
+DEAL::kappa 0.00000, order 6, dipoles: relative error below 0.0312500: yes
+DEAL::kappa 0.00000, order 6, charges and dipoles: relative error below 0.0312500: yes
+DEAL::kappa 0.00000, order 12, charges: relative error below 0.000244141: yes
+DEAL::kappa 0.00000, order 12, dipoles: relative error below 0.000488281: yes
+DEAL::kappa 0.00000, order 12, charges and dipoles: relative error below 0.000488281: yes
+DEAL::kappa 3.00000, order 6, charges: relative error below 0.0156250: yes
+DEAL::kappa 3.00000, order 6, dipoles: relative error below 0.0312500: yes
+DEAL::kappa 3.00000, order 6, charges and dipoles: relative error below 0.0312500: yes
+DEAL::kappa 3.00000, order 12, charges: relative error below 0.000244141: yes
+DEAL::kappa 3.00000, order 12, dipoles: relative error below 0.000488281: yes
+DEAL::kappa 3.00000, order 12, charges and dipoles: relative error below 0.000488281: yes
+DEAL::kappa 30.0000, order 6, charges: relative error below 0.0156250: yes
+DEAL::kappa 30.0000, order 6, dipoles: relative error below 0.0312500: yes
+DEAL::kappa 30.0000, order 6, charges and dipoles: relative error below 0.0312500: yes
+DEAL::kappa 30.0000, order 12, charges: relative error below 0.000244141: yes
+DEAL::kappa 30.0000, order 12, dipoles: relative error below 0.000488281: yes
+DEAL::kappa 30.0000, order 12, charges and dipoles: relative error below 0.000488281: yes

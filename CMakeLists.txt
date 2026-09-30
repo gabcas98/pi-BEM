@@ -73,7 +73,8 @@ SET(_fmm_kernel_files
   ${CMAKE_CURRENT_SOURCE_DIR}/source/laplace_fmm.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/source/galerkin_panel_pair_integrator.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_expansions.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_points.cc)
+  ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_points.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/yukawa_expansions.cc)
 # At -O2 GCC vectorizes only loops it deems very cheap, which the kernels
 # are not; the dynamic cost model vectorizes them without raising the
 # optimization level. Without errno, sqrt vectorizes too.
@@ -118,7 +119,7 @@ FOREACH(_build_type ${_d2_build_types})
     	ENDFOREACH()
 
 	# Benchmarks of the building blocks of the FMA
-	FOREACH(_bench fmm_expansions fmm_points)
+	FOREACH(_bench fmm_expansions fmm_points yukawa_expansions)
 		SET(_exe "${_bench}${_p}")
 		ADD_EXECUTABLE(${_exe} benchmarks/${_bench}.cc)
 		TARGET_INCLUDE_DIRECTORIES(${_exe} PRIVATE
