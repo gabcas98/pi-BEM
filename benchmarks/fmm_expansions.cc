@@ -15,7 +15,8 @@
 // compared: the classes MultipoleExpansion and LocalExpansion of the
 // original FMA ("old") and the solid harmonics of laplace_expansions.h
 // ("new"). The time of each operation is measured on its own, in
-// microseconds, for every truncation order.
+// microseconds, for every truncation order, and last the M2L translation as
+// LaplaceFMM applies it, grouped by offset in batches of eight.
 //
 // Usage: fmm_expansions [n_sources n_targets max_order]
 //
@@ -387,6 +388,49 @@ main(int argc, char **argv)
           std::cout << std::setw(10) << t_new[i];
         }
       std::cout << '\n';
+    }
+  // M2L as LaplaceFMM applies it: one operator per offset, built once and
+  // applied to batches of eight expansions stored coefficient by
+  // coefficient; the time per translation, without the operator.
+  std::cout << "\nM2L grouped by offset, batches of 8 [microseconds per "
+               "translation]\n";
+  for (unsigned int p = 4; p <= std::min(max_order, 12u); p += 2)
+    {
+      constexpr unsigned int B       = 8;
+      LE::Workspace          w(p);
+      const unsigned int     rows    = LE::n_coefficients(p);
+      const unsigned int     columns = (p + 1) * (p + 1);
+      std::vector<double>    T_re(rows * columns), T_im(rows * columns);
+      std::vector<double>    X_re(columns * B), X_im(columns * B),
+        Y_re(rows * B), Y_im(rows * B);
+      std::uniform_real_distribution<double> u(-1., 1.);
+      for (unsigned int i = 0; i < columns * B; ++i)
+        {
+          X_re[i] = u(rng);
+          X_im[i] = u(rng);
+        }
+      LE::multipole_to_local_operator(
+        w, Tensor<1, 3>({4., 2., 2.}), T_re.data(), T_im.data());
+      const unsigned int n     = 20000;
+      const auto         start = std::chrono::steady_clock::now();
+      for (unsigned int k = 0; k < n; ++k)
+        {
+          X_re[k % (columns * B)] += 1e-9;
+          LE::multipole_to_local_batch<B>(p,
+                                          T_re.data(),
+                                          T_im.data(),
+                                          X_re.data(),
+                                          X_im.data(),
+                                          Y_re.data(),
+                                          Y_im.data());
+          sink += Y_re[k % (rows * B)];
+        }
+      const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      start)
+          .count();
+      std::cout << "  p=" << p << ": " << std::fixed << std::setprecision(3)
+                << 1e6 * seconds / (double(n) * B) << '\n';
     }
   std::cout << "\n(checksum " << std::scientific << sink << ")\n";
 }
