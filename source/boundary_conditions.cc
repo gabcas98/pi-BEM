@@ -806,38 +806,6 @@ BoundaryConditions<dim>::compute_errors()
 
       const double L2_error = difference_per_cell.l2_norm();
 
-      // Norms of the exact solution, the scale of the errors above: a
-      // solution such as a screened plane wave may be of size 1e35 at one
-      // point of the boundary, and its absolute errors of size 1e32 are then
-      // small.
-      double exact_phi_L2_norm = 0., exact_gradient_L2_norm = 0.;
-      {
-        Vector<float>  per_cell(comp_dom.tria.n_active_cells());
-        Vector<double> zero(localized_phi.size());
-        VectorTools::integrate_difference(*bem.mapping,
-                                          bem.dh,
-                                          zero,
-                                          potential,
-                                          per_cell,
-                                          QGauss<(dim - 1)>(
-                                            2 * (2 * bem.fe->degree + 1)),
-                                          VectorTools::L2_norm);
-        exact_phi_L2_norm = per_cell.l2_norm();
-        Vector<double> zero_gradient(localized_gradient_solution.size());
-        VectorTools::integrate_difference(*bem.mapping,
-                                          bem.gradient_dh,
-                                          zero_gradient,
-                                          wind,
-                                          per_cell,
-                                          QGauss<(dim - 1)>(
-                                            2 * (2 * bem.fe->degree + 1)),
-                                          VectorTools::L2_norm);
-        exact_gradient_L2_norm = per_cell.l2_norm();
-      }
-      const auto relative = [](const double error, const double norm) {
-        return norm > 0. ? error / norm : error;
-      };
-
 
       Vector<double> vector_gradients_node_error(bem.gradient_dh.n_dofs());
       for (types::global_dof_index scalar_i = 0;
@@ -863,9 +831,6 @@ BoundaryConditions<dim>::compute_errors()
            ++scalar_i)
         phi_node_error[scalar_i] = phi_nodes_errs[scalar_i];
 
-      double exact_phi_max = 0.;
-      for (const double v : phi_nodes_errs)
-        exact_phi_max = std::max(exact_phi_max, std::abs(v));
       phi_node_error *= -1.0;
       phi_node_error.add(1., localized_phi);
       const double phi_node_Linf_error = phi_node_error.linfty_norm();
@@ -1762,24 +1727,6 @@ BoundaryConditions<dim>::compute_errors()
             << std::endl;
       pcout << "Phi Cells Gradient  error L_2 norm: " << grad_L2_error
             << std::endl;
-
-      // The same errors relative to the size of the exact solution: L2
-      // errors over the L2 norm of the exact field, nodal maxima over its
-      // largest nodal value.
-      double exact_gradient_max = 0.;
-      for (const auto &g : exact_gradient_values)
-        exact_gradient_max = std::max(exact_gradient_max, g.l2_norm());
-      pcout << "Relative errors (to the exact solution): phi L_2 "
-            << relative(L2_error, exact_phi_L2_norm) << ", phi nodes L_inf "
-            << relative(phi_node_Linf_error, exact_phi_max)
-            << "; dPhidN L_2 " << relative_true_dphi_dn_L2_error
-            << ", dPhidN nodes L_inf "
-            << relative(dphi_dn_node_error.linfty_norm(),
-                        exact_dphi_dn.linfty_norm())
-            << "; gradient L_2 "
-            << relative(grad_L2_error, exact_gradient_L2_norm)
-            << ", gradient nodes L_inf "
-            << relative(grad_phi_max_error, exact_gradient_max) << std::endl;
       // pcout<<"alpha Nodes error L_inf norm:
       // "<<localised_alpha.linfty_norm()<<std::endl; pcout<<"alpha Nodes error
       // L_2 norm: "<<localised_alpha.l2_norm()<<std::endl;
@@ -1793,36 +1740,6 @@ BoundaryConditions<dim>::compute_errors()
       dataout_vector.add_data_vector(
         vector_gradients_node_error,
         std::vector<std::string>(dim, "phi_gradient_error"),
-        DataOut<dim - 1, dim>::type_dof_data,
-        data_component_interpretation);
-      // log10 of |error| / |exact| at each node, the exact value floored at
-      // 1e-12 times its largest one, below which roundoff decides.
-      Vector<double> gradient_relative_error(bem.gradient_dh.n_dofs());
-      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs();
-           ++scalar_i)
-        {
-          const types::global_dof_index original_i =
-            bem.sub_wise_to_original[scalar_i];
-          double error_square = 0.;
-          for (unsigned int d = 0; d < dim; ++d)
-            error_square += std::pow(
-              vector_gradients_node_error(
-                bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() +
-                                             original_i]),
-              2);
-          const double scale =
-            std::max(exact_gradient_values[scalar_i].l2_norm(),
-                     1e-12 * exact_gradient_max);
-          for (unsigned int d = 0; d < dim; ++d)
-            gradient_relative_error(
-              bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() +
-                                           original_i]) =
-              std::log10(std::max(std::sqrt(error_square), 1e-300) /
-                         std::max(scale, 1e-300));
-        }
-      dataout_vector.add_data_vector(
-        gradient_relative_error,
-        std::vector<std::string>(dim, "phi_gradient_log10_relative_error"),
         DataOut<dim - 1, dim>::type_dof_data,
         data_component_interpretation);
 
@@ -1844,45 +1761,6 @@ BoundaryConditions<dim>::compute_errors()
                                      std::vector<std::string>(1,
                                                               "dphi_dn_error"),
                                      DataOut<dim - 1, dim>::type_dof_data);
-      // Errors on a logarithmic scale, readable when the solution spans many
-      // orders of magnitude: log10 of |error| / |exact| at each node (the
-      // number of correct digits, with the exact value floored at 1e-12
-      // times its largest one, below which roundoff decides), log10 of
-      // |error| / max |exact| (where the relative global error comes from),
-      // and log10 |exact| (where the solution matters).
-      const auto log10_ratio = [](const double a, const double b) {
-        return std::log10(std::max(a, 1e-300) / std::max(b, 1e-300));
-      };
-      const double dphi_max = exact_dphi_dn.linfty_norm();
-      std::vector<Vector<double>> log_fields(6, Vector<double>(bem.dh.n_dofs()));
-      for (types::global_dof_index i = 0; i < bem.dh.n_dofs(); ++i)
-        {
-          const double phi_exact  = std::abs(phi_nodes_errs[i]);
-          const double dphi_exact = std::abs(exact_dphi_dn(i));
-          log_fields[0](i) =
-            log10_ratio(std::abs(phi_node_error(i)),
-                        std::max(phi_exact, 1e-12 * exact_phi_max));
-          log_fields[1](i) =
-            log10_ratio(std::abs(phi_node_error(i)), exact_phi_max);
-          log_fields[2](i) = log10_ratio(phi_exact, 1.);
-          log_fields[3](i) =
-            log10_ratio(std::abs(dphi_dn_node_error(i)),
-                        std::max(dphi_exact, 1e-12 * dphi_max));
-          log_fields[4](i) =
-            log10_ratio(std::abs(dphi_dn_node_error(i)), dphi_max);
-          log_fields[5](i) = log10_ratio(dphi_exact, 1.);
-        }
-      const std::vector<std::string> log_names = {"phi_log10_relative_error",
-                                                  "phi_log10_global_error",
-                                                  "phi_log10_exact",
-                                                  "dphi_dn_log10_relative_error",
-                                                  "dphi_dn_log10_global_error",
-                                                  "dphi_dn_log10_exact"};
-      for (unsigned int k = 0; k < log_fields.size(); ++k)
-        dataout_scalar.add_data_vector(log_fields[k],
-                                       std::vector<std::string>(1,
-                                                                log_names[k]),
-                                       DataOut<dim - 1, dim>::type_dof_data);
       dataout_scalar.build_patches(*bem.mapping,
                                    bem.mapping_degree,
                                    DataOut<dim - 1, dim>::curved_inner_cells);
@@ -1894,14 +1772,10 @@ BoundaryConditions<dim>::compute_errors()
       // either optional or a breakdown of these few numbers.
       pcout << "----- summary -----" << std::endl;
       pcout << "  mesh              " << n_active_cells << " cells, "
-            << n_dofs << " dofs, " << bem.fe->get_name() << std::endl;
+            << n_dofs << " dofs, FE_DGQ(" << bem.fe->degree << ")"
+            << std::endl;
       pcout << "  dPhidN L2 error   " << true_dphi_dn_L2_error
             << "  (relative " << relative_true_dphi_dn_L2_error << ")"
-            << std::endl;
-      pcout << "  phi L2 error      " << L2_error << "  (relative "
-            << relative(L2_error, exact_phi_L2_norm) << ")" << std::endl;
-      pcout << "  gradient L2 error " << grad_L2_error << "  (relative "
-            << relative(grad_L2_error, exact_gradient_L2_norm) << ")"
             << std::endl;
       if (has_l2_projection)
         pcout << "  best L2 projection " << projection_L2_error
