@@ -105,6 +105,31 @@ public:
     return screening;
   }
 
+  /** A gradient whose normal trace lambda the fused traversals of the
+   * single layer and the double-layer right-hand side also integrate
+   * against the single layer: integrate_single_and_double_layer() then
+   * returns <V lambda, phi_i> of the test cell in one more column, and
+   * integrate_single_and_double_layer_both() that of the test cell and that
+   * of the trial cell in two more. The consistent right-hand side of a
+   * manufactured solution so costs the evaluation of the gradient at the
+   * points of the rules, which are already there, instead of a traversal
+   * of its own. nullptr, the default, disables it.
+   */
+  void
+  set_flux_function(const Function<spacedim> *gradient)
+  {
+    AssertThrow(gradient == nullptr || gradient->n_components == spacedim,
+                ExcMessage("The flux function is a gradient, with one "
+                           "component per space dimension."));
+    flux_function = gradient;
+  }
+
+  const Function<spacedim> *
+  get_flux_function() const
+  {
+    return flux_function;
+  }
+
   /** Evaluate the geometry and the shape functions of the near-field rules
    * directly, instead of through FEValues. The mapping is a tensor
    * polynomial on each cell, so its values at the Gauss-Lobatto nodes of its
@@ -681,12 +706,14 @@ private:
   n_result_columns(const OperatorType        operator_type,
                    const Function<spacedim> *trial_function) const
   {
-    const unsigned int dpc = finite_element.dofs_per_cell;
+    const unsigned int dpc  = finite_element.dofs_per_cell;
+    const unsigned int flux = flux_function != nullptr ? 1 : 0;
     return operator_type == OperatorType::single_and_double_layer_both ?
-             dpc + 2 :
-           operator_type == OperatorType::single_and_double_layer ? dpc + 1 :
-           trial_function != nullptr                              ? 1 :
-                                                                    dpc;
+             dpc + 2 + 2 * flux :
+           operator_type == OperatorType::single_and_double_layer ?
+             dpc + 1 + flux :
+           trial_function != nullptr ? 1 :
+                                       dpc;
   }
 
   /// Geometry of a cell for the direct evaluation: the mapping at the
@@ -876,6 +903,7 @@ private:
 
   double                                      far_field_tolerance = 0.0;
   double                                      screening           = 0.0;
+  const Function<spacedim>                   *flux_function       = nullptr;
   mutable RhsProfile                          profile;
 
   /// exp(-kappa r) / (4 pi r).

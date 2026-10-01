@@ -2700,6 +2700,31 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
   const bool regularize    = function_part && regularize_trial_function &&
                           !adjoint;
   const unsigned int function_column = fused ? dpc : 0;
+  // The consistent right-hand sides, <V lambda, phi>, in the last columns.
+  const bool         flux        = fused && flux_function != nullptr;
+  const unsigned int flux_column = dpc + (both ? 2 : 1);
+
+  std::vector<double> trial_flux, test_flux;
+  if (flux)
+    {
+      const auto function_start = std::chrono::steady_clock::now();
+      trial_flux.resize(ny);
+      for (unsigned int qy = 0; qy < ny; ++qy)
+        trial_flux[qy] =
+          normal_trace(*flux_function, trial.points[qy], trial.normals[qy]);
+      if (both)
+        {
+          test_flux.resize(nx);
+          for (unsigned int qx = 0; qx < nx; ++qx)
+            test_flux[qx] =
+              normal_trace(*flux_function, test.points[qx], test.normals[qx]);
+        }
+      profile.function_calls += ny + (both ? nx : 0);
+      profile.function_seconds +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      function_start)
+          .count();
+    }
 
   std::vector<double> trial_values, test_values;
   if (function_part)
@@ -2830,6 +2855,43 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
                   (regularize ? exchanged_kernel[qy] * trial_values[qy] : 0.0));
         result(j, dpc + 1) = acc;
       }
+  if (flux)
+    {
+      // The kernel holds the trial weights: sum over y of G lambda(y) w_y
+      // for the test cell, and over x of w_x lambda(x) G w_y for the trial
+      // cell.
+      std::vector<double> at_test(nx, 0.0), at_trial(both ? ny : 0, 0.0);
+      for (unsigned int qx = 0; qx < nx; ++qx)
+        {
+          const double *k   = &kernel[qx * ny];
+          double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
+          for (unsigned int qy = 0; qy < ny; ++qy)
+            acc += k[qy] * trial_flux[qy];
+          at_test[qx] = test_weights[qx] * acc;
+          if (both)
+            {
+              const double a = test_weights[qx] * test_flux[qx];
+              for (unsigned int qy = 0; qy < ny; ++qy)
+                at_trial[qy] += a * k[qy];
+            }
+        }
+      for (unsigned int i = 0; i < dpc; ++i)
+        {
+          double acc = 0.0;
+          for (unsigned int qx = 0; qx < nx; ++qx)
+            acc += test.shapes[i * nx + qx] * at_test[qx];
+          result(i, flux_column) = acc;
+        }
+      if (both)
+        for (unsigned int j = 0; j < dpc; ++j)
+          {
+            double acc = 0.0;
+            for (unsigned int qy = 0; qy < ny; ++qy)
+              acc += trial.shapes[j * ny + qy] * at_trial[qy];
+            result(j, flux_column + 1) = acc;
+          }
+    }
   profile.kernel_seconds += std::chrono::duration<double>(
                               std::chrono::steady_clock::now() - kernel_start)
                               .count();
@@ -2864,6 +2926,30 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
   const bool regularize    = function_part && regularize_trial_function &&
                           !adjoint;
   const unsigned int function_column = fused ? dpc : 0;
+  const bool         flux            = fused && flux_function != nullptr;
+  const unsigned int flux_column     = dpc + (both ? 2 : 1);
+
+  std::vector<double> trial_flux, test_flux;
+  if (flux)
+    {
+      const auto function_start = std::chrono::steady_clock::now();
+      trial_flux.resize(n);
+      for (unsigned int p = 0; p < n; ++p)
+        trial_flux[p] =
+          normal_trace(*flux_function, trial.points[p], trial.normals[p]);
+      if (both)
+        {
+          test_flux.resize(n);
+          for (unsigned int p = 0; p < n; ++p)
+            test_flux[p] =
+              normal_trace(*flux_function, test.points[p], test.normals[p]);
+        }
+      profile.function_calls += (both ? 2 : 1) * n;
+      profile.function_seconds +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      function_start)
+          .count();
+    }
 
   std::vector<double> trial_values, test_values;
   if (function_part)
@@ -2972,6 +3058,28 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
           acc += v[p] * exchanged_weight[p];
         result(j, dpc + 1) = acc;
       }
+  if (flux)
+    {
+      for (unsigned int i = 0; i < dpc; ++i)
+        {
+          const double *u   = &test_shapes[i * n];
+          double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
+          for (unsigned int p = 0; p < n; ++p)
+            acc += u[p] * matrix_weight[p] * trial_flux[p];
+          result(i, flux_column) = acc;
+        }
+      if (both)
+        for (unsigned int j = 0; j < dpc; ++j)
+          {
+            const double *v   = &trial_shapes[j * n];
+            double        acc = 0.0;
+#pragma omp simd reduction(+ : acc)
+            for (unsigned int p = 0; p < n; ++p)
+              acc += v[p] * matrix_weight[p] * test_flux[p];
+            result(j, flux_column + 1) = acc;
+          }
+    }
   profile.kernel_seconds += std::chrono::duration<double>(
                               std::chrono::steady_clock::now() - kernel_start)
                               .count();

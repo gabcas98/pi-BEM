@@ -308,6 +308,11 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
     transposed(dpc, dpc), kernel(n_q_points, n_q_points),
     partial(dpc, n_q_points);
   Vector<double> exact_test_rhs(dpc), exact_trial_rhs(dpc), local(dpc);
+  // The consistent right-hand side from the same traversal as the single
+  // layer and the double layer, when the integrator carries the gradient.
+  const bool fused_flux = rhs.gradient != nullptr && rhs.dirichlet != nullptr &&
+                          integrator.get_flux_function() == rhs.gradient;
+  Vector<double> exact_test_flux(dpc), exact_trial_flux(dpc);
   std::vector<double> test_side(n_q_points), trial_side(n_q_points);
   for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
@@ -343,6 +348,12 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                   exact_test_rhs[i] = both(i, dpc);
                   if (!self)
                     exact_trial_rhs[i] = both(i, dpc + 1);
+                  if (fused_flux)
+                    {
+                      exact_test_flux[i] = both(i, self ? dpc + 1 : dpc + 2);
+                      if (!self)
+                        exact_trial_flux[i] = both(i, dpc + 3);
+                    }
                 }
             }
           else
@@ -460,9 +471,15 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
             }
           if (rhs.gradient != nullptr)
             {
-              // Diagnostic only: each direction with its own traversal.
-              local = integrator.integrate_single_layer_flux(
-                cells[t], cells[r], data.quadrature_order, *rhs.gradient);
+              // From the fused traversal, or else each direction with its
+              // own.
+              local = fused_flux ?
+                        exact_test_flux :
+                        integrator.integrate_single_layer_flux(
+                          cells[t],
+                          cells[r],
+                          data.quadrature_order,
+                          *rhs.gradient);
               for (unsigned int i = 0; i < dpc; ++i)
                 {
                   double sum = 0;
@@ -475,8 +492,13 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                                                      near_manufactured);
               if (!self)
                 {
-                  local = integrator.integrate_single_layer_flux(
-                    cells[r], cells[t], data.quadrature_order, *rhs.gradient);
+                  local = fused_flux ?
+                            exact_trial_flux :
+                            integrator.integrate_single_layer_flux(
+                              cells[r],
+                              cells[t],
+                              data.quadrature_order,
+                              *rhs.gradient);
                   // partial^T: the kernel block seen from the trial cell
                   for (unsigned int j = 0; j < dpc; ++j)
                     {

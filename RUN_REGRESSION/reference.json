@@ -63,6 +63,13 @@
   "iterations": "46",
   "rhs_norm": "0.2879097330903183"
  },
+ "dg_screened_p2_fmm_manufactured": {
+  "flux": "0.00241083",
+  "gradient": "0.0124772",
+  "iterations": "47",
+  "manufactured_norm": "0.28791",
+  "rhs_difference": "6.42561e-07"
+ },
  "dg_screened_plane_p1_fmm": {
   "flux": "0.0453569",
   "gradient": "8.32474e+33",

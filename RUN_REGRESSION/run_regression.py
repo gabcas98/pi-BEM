@@ -44,6 +44,8 @@ QUANTITIES = {
     'gradient_pointwise': (r'Phi Gradient with the flux as normal '
                            r'component: L_2 (\S+);', 'six'),
     'iterations': (r'(?:CG|GMRES) iterations: (\d+)', 'exact'),
+    'manufactured_norm': (r'\|b_manufactured\| (\S+),', 'six'),
+    'rhs_difference': (r'\|b_manufactured \+ b_regularized\| (\S+),', 'six'),
 }
 
 # name: (base file, settings in BEMProblem<3>, quantities to compare)
@@ -102,6 +104,18 @@ CASES = {
                             'Solution method': 'FMA',
                             'FMA Truncation Order': '10'},
                            ['rhs_norm', 'flux', 'gradient', 'iterations']),
+    # The consistent right-hand side through the FMM, integrated in the
+    # traversal of the single layer and the double layer, compared with the
+    # regularised one.
+    'dg_screened_p2_fmm_manufactured': ('screened_p2_bal0_weak.prm',
+                                        {'Preconditioner': 'PatchSchwarz',
+                                         'Solution method': 'FMA',
+                                         'FMA Truncation Order': '10',
+                                         'Dirichlet RHS treatment':
+                                           'manufactured_flux'},
+                                        ['manufactured_norm',
+                                         'rhs_difference', 'flux',
+                                         'gradient', 'iterations']),
     # kappa = 10 plane wave with exponential refinement towards the corner of
     # the box, screened FMM of order 8 (the base file sets it all).
     'dg_screened_plane_p1_fmm': ('screened_plane_exponential_p1.prm', {},

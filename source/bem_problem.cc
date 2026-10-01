@@ -2446,6 +2446,10 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       if (dirichlet_rhs_treatment == "manufactured_flux" ||
           std::getenv("PIBEM_COMPARE_RHS") != nullptr)
         rhs.gradient = exact_gradient;
+      // The consistent right-hand side is integrated in the traversal of
+      // the single layer and the double layer.
+      if (rhs.gradient != nullptr && rhs.dirichlet != nullptr)
+        integrator.set_flux_function(rhs.gradient);
       galerkin_fmm = std::make_unique<GalerkinFMMOperator>(mpi_communicator);
       galerkin_fmm->reinit(dh,
                            *mapping,
