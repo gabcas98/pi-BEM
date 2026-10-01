@@ -562,7 +562,10 @@ namespace YukawaExpansions
   /**
    * The translations of expansions of order p, M2M, M2L and L2L, by
    * rotation and translation along the z-axis ("point and shoot"), in
-   * O(p^3) operations instead of the O(p^4) of a dense matrix.
+   * O(p^3) operations instead of the O(p^4) of a dense matrix. The
+   * rotations act on any expansion in the real harmonics, and the class
+   * also gives the M2L translation along z of the Laplace kernel
+   * (z_translation_laplace()), which LaplaceFMM applies in the same way.
    *
    * Let v = c_old - c_new be the vector from the new centre to the old one.
    * The derivation rests on two facts. By Hobson's theorem a basis function
@@ -757,6 +760,45 @@ namespace YukawaExpansions
                 else if (from == Basis::local)
                   sign = ((n + n2) % 2) ? -1. : 1.;
                 block[(n2 - m) * (p + 1 - m) + (n - m)] = sign * sum;
+              }
+        }
+    }
+
+    /**
+     * The translation along z by the distance |v| of the Laplace kernel 1/r,
+     * from the outgoing basis r^{-(n+1)} Y_a to the local basis r^n Y_a,
+     * in the layout of z_translation(): the limit kappa -> 0 of the screened
+     * multipole-to-local translation, in which, with
+     * k_n(z) ~ (2n-1)!!/z^{n+1} and i_n(z) ~ z^n/(2n+1)!!, only the term
+     * l = n + n' of the sum remains:
+     * T_{(n',m),(n,m)} = (-1)^n sqrt(4 pi (2l+1)) G(n, n', l, m)
+     *                    (2l-1)!! / ((2n-1)!! (2n'+1)!!) / |v|^{l+1}.
+     */
+    void
+    z_translation_laplace(const double distance, double *Tz) const
+    {
+      // (2k-1)!!, k = 0..2p+1, and the powers of 1/|v|; computed once per
+      // distance, so plain vectors.
+      std::vector<double> double_factorial(2 * p + 2),
+        inverse_power(2 * p + 2);
+      double_factorial[0] = 1.;
+      for (unsigned int k = 1; k < double_factorial.size(); ++k)
+        double_factorial[k] = double_factorial[k - 1] * (2. * k - 1.);
+      inverse_power[0] = 1.;
+      for (unsigned int k = 1; k < inverse_power.size(); ++k)
+        inverse_power[k] = inverse_power[k - 1] / distance;
+      for (unsigned int m = 0; m <= p; ++m)
+        {
+          double *block = Tz + block_start[m];
+          for (unsigned int n2 = m; n2 <= p; ++n2)
+            for (unsigned int n = m; n <= p; ++n)
+              {
+                const unsigned int l = n + n2;
+                block[(n2 - m) * (p + 1 - m) + (n - m)] =
+                  ((n % 2) ? -1. : 1.) * axis_factor[l] *
+                  gaunt[gaunt_index(m, n, n2, l)] * double_factorial[l] /
+                  (double_factorial[n] * double_factorial[n2 + 1]) *
+                  inverse_power[l + 1];
               }
         }
     }

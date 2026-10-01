@@ -127,12 +127,12 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
   cost_m2l   = 1.;
   cost_p2p   = data.kappa > 0 ? 1. / 150. : 1. / 1500.;
   cost_point = data.kappa > 0 ? 0.5 : 0.05;
+  rotations = std::make_unique<YE::Operators>(data.order);
   if (data.kappa > 0)
     {
       // Translations between a parent and its child in each octant, level
       // by level; v is the old centre minus the new one. The normalization
       // of each level.
-      yukawa = std::make_unique<YE::Operators>(data.order);
       const unsigned int p     = data.order;
       const unsigned int nc    = YE::n_coefficients(p);
       unsigned int       depth = 0;
@@ -163,14 +163,14 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
               Tensor<1, 3> child_minus_parent;
               for (unsigned int d = 0; d < 3; ++d)
                 child_minus_parent[d] = ((o >> d) & 1) ? h : -h;
-              yukawa->dense_translation(YE::Basis::outgoing,
+              rotations->dense_translation(YE::Basis::outgoing,
                                         YE::Basis::outgoing,
                                         data.kappa,
                                         child_minus_parent,
                                         rho,
                                         2. * rho,
                                         &yukawa_m2m[(level * 8 + o) * nc * nc]);
-              yukawa->dense_translation(YE::Basis::local,
+              rotations->dense_translation(YE::Basis::local,
                                         YE::Basis::local,
                                         data.kappa,
                                         -child_minus_parent,
@@ -186,7 +186,9 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
     }
   else
     {
-      yukawa.reset();
+      const LE::RealBasis basis(data.order);
+      real_outgoing = basis.outgoing;
+      real_local    = basis.local;
       yukawa_m2m.clear();
       yukawa_l2l.clear();
       yukawa_outgoing_scale.clear();
@@ -463,16 +465,37 @@ LaplaceFMM::distribute_work() const
       m2l_unit[i] = unit;
       by_offset[key].push_back(i);
     }
-  // With screening, the translation along z of every pair, one for each
-  // distance |tau| u, which the square of tau and the level of the smaller
-  // box determine; the pairs of a group are sorted by it first, so that a
-  // batch mostly shares one.
+  // The translation along z of every pair: for the Laplace kernel one for
+  // each |tau|, in units u; with screening one for each distance |tau| u,
+  // which the square of tau and the level of the smaller box determine. The
+  // pairs of a group are sorted by it first, so that a batch mostly shares
+  // one.
   yukawa_tz.clear();
   m2l_tz.assign(my_m2l_pairs.size(), 0);
-  if (data.kappa > 0)
+  if (data.kappa == 0.)
+    {
+      std::map<int, unsigned int> start_of;
+      const unsigned int          size = rotations->z_translation_size();
+      for (const auto &[key, members] : by_offset)
+        {
+          const int tau2 =
+            key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
+          const auto [entry, inserted] =
+            start_of.try_emplace(tau2, yukawa_tz.size());
+          if (inserted)
+            {
+              yukawa_tz.resize(yukawa_tz.size() + size);
+              rotations->z_translation_laplace(std::sqrt(double(tau2)),
+                                               &yukawa_tz[entry->second]);
+            }
+          for (const unsigned int i : members)
+            m2l_tz[i] = entry->second;
+        }
+    }
+  else
     {
       std::map<std::pair<int, unsigned int>, unsigned int> start_of;
-      const unsigned int size = yukawa->z_translation_size();
+      const unsigned int size = rotations->z_translation_size();
       for (const auto &[key, members] : by_offset)
         {
           const int tau2 =
@@ -487,7 +510,7 @@ LaplaceFMM::distribute_work() const
               if (inserted)
                 {
                   yukawa_tz.resize(yukawa_tz.size() + size);
-                  yukawa->z_translation_unscaled(YE::Basis::outgoing,
+                  rotations->z_translation_unscaled(YE::Basis::outgoing,
                                                  YE::Basis::local,
                                                  data.kappa,
                                                  std::sqrt(double(tau2)) *
@@ -872,28 +895,27 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
     sum_over_processes(multipoles, mpi_communicator);
   phase_time[1] += seconds_since(start);
 
-  // M2L by groups of pairs with the same scaled offset: one operator per
-  // group, applied to batches of B pairs. A pair scales its multipole by
-  // u^{-n} on the way in and the result by u^{-(k+1)} on the way out.
+  // M2L by groups of pairs with the same scaled offset, by rotation onto the
+  // z-axis in the real harmonics (see YukawaExpansions::Operators): the
+  // rotation of the group and the translation along z of its |tau|, shared
+  // by all pairs of the group whatever the size of their boxes, applied to
+  // batches of B pairs. A pair converts its multipole to real coefficients
+  // scaled by u^{-n} on the way in, and the result back, scaled by
+  // u^{-(k+1)}, on the way out.
   start = std::chrono::steady_clock::now();
   {
-    constexpr unsigned int B       = 8;
-    const unsigned int     columns = (p + 1) * (p + 1);
-    std::vector<double>    T_re(nc * columns), T_im(nc * columns);
-    std::vector<double>    X_re(columns * B), X_im(columns * B);
-    std::vector<double>    Y_re(nc * B), Y_im(nc * B);
-    std::vector<double>    power(p + 2);
+    constexpr unsigned int B  = 8;
+    const unsigned int     nr = YE::n_coefficients(p);
+    std::vector<double>    X(nr * B), Y(nr * B), work(nr * B);
+    YE::Operators::Angles  angles;
     for (const auto &group : m2l_groups)
       {
-        LE::multipole_to_local_operator(w,
-                                        group.tau,
-                                        T_re.data(),
-                                        T_im.data());
+        // v = c_B - c_A = -tau u
+        rotations->angles(-group.tau, angles);
+        const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
         for (unsigned int first = group.begin; first < group.end; first += B)
           {
             const unsigned int count = std::min(B, group.end - first);
-            std::fill(X_re.begin(), X_re.end(), 0.);
-            std::fill(X_im.begin(), X_im.end(), 0.);
             for (unsigned int j = 0; j < count; ++j)
               {
                 const unsigned int pair = m2l_order[first + j];
@@ -902,27 +924,24 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
                 const double inverse_unit = 1. / m2l_unit[pair];
                 double       scale        = 1.;
                 for (unsigned int n = 0; n <= p; ++n, scale *= inverse_unit)
-                  for (unsigned int m = 0; m <= n; ++m)
-                    {
-                      const LE::complex v = scale * M[LE::index(n, m)];
-                      X_re[(n * n + n + m) * B + j] = v.real();
-                      X_im[(n * n + n + m) * B + j] = v.imag();
-                      if (m > 0)
-                        {
-                          // M_n^{-m} = (-1)^m conj(M_n^m)
-                          const double sign = (m & 1) ? -1. : 1.;
-                          X_re[(n * n + n - m) * B + j] = sign * v.real();
-                          X_im[(n * n + n - m) * B + j] = -sign * v.imag();
-                        }
-                    }
+                  {
+                    const unsigned int c = LE::index(n, 0);
+                    X[YE::index(n, 0) * B + j] =
+                      scale * real_outgoing[c] * M[c].real();
+                    for (unsigned int m = 1; m <= n; ++m)
+                      {
+                        const double f = scale * real_outgoing[c + m];
+                        X[YE::index(n, m) * B + j]       = f * M[c + m].real();
+                        X[YE::index(n, -int(m)) * B + j] = -f * M[c + m].imag();
+                      }
+                  }
               }
-            LE::multipole_to_local_batch<B>(p,
-                                            T_re.data(),
-                                            T_im.data(),
-                                            X_re.data(),
-                                            X_im.data(),
-                                            Y_re.data(),
-                                            Y_im.data());
+            for (unsigned int j = count; j < B; ++j)
+              for (unsigned int a = 0; a < nr; ++a)
+                X[a * B + j] = 0.;
+            std::fill(Y.begin(), Y.end(), 0.);
+            rotations->translate<B>(
+              angles, Tz, X.data(), Y.data(), work.data());
             for (unsigned int j = 0; j < count; ++j)
               {
                 const unsigned int pair = m2l_order[first + j];
@@ -930,12 +949,15 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
                 const double       inverse_unit = 1. / m2l_unit[pair];
                 double             scale        = inverse_unit;
                 for (unsigned int k = 0; k <= p; ++k, scale *= inverse_unit)
-                  for (unsigned int l = 0; l <= k; ++l)
-                    {
-                      const unsigned int r = LE::index(k, l);
-                      L[r] += LE::complex(scale * Y_re[r * B + j],
-                                          scale * Y_im[r * B + j]);
-                    }
+                  {
+                    const unsigned int c = LE::index(k, 0);
+                    L[c] += scale * real_local[c] * Y[YE::index(k, 0) * B + j];
+                    for (unsigned int l = 1; l <= k; ++l)
+                      L[c + l] +=
+                        scale * real_local[c + l] *
+                        LE::complex(Y[YE::index(k, l) * B + j],
+                                    Y[YE::index(k, -int(l)) * B + j]);
+                  }
               }
           }
       }
@@ -1027,13 +1049,13 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
   {
     constexpr unsigned int B = 8;
     std::vector<double>    X(nc * B), Y(nc * B), work(nc * B),
-      Tz_lanes(yukawa->z_translation_size() * B);
+      Tz_lanes(rotations->z_translation_size() * B);
     std::array<const double *, B> Tz;
     YE::Operators::Angles         angles;
     for (const auto &group : m2l_groups)
       {
         // v = c_B - c_A = -tau u
-        yukawa->angles(-group.tau, angles);
+        rotations->angles(-group.tau, angles);
         for (unsigned int first = group.begin; first < group.end; first += B)
           {
             const unsigned int count = std::min(B, group.end - first);
@@ -1056,7 +1078,7 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
                 Tz[j] = Tz[0];
               }
             std::fill(Y.begin(), Y.end(), 0.);
-            yukawa->translate<B>(angles,
+            rotations->translate<B>(angles,
                                  Tz.data(),
                                  X.data(),
                                  Y.data(),

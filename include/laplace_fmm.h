@@ -233,10 +233,14 @@ private:
   /**
    * The M2L pairs of this process grouped by their offset: in units u of
    * half the side of the smaller box, the offset of the centres is an
-   * integer vector tau, and the pairs with the same tau share one
-   * translation operator (see
-   * LaplaceExpansions::multipole_to_local_operator()), which is built once
-   * per group and applied to the pairs in batches.
+   * integer vector tau, and the pairs with the same tau share the rotation
+   * that takes tau onto the z-axis (YukawaExpansions::Operators), applied
+   * to the pairs in batches with their translation along z. For the
+   * Laplace kernel the translation along z depends on |tau| alone, so the
+   * whole M2L operator is shared by the group whatever the size of its
+   * boxes; the expansions are converted to real coefficients scaled by
+   * powers of u on the way in and back on the way out
+   * (LaplaceExpansions::RealBasis).
    */
   struct M2LGroup
   {
@@ -251,23 +255,30 @@ private:
   /// Expansions of all boxes, n_coefficients(order) each.
   mutable std::vector<LaplaceExpansions::complex> multipoles, locals;
 
+  /// The rotations and translations along z of the real harmonics, with
+  /// which both kernels apply their M2L translations.
+  std::unique_ptr<YukawaExpansions::Operators> rotations;
+  /// The factors between the complex Laplace coefficients and the real
+  /// ones (LaplaceExpansions::RealBasis).
+  std::vector<double> real_outgoing, real_local;
+
   /// The screened expansions of all boxes, and their translations: the
-  /// operators of the order, and the dense M2M and L2L matrices of a child
-  /// at each level in each octant of its parent, at (level * 8 + octant)
-  /// times the square of the number of coefficients.
-  std::unique_ptr<YukawaExpansions::Operators> yukawa;
-  mutable std::vector<double>                  yukawa_multipoles, yukawa_locals;
+  /// dense M2M and L2L matrices of a child at each level in each octant of
+  /// its parent, at (level * 8 + octant) times the square of the number of
+  /// coefficients.
+  mutable std::vector<double> yukawa_multipoles, yukawa_locals;
   std::vector<double>                          yukawa_m2m, yukawa_l2l;
   /// The normalization of the screened expansions of each level, 1/k_n and
   /// i_n of kappa times its radius, at level * (order + 1) + n: the M2L
   /// translations work between the unnormalized bases.
   std::vector<double> yukawa_outgoing_scale, yukawa_local_scale;
   /**
-   * The screened M2L translations along z of this process: one for each
-   * distance |tau| u of its pairs, stored one after another, and the start
-   * of the one of each pair of my_m2l_pairs. A group shares the rotation of
-   * its offset tau; its pairs, of different sizes, may need different
-   * translations along z.
+   * The M2L translations along z of this process, stored one after another,
+   * and the start of the one of each pair of my_m2l_pairs. A group shares
+   * the rotation of its offset tau. For the Laplace kernel the translation
+   * depends on |tau| alone, in units u; with screening on the distance
+   * |tau| u, so that the pairs of a group, of different sizes, may need
+   * different ones.
    */
   mutable std::vector<double>       yukawa_tz;
   mutable std::vector<unsigned int> m2l_tz;

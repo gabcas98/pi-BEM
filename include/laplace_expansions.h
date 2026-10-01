@@ -17,6 +17,7 @@
 
 #include <deal.II/base/tensor.h>
 
+#include <cmath>
 #include <complex>
 #include <vector>
 
@@ -59,7 +60,9 @@
  * $n(n+1)/2 + m$; those with $m < 0$ follow from the symmetry, which the
  * expansions share with the harmonics because the potential is real.
  * Every translation costs $O(p^4)$ multiply-adds after $O(p^2)$ work on
- * the harmonics of the translation vector.
+ * the harmonics of the translation vector. LaplaceFMM applies the M2L
+ * translation in $O(p^3)$ instead, by rotation in the real harmonics of
+ * yukawa_expansions.h, through the factors of RealBasis.
  */
 namespace LaplaceExpansions
 {
@@ -491,6 +494,53 @@ namespace LaplaceExpansions
           }
       }
   }
+
+  /**
+   * The factors between the complex coefficients of this namespace and real
+   * ones in the orthonormal real spherical harmonics Y_a, a = (n, m), of
+   * YukawaExpansions::real_harmonics(), whose P_n^m carry the same
+   * Condon-Shortley phase. With the norms c_m N_n^m of those harmonics
+   * (c_0 = 1, c_m = sqrt(2)), P_n^m e^{im phi} = (Y_(n,m) + i Y_(n,-m)) /
+   * (c_m N_n^m) for m > 0, so that a multipole expansion
+   * sum M_n^m I_n^m(r), summed over both signs of m, is
+   * sum_a c_a r^{-(n+1)} Y_a(r^) with
+   *   c_(n,0) = outgoing(n,0) Re M_n^0,
+   *   c_(n,m) = outgoing(n,m) Re M_n^m, c_(n,-m) = -outgoing(n,m) Im M_n^m,
+   * outgoing(n,m) = (m > 0 ? 2 : 1) (-1)^m (n-m)! / (c_m N_n^m); and a local
+   * expansion sum L_n^m conj(R_n^m(r)) with real coefficients d_a in the
+   * basis r^n Y_a(r^) has
+   *   L_n^0 = local(n,0) d_(n,0), L_n^m = local(n,m) (d_(n,m) + i d_(n,-m)),
+   * local(n,m) = (-1)^m c_m N_n^m (n+m)! / (m > 0 ? 2 : 1). Both are indexed
+   * like the stored coefficients, index(n, m) with m >= 0.
+   */
+  struct RealBasis
+  {
+    explicit RealBasis(const unsigned int p)
+      : p(p)
+      , outgoing(n_coefficients(p))
+      , local(n_coefficients(p))
+    {
+      std::vector<double> factorial(2 * p + 1, 1.);
+      for (unsigned int k = 1; k <= 2 * p; ++k)
+        factorial[k] = factorial[k - 1] * k;
+      for (unsigned int n = 0; n <= p; ++n)
+        for (unsigned int m = 0; m <= n; ++m)
+          {
+            const double norm =
+              (m > 0 ? std::sqrt(2.) : 1.) *
+              std::sqrt((2. * n + 1.) / (4. * M_PI) * factorial[n - m] /
+                        factorial[n + m]);
+            const double sign = (m & 1) ? -1. : 1.;
+            outgoing[index(n, m)] =
+              (m > 0 ? 2. : 1.) * sign * factorial[n - m] / norm;
+            local[index(n, m)] =
+              sign * norm * factorial[n + m] / (m > 0 ? 2. : 1.);
+          }
+    }
+
+    unsigned int        p;
+    std::vector<double> outgoing, local;
+  };
 } // namespace LaplaceExpansions
 
 #endif

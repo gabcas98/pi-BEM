@@ -37,6 +37,7 @@
 #include "laplace_expansions.h"
 #include "local_expansion.h"
 #include "multipole_expansion.h"
+#include "yukawa_expansions.h"
 
 using namespace dealii;
 namespace LE = LaplaceExpansions;
@@ -389,6 +390,71 @@ main(int argc, char **argv)
         }
       std::cout << '\n';
     }
+  // M2L by rotation onto the z-axis in the real harmonics of
+  // yukawa_expansions.h, against the direct formula: the multipole of the
+  // sources converted to real coefficients, rotated, translated along z
+  // and rotated back, and the local expansion converted back.
+  std::cout << "\nM2L by rotation against the direct formula, largest "
+               "relative difference of the local coefficients\n";
+  for (unsigned int p = 4; p <= std::min(max_order, 16u); p += 4)
+    {
+      namespace YE = YukawaExpansions;
+      LE::Workspace           w(p);
+      const LE::RealBasis     basis(p);
+      const YE::Operators     operators(p);
+      const unsigned int      nc = LE::n_coefficients(p);
+      std::vector<LE::complex> M(nc, 0.), L_direct(nc, 0.), L_rotated(nc, 0.);
+      std::uniform_real_distribution<double> u(-0.5, 0.5);
+      for (unsigned int i = 0; i < 30; ++i)
+        LE::add_charge(w,
+                       u(rng),
+                       Tensor<1, 3>({u(rng), u(rng), u(rng)}),
+                       M.data());
+      double worst = 0;
+      for (const Tensor<1, 3> zL_minus_zM :
+           {Tensor<1, 3>({4., 2., 2.}), Tensor<1, 3>({-3., 0., 0.}),
+            Tensor<1, 3>({0., 0., -5.}), Tensor<1, 3>({1., -6., 3.})})
+        {
+          std::fill(L_direct.begin(), L_direct.end(), 0.);
+          LE::multipole_to_local(w, M.data(), zL_minus_zM, L_direct.data());
+          const unsigned int  nr = YE::n_coefficients(p);
+          std::vector<double> X(nr), Y(nr, 0.), work(nr),
+            Tz(operators.z_translation_size());
+          for (unsigned int n = 0; n <= p; ++n)
+            for (unsigned int m = 0; m <= n; ++m)
+              {
+                const LE::complex c = M[LE::index(n, m)];
+                const double      f = basis.outgoing[LE::index(n, m)];
+                X[YE::index(n, m)]  = f * c.real();
+                if (m > 0)
+                  X[YE::index(n, -int(m))] = -f * c.imag();
+              }
+          operators.z_translation_laplace(zL_minus_zM.norm(), Tz.data());
+          YE::Operators::Angles angles;
+          operators.angles(-zL_minus_zM, angles);
+          operators.translate<1>(
+            angles, Tz.data(), X.data(), Y.data(), work.data());
+          double largest = 0, difference = 0;
+          for (unsigned int n = 0; n <= p; ++n)
+            for (unsigned int m = 0; m <= n; ++m)
+              {
+                const double f = basis.local[LE::index(n, m)];
+                L_rotated[LE::index(n, m)] =
+                  m == 0 ? LE::complex(f * Y[YE::index(n, 0)], 0.) :
+                           f * LE::complex(Y[YE::index(n, m)],
+                                           Y[YE::index(n, -int(m))]);
+                largest = std::max(largest, std::abs(L_direct[LE::index(n, m)]));
+                difference =
+                  std::max(difference,
+                           std::abs(L_rotated[LE::index(n, m)] -
+                                    L_direct[LE::index(n, m)]));
+              }
+          worst = std::max(worst, difference / largest);
+        }
+      std::cout << "  p=" << p << ": " << std::scientific
+                << std::setprecision(2) << worst << std::defaultfloat << '\n';
+    }
+
   // M2L as LaplaceFMM applies it: one operator per offset, built once and
   // applied to batches of eight expansions stored coefficient by
   // coefficient; the time per translation, without the operator.
