@@ -101,11 +101,14 @@
 #include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
 #include "../include/galerkin_fmm_operator.h"
+#include "../include/cad_projectors.h"
 #include "../include/computational_domain.h"
 #include "../include/constrained_matrix.h"
 #include "../include/local_expansion.h"
 #include "../include/multipole_expansion.h"
 #include "../include/octree_block.h"
+#include "../include/projected_mapping.h"
+#include "../include/projected_quadrature.h"
 
 using namespace dealii;
 
@@ -424,6 +427,35 @@ public:
   Vector<double>                         map_vector;
   std::shared_ptr<Mapping<dim - 1, dim>> mapping;
   unsigned int                           mapping_degree;
+
+  /// Integrate over the exact geometry: the mapping is an
+  /// ExactGeometry::ProjectedMapping of degree mapping_degree, whose
+  /// projectors come from the CAD surfaces of the domain or from the
+  /// analytic manifolds attached to the triangulation.
+  bool         exact_geometry = false;
+  std::string  exact_geometry_source;
+  /// Degree of the polynomial interpolation of the exact geometry, a
+  /// MappingQCache filled by ExactGeometry::interpolate_exact_geometry, or
+  /// zero for the lowest degree that meets the tolerance; zero degree and
+  /// zero tolerance project every point.
+  unsigned int exact_geometry_degree    = 0;
+  double       exact_geometry_tolerance = 1e-10;
+  bool         interpolate_exact_geometry = false;
+  std::shared_ptr<ExactGeometry::ProjectedMapping<dim - 1, dim>>
+    exact_mapping;
+  std::shared_ptr<MappingQCache<dim - 1, dim>> exact_mapping_cache;
+  /// The interpolation of the previous reinit(), kept alive until the next
+  /// one: objects built in reinit(), such as the FMA, observe the mapping
+  /// and are rebound to the new one only after it is made.
+  std::shared_ptr<MappingQCache<dim - 1, dim>> retired_mapping_cache;
+  std::vector<std::unique_ptr<ExactGeometry::Projector<dim - 1, dim>>>
+    exact_projectors;
+  std::unique_ptr<ExactGeometry::ProjectorCollection<dim - 1, dim>>
+    exact_projector_collection;
+
+  /// The mapping onto the exact geometry, with the projectors.
+  std::shared_ptr<Mapping<dim - 1, dim>>
+  make_exact_geometry_mapping();
   Vector<double>                         map_points;
 
 

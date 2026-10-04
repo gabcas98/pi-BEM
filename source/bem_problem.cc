@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <vector>
 
 #include "../include/laplace_kernel.h"
@@ -655,8 +656,155 @@ BEMProblem<dim>::reinit()
       if (mapping_type == "FE")
         mapping = std::make_shared<MappingFEField<dim - 1, dim>>(gradient_dh,
                                                                  map_vector);
+      else if (exact_geometry)
+        {
+          exact_mapping = std::dynamic_pointer_cast<
+            ExactGeometry::ProjectedMapping<dim - 1, dim>>(
+            make_exact_geometry_mapping());
+          if (exact_geometry_degree > 0 || exact_geometry_tolerance > 0)
+            interpolate_exact_geometry = true;
+          else
+            mapping = exact_mapping;
+        }
       else
         mapping = std::make_shared<MappingQ<dim - 1, dim>>(mapping_degree);
+    }
+  // The interpolated exact geometry is cleared whenever the triangulation
+  // changes; it is filled again here, at the given degree or at the lowest
+  // degree that meets the tolerance on the current mesh.
+  if (interpolate_exact_geometry)
+    {
+      const auto   start = std::chrono::steady_clock::now();
+      unsigned int degree =
+        exact_geometry_degree > 0 ? exact_geometry_degree :
+                                    std::max(2u, mapping_degree);
+      // The degree from an estimate on every eighth cell, the processes
+      // taking different cells: the lowest that meets the tolerance, up to
+      // 10. The deviation may stay nearly flat over the first degrees, then
+      // falls exponentially. Once it has fallen by ten in one degree, a
+      // deviation that does not halve over two degrees no longer follows
+      // the interpolation but a geometry that is not smooth or not precise
+      // enough for the tolerance, as a CAD surface written to a few digits;
+      // the search then stops at the degree of the smallest deviation. The
+      // interpolation is checked on all cells, and the degree raised as
+      // long as that halves the deviation.
+      const auto deviation_of = [](const std::pair<double, double> &d) {
+        return std::max(d.first, d.second);
+      };
+      const unsigned int n_processes =
+        Utilities::MPI::n_mpi_processes(mpi_communicator);
+      const unsigned int stride  = std::max(1u, 8 * n_processes);
+      bool               stalled = false;
+      if (exact_geometry_degree == 0)
+        {
+          std::ostringstream estimates;
+          double             smallest    = std::numeric_limits<double>::max();
+          double             previous    = smallest;
+          bool               converging  = false;
+          unsigned int       best_degree = degree, without_gain = 0;
+          for (;; ++degree)
+            {
+              auto estimate = ExactGeometry::estimate_interpolation_deviation(
+                *exact_mapping,
+                comp_dom.tria,
+                degree,
+                stride,
+                8 * Utilities::MPI::this_mpi_process(mpi_communicator));
+              estimate.first =
+                Utilities::MPI::max(estimate.first, mpi_communicator);
+              estimate.second =
+                Utilities::MPI::max(estimate.second, mpi_communicator);
+              const double deviation = deviation_of(estimate);
+              estimates << ' ' << degree << ": " << deviation;
+              if (deviation <= exact_geometry_tolerance)
+                break;
+              converging = converging || deviation < previous / 10;
+              previous   = deviation;
+              if (deviation < smallest / 2)
+                {
+                  smallest     = deviation;
+                  best_degree  = degree;
+                  without_gain = 0;
+                }
+              else if (++without_gain >= 2 && converging)
+                {
+                  stalled = true;
+                  degree  = best_degree;
+                  break;
+                }
+              if (degree == 10)
+                {
+                  degree = best_degree;
+                  break;
+                }
+            }
+          pcout << "Exact geometry: estimated deviation by degree"
+                << estimates.str() << std::endl;
+        }
+      auto interpolation =
+        std::make_shared<MappingQCache<dim - 1, dim>>(degree);
+      auto deviation = ExactGeometry::interpolate_exact_geometry(
+        *interpolation, *exact_mapping, comp_dom.tria, mpi_communicator);
+      // The deviation falls in pairs of degrees, little from an odd degree
+      // to the next even one: the degree is raised by one or two.
+      while (exact_geometry_degree == 0 && !stalled &&
+             deviation_of(deviation) > exact_geometry_tolerance)
+        {
+          bool         raised = false;
+          unsigned int step   = 1;
+          for (; step <= 2 && degree + step <= 10; ++step)
+            {
+              auto higher =
+                std::make_shared<MappingQCache<dim - 1, dim>>(degree + step);
+              const auto higher_deviation =
+                ExactGeometry::interpolate_exact_geometry(*higher,
+                                                          *exact_mapping,
+                                                          comp_dom.tria,
+                                                          mpi_communicator);
+              if (deviation_of(higher_deviation) <
+                  deviation_of(deviation) / 2)
+                {
+                  interpolation = higher;
+                  deviation     = higher_deviation;
+                  degree += step;
+                  raised = true;
+                  break;
+                }
+            }
+          if (!raised)
+            {
+              // Two degrees tried without gain: the geometry; fewer: the
+              // largest degree.
+              stalled = step > 2;
+              break;
+            }
+        }
+      retired_mapping_cache = exact_mapping_cache;
+      exact_mapping_cache   = interpolation;
+      mapping               = exact_mapping_cache;
+      pcout << "Exact geometry: interpolation of degree " << degree << " in "
+            << std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                             start)
+                 .count()
+            << " s; largest deviation from the exact map, points "
+            << deviation.first << " of the cell diameter, surface elements "
+            << deviation.second << std::endl;
+      if (exact_geometry_degree == 0 &&
+          deviation_of(deviation) > exact_geometry_tolerance)
+        {
+          if (stalled)
+            pcout << "Warning: the deviation of the interpolation stops "
+                     "decreasing at degree "
+                  << degree << ", above the tolerance "
+                  << exact_geometry_tolerance
+                  << ": the geometry is not smooth or not precise enough "
+                     "for it"
+                  << std::endl;
+          else
+            pcout << "Warning: the interpolation misses the tolerance "
+                  << exact_geometry_tolerance << " up to degree 10"
+                  << std::endl;
+        }
     }
 
 
@@ -1310,6 +1458,77 @@ BEMProblem<2>::get_quasi_singular_quadrature(const typename DoFHandler<1,2>::act
 }
 
 template <int dim>
+std::shared_ptr<Mapping<dim - 1, dim>>
+BEMProblem<dim>::make_exact_geometry_mapping()
+{
+  exact_projectors.clear();
+  exact_projector_collection =
+    std::make_unique<ExactGeometry::ProjectorCollection<dim - 1, dim>>();
+  const Triangulation<dim - 1, dim> &tria = comp_dom.tria;
+
+  // The manifold ids in use, with a vertex of each, and the largest distance
+  // of their vertices from the centre of a spherical manifold.
+  std::map<types::manifold_id, std::vector<Point<dim>>> vertices;
+  for (const auto &cell : tria.active_cell_iterators())
+    if (cell->manifold_id() != numbers::flat_manifold_id)
+      for (const unsigned int v : cell->vertex_indices())
+        vertices[cell->manifold_id()].push_back(cell->vertex(v));
+
+  if (exact_geometry_source == "cad")
+    {
+      if constexpr (dim == 3)
+        {
+          AssertThrow(!comp_dom.cad_surfaces.empty(),
+                      ExcMessage("Exact geometry source = cad needs the "
+                                 "Color_i.iges files and Use iges surfaces "
+                                 "and curves = true."));
+          for (unsigned int i = 0; i < comp_dom.cad_surfaces.size(); ++i)
+            {
+              exact_projectors.push_back(
+                std::make_unique<OpenCASCADE::ShapeProjector<2>>(
+                  comp_dom.cad_surfaces[i]));
+              exact_projector_collection->add(1 + i, *exact_projectors.back());
+              pcout << "Exact geometry: cells of manifold id " << 1 + i
+                    << " projected onto Color_" << 1 + i << ".iges"
+                    << std::endl;
+            }
+        }
+      else
+        AssertThrow(false,
+                    ExcMessage("CAD surfaces are available in 3d only."));
+    }
+  else
+    for (const auto &[id, points] : vertices)
+      {
+        const auto *sphere = dynamic_cast<const SphericalManifold<dim - 1, dim> *>(
+          &tria.get_manifold(id));
+        if (sphere == nullptr)
+          {
+            pcout << "Exact geometry: cells of manifold id " << id
+                  << " stay on the mesh (not a spherical manifold)"
+                  << std::endl;
+            continue;
+          }
+        double radius = 0;
+        for (const auto &p : points)
+          radius += p.distance(sphere->get_center());
+        radius /= points.size();
+        exact_projectors.push_back(
+          std::make_unique<ExactGeometry::SphericalProjector<dim - 1, dim>>(
+            sphere->get_center(), radius));
+        exact_projector_collection->add(id, *exact_projectors.back());
+        pcout << "Exact geometry: cells of manifold id " << id
+              << " projected onto the sphere of centre " << sphere->get_center()
+              << " and radius " << radius << std::endl;
+      }
+  pcout << "Exact geometry: projected mapping of degree " << mapping_degree
+        << std::endl;
+  return std::make_shared<ExactGeometry::ProjectedMapping<dim - 1, dim>>(
+    mapping_degree, *exact_projector_collection);
+}
+
+
+template <int dim>
 void
 BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
 {
@@ -1570,6 +1789,37 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
   prm.declare_entry("Mapping Type", "FE", Patterns::Selection("FE|Q"));
 
   prm.declare_entry("Mapping Q Degree", "1", Patterns::Integer());
+
+  // Integrate over the exact geometry rather than over the cells of the
+  // mapping: every cell is mapped onto the surface it approximates by the
+  // projection of the points of its MappingQ of the degree above, with the
+  // Jacobian of the projection (ExactGeometry::ProjectedMapping). All
+  // integrals, collocation and Galerkin, the right-hand sides, the support
+  // points and the errors then see the exact geometry; the finite element
+  // spaces are those of the mesh. The source of the geometry: "cad" projects
+  // the cells of manifold id i onto the surface of Color_i.iges (Use iges
+  // surfaces and curves = true), "manifold" onto the analytic manifold
+  // attached to the cells (spheres); cells of other manifold ids stay on the
+  // mesh. Needs Mapping Type = Q.
+  prm.declare_entry("Exact geometry", "false", Patterns::Bool());
+  prm.declare_entry("Exact geometry source",
+                    "cad",
+                    Patterns::Selection("cad|manifold"));
+  // The exact map of every cell is interpolated once at the Gauss-Lobatto
+  // points of a degree n, and the geometry is then evaluated as a MappingQ
+  // of degree n, without projections: the cost of a polynomial mapping, at
+  // an accuracy that converges exponentially in n. With a positive degree,
+  // n is that degree. With zero, n is the lowest degree from that of the
+  // mapping up to 10 at which the interpolant deviates from the exact map by
+  // less than the tolerance, in points relative to the cell diameter and in
+  // surface elements; with zero degree and zero tolerance every point is
+  // projected, which is exact but slow on CAD surfaces.
+  prm.declare_entry("Exact geometry interpolation degree",
+                    "0",
+                    Patterns::Integer(0, 11));
+  prm.declare_entry("Exact geometry interpolation tolerance",
+                    "1e-10",
+                    Patterns::Double(0.0));
 
   prm.declare_entry("Continuos gradient across edges",
                     "true",
@@ -1847,6 +2097,14 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
 
   mapping_type       = prm.get("Mapping Type");
   mapping_degree     = prm.get_integer("Mapping Q Degree");
+  exact_geometry        = prm.get_bool("Exact geometry");
+  exact_geometry_source = prm.get("Exact geometry source");
+  exact_geometry_degree =
+    prm.get_integer("Exact geometry interpolation degree");
+  exact_geometry_tolerance =
+    prm.get_double("Exact geometry interpolation tolerance");
+  AssertThrow(!exact_geometry || mapping_type == "Q",
+              ExcMessage("Exact geometry needs Mapping Type = Q."));
   continuos_gradient = prm.get_bool("Continuos gradient across edges");
 
 
@@ -2205,6 +2463,16 @@ BEMProblem<dim>::assemble_galerkin_system()
                                        mpi_communicator)
                 << " regular leaves "
                 << Utilities::MPI::max(profile.regular_seconds,
+                                       mpi_communicator)
+                << " s" << std::endl
+                << "  cell geometry at "
+                << Utilities::MPI::sum(double(profile.geometry_points),
+                                       mpi_communicator)
+                << " points "
+                << Utilities::MPI::max(profile.geometry_seconds,
+                                       mpi_communicator)
+                << " s, shape values "
+                << Utilities::MPI::max(profile.shape_seconds,
                                        mpi_communicator)
                 << " s" << std::endl;
       }
@@ -9160,10 +9428,18 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       start)
           .count();
+      // The degree of the reconstruction is that of the mapping: of the
+      // polynomial mapping, of the interpolation of the exact geometry, or
+      // of the mesh mapping a projected mapping starts from.
+      unsigned int geometry_degree =
+        mapping_type == "FE" ? vector_fe_order : mapping_degree;
+      if (const auto *polynomial =
+            dynamic_cast<const MappingQ<dim - 1, dim> *>(mapping.get()))
+        geometry_degree = polynomial->get_degree();
       const SurfacePotentialEvaluator evaluator(
         *mapping,
         dh,
-        mapping_type == "FE" ? vector_fe_order : mapping_degree,
+        geometry_degree,
         densities,
         duffy_order,
         near_ratio,
@@ -9559,6 +9835,9 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       const double sources = Utilities::MPI::sum(
         double(evaluator.source_evaluations()), mpi_communicator);
 
+      AssertThrow(deviation < 1e-8,
+                  ExcMessage("The geometry reconstructed for the surface "
+                             "potentials does not reproduce the mapping."));
       pcout << "  orientation sigma " << sigma << ", reconstructed geometry "
             << "deviation " << deviation << ", divergence identity defect "
             << defect << std::endl
