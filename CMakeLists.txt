@@ -72,6 +72,7 @@ OPTION(BEM_NATIVE_FMM
 SET(_fmm_kernel_files
   ${CMAKE_CURRENT_SOURCE_DIR}/source/laplace_fmm.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/source/galerkin_panel_pair_integrator.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/surface_potential_evaluator.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_expansions.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/fmm_points.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/yukawa_expansions.cc)

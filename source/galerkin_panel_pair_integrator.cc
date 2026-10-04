@@ -1,4 +1,5 @@
 #include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/tensor_map_kernel.h"
 
 #include <chrono>
 
@@ -70,11 +71,16 @@ namespace
   constexpr unsigned int maximum_lagrange_nodes = 12;
   using LagrangeValues = std::array<double, maximum_lagrange_nodes>;
 
-  // The Lagrange basis through the given nodes in monomial form: row i holds
-  // the coefficients of basis function i, from the constant term up, and the
-  // next n rows those of its derivative. Evaluated by Horner's rule, the
-  // basis costs a few multiply-adds per function and no branch, which
-  // matters at the tens of thousands of points of a singular rule.
+  // The Lagrange basis through the given nodes: the nodes x_k followed by
+  // the weights w_i = 1 / prod_{k != i} (x_i - x_k), for the product form
+  //   L_i(t) = w_i P_i(t) S_i(t),
+  // P_i and S_i the products of (t - x_k) over k < i and k > i, built up by
+  // prefix and suffix products together with their derivatives, which gives
+  // the basis and its derivative in O(n) operations per function. Unlike the
+  // monomial form, which loses a digit per node on [0, 1], the product form
+  // is accurate to rounding at any degree; the near-field subdivision relies
+  // on this, as it detects the corners shared by two touching cells by
+  // mapping them from either side.
   // Normal trace of a vector-valued function at a point.
   template <int spacedim>
   double
@@ -89,57 +95,53 @@ namespace
   }
 
   std::vector<double>
-  monomial_coefficients(const std::vector<double> &nodes)
+  lagrange_data(const std::vector<double> &nodes)
   {
     const unsigned int  n = nodes.size();
-    std::vector<double> result(2 * n * n, 0.0);
+    std::vector<double> result(2 * n);
     for (unsigned int i = 0; i < n; ++i)
       {
-        std::vector<double> c(n, 0.0);
-        c[0] = 1.0;
-        unsigned int degree = 0;
+        double product = 1.0;
         for (unsigned int k = 0; k < n; ++k)
           if (k != i)
-            {
-              const double scale = 1.0 / (nodes[i] - nodes[k]);
-              for (unsigned int m = degree + 1; m > 0; --m)
-                c[m] = scale * (c[m - 1] - nodes[k] * c[m]);
-              c[0] = -scale * nodes[k] * c[0];
-              ++degree;
-            }
-        for (unsigned int m = 0; m < n; ++m)
-          result[i * n + m] = c[m];
-        for (unsigned int m = 1; m < n; ++m)
-          result[(n + i) * n + m - 1] = m * c[m];
+            product *= nodes[i] - nodes[k];
+        result[i]     = nodes[i];
+        result[n + i] = 1.0 / product;
       }
     return result;
   }
 
   // Values and, if asked, first derivatives of the basis at t.
   void
-  lagrange_basis(const std::vector<double> &coefficients,
+  lagrange_basis(const std::vector<double> &data,
                  const unsigned int         n,
                  const double               t,
                  LagrangeValues            &value,
                  LagrangeValues            *derivative)
   {
-    for (unsigned int i = 0; i < n; ++i)
+    const double  *x = data.data(), *w = data.data() + n;
+    LagrangeValues P, dP, S, dS;
+    P[0]      = 1.0;
+    dP[0]     = 0.0;
+    S[n - 1]  = 1.0;
+    dS[n - 1] = 0.0;
+    for (unsigned int k = 0; k + 1 < n; ++k)
       {
-        const double *c = &coefficients[i * n];
-        double        v = c[n - 1];
-        for (unsigned int m = n - 1; m > 0; --m)
-          v = v * t + c[m - 1];
-        value[i] = v;
+        const double f = t - x[k];
+        dP[k + 1]      = dP[k] * f + P[k];
+        P[k + 1]       = P[k] * f;
       }
+    for (unsigned int k = n - 1; k > 0; --k)
+      {
+        const double f = t - x[k];
+        dS[k - 1]      = dS[k] * f + S[k];
+        S[k - 1]       = S[k] * f;
+      }
+    for (unsigned int i = 0; i < n; ++i)
+      value[i] = w[i] * P[i] * S[i];
     if (derivative != nullptr)
       for (unsigned int i = 0; i < n; ++i)
-        {
-          const double *c = &coefficients[(n + i) * n];
-          double        d = n > 1 ? c[n - 2] : 0.0;
-          for (unsigned int m = n > 1 ? n - 2 : 0; m > 0; --m)
-            d = d * t + c[m - 1];
-          (*derivative)[i] = d;
-        }
+        (*derivative)[i] = w[i] * (dP[i] * S[i] + P[i] * dS[i]);
   }
 } // namespace
 
@@ -2126,6 +2128,14 @@ GalerkinPanelPairIntegrator<spacedim>::set_light_geometry(const bool enable)
   light_cell_valid.clear();
   light_rule_cache.clear();
   light_check_values.reset();
+  projected_mapping =
+    dynamic_cast<const ExactGeometry::ProjectedMapping<2, spacedim> *>(
+      &mapping);
+  exact_evaluator.reset();
+  if (projected_mapping != nullptr)
+    exact_evaluator = std::make_unique<
+      typename ExactGeometry::ProjectedMapping<2, spacedim>::Evaluator>(
+      *projected_mapping);
   if (!enable)
     return false;
 
@@ -2183,7 +2193,7 @@ GalerkinPanelPairIntegrator<spacedim>::set_light_geometry(const bool enable)
       if (tensor)
         {
           const std::vector<double> coefficients =
-            monomial_coefficients(nodes);
+            lagrange_data(nodes);
           const Point<2> probe(0.3141, 0.7182);
           LagrangeValues v0, v1;
           lagrange_basis(coefficients, n1, probe[0], v0, nullptr);
@@ -2199,8 +2209,8 @@ GalerkinPanelPairIntegrator<spacedim>::set_light_geometry(const bool enable)
           shape_tensor_index = index;
         }
     }
-  geometry_coefficients = monomial_coefficients(geometry_nodes);
-  shape_coefficients    = monomial_coefficients(shape_nodes);
+  geometry_coefficients = lagrange_data(geometry_nodes);
+  shape_coefficients    = lagrange_data(shape_nodes);
   light_geometry = true;
   return true;
 }
@@ -2224,9 +2234,16 @@ GalerkinPanelPairIntegrator<spacedim>::light_cell(
   LightCell         &data = light_cells[index];
   const unsigned int n    = geometry_nodes.size();
   data.nodes.resize(n * n);
+  // The nodes of the mesh mapping; on the exact geometry, evaluate_geometry
+  // projects the points it reconstructs from them.
+  const Mapping<2, spacedim> &nodal_mapping =
+    projected_mapping != nullptr ?
+      static_cast<const Mapping<2, spacedim> &>(
+        projected_mapping->get_mesh_mapping()) :
+      mapping;
   for (unsigned int j = 0; j < n; ++j)
     for (unsigned int i = 0; i < n; ++i)
-      data.nodes[i + n * j] = mapping.transform_unit_to_real_cell(
+      data.nodes[i + n * j] = nodal_mapping.transform_unit_to_real_cell(
         cell, Point<2>(geometry_nodes[i], geometry_nodes[j]));
   data.orientation       = 1.0;
   light_cell_valid[index] = true;
@@ -2270,6 +2287,12 @@ GalerkinPanelPairIntegrator<spacedim>::map_to_real_cell(
 {
   if (!light_geometry)
     return mapping.transform_unit_to_real_cell(cell, reference);
+  if (projected_mapping != nullptr)
+    {
+      PointSet set;
+      evaluate_geometry(cell, {reference}, set);
+      return set.points[0];
+    }
   const LightCell   &data = light_cell(cell);
   const unsigned int n    = geometry_nodes.size();
   LagrangeValues     v0, v1;
@@ -2294,6 +2317,7 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
   const std::vector<Point<2>> &reference_points,
   PointSet                    &set) const
 {
+  const auto         geometry_start = std::chrono::steady_clock::now();
   const LightCell   &data = light_cell(cell);
   const unsigned int n    = geometry_nodes.size();
   const unsigned int m    = reference_points.size();
@@ -2302,77 +2326,99 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
   set.normals.resize(m);
   set.jacobians.resize(m);
 
-  // All loops run over the points innermost, where they vectorize: the
-  // Lagrange basis and its derivative in each direction by Horner's scheme,
-  // then the sums over the nodes for the position and the two tangents.
-  geometry_work.resize((4 * n + 9) * m);
-  double *const v0 = geometry_work.data();
-  double *const d0 = v0 + n * m;
-  double *const v1 = d0 + n * m;
-  double *const d1 = v1 + n * m;
-  double *const x  = d1 + n * m; // 3 components, then x1, then x2
-  double *const x1 = x + 3 * m;
-  double *const x2 = x1 + 3 * m;
-  const double *coefficients = geometry_coefficients.data();
-  for (unsigned int direction = 0; direction < 2; ++direction)
+  // The nodes in structure-of-arrays form, one array per component.
+  const unsigned int n2 = n * n;
+  geometry_work.resize(3 * n2);
+  for (unsigned int k = 0; k < n2; ++k)
+    for (unsigned int c = 0; c < 3; ++c)
+      geometry_work[c * n2 + k] = data.nodes[k][c];
+  const double orientation = data.orientation;
+
+  if (exact_evaluator)
     {
-      double *const v = direction == 0 ? v0 : v1;
-      double *const d = direction == 0 ? d0 : d1;
-      for (unsigned int i = 0; i < n; ++i)
-        {
-          const double *c  = coefficients + i * n;
-          const double *cd = coefficients + (n + i) * n;
-          double       *vi = v + i * m;
-          double       *di = d + i * m;
-#pragma omp simd
-          for (unsigned int q = 0; q < m; ++q)
+      // The point of the mesh mapping and its tangents, projected onto the
+      // exact geometry, one by one.
+      exact_evaluator->reinit(cell);
+      TensorMapKernel::evaluate(
+        n,
+        geometry_work.data(),
+        geometry_coefficients.data(),
+        reference_points.data(),
+        m,
+        [&](const unsigned int begin,
+            const unsigned int count,
+            const double (&s)[9][4]) {
+          for (unsigned int q = 0; q < count; ++q)
             {
-              const double t     = reference_points[q][direction];
-              double       value = c[n - 1];
-              for (unsigned int k = n - 1; k > 0; --k)
-                value = value * t + c[k - 1];
-              double derivative = n > 1 ? cd[n - 2] : 0.0;
-              for (unsigned int k = n > 1 ? n - 2 : 0; k > 0; --k)
-                derivative = derivative * t + cd[k - 1];
-              vi[q] = value;
-              di[q] = derivative;
+              DerivativeForm<1, 2, spacedim> V, D;
+              Point<spacedim>                x, y;
+              for (unsigned int c = 0; c < 3; ++c)
+                {
+                  x[c]    = s[c][q];
+                  V[c][0] = s[3 + c][q];
+                  V[c][1] = s[6 + c][q];
+                }
+              exact_evaluator->project(reference_points[begin + q],
+                                       x,
+                                       V,
+                                       y,
+                                       D);
+              Tensor<1, spacedim> tangent1, tangent2;
+              for (unsigned int c = 0; c < 3; ++c)
+                {
+                  tangent1[c] = D[c][0];
+                  tangent2[c] = D[c][1];
+                }
+              const Tensor<1, spacedim> normal =
+                cross_product_3d(tangent1, tangent2);
+              const double jacobian       = normal.norm();
+              set.points[begin + q]    = y;
+              set.normals[begin + q]   = (orientation / jacobian) * normal;
+              set.jacobians[begin + q] = jacobian;
             }
-        }
+        });
     }
-  std::fill(x, x + 9 * m, 0.0);
-  for (unsigned int j = 0; j < n; ++j)
-    for (unsigned int i = 0; i < n; ++i)
-      {
-        const Tensor<1, spacedim> &node = data.nodes[i + n * j];
-        const double *vi = v0 + i * m, *di = d0 + i * m;
-        const double *vj = v1 + j * m, *dj = d1 + j * m;
-        for (unsigned int c = 0; c < 3; ++c)
-          {
-            const double value = node[c];
-            double      *xc = x + c * m, *x1c = x1 + c * m, *x2c = x2 + c * m;
+  else
+    TensorMapKernel::evaluate(
+      n,
+      geometry_work.data(),
+      geometry_coefficients.data(),
+      reference_points.data(),
+      m,
+      [&](const unsigned int begin,
+          const unsigned int count,
+          const double (&s)[9][4]) {
+        alignas(32) double normal[3][4], jacobian[4];
 #pragma omp simd
-            for (unsigned int q = 0; q < m; ++q)
-              {
-                xc[q] += value * vi[q] * vj[q];
-                x1c[q] += value * di[q] * vj[q];
-                x2c[q] += value * vi[q] * dj[q];
-              }
+        for (unsigned int q = 0; q < 4; ++q)
+          {
+            const double nx = s[4][q] * s[8][q] - s[5][q] * s[7][q];
+            const double ny = s[5][q] * s[6][q] - s[3][q] * s[8][q];
+            const double nz = s[3][q] * s[7][q] - s[4][q] * s[6][q];
+            const double j  = std::sqrt(nx * nx + ny * ny + nz * nz);
+            const double r  = orientation / j;
+            normal[0][q]    = nx * r;
+            normal[1][q]    = ny * r;
+            normal[2][q]    = nz * r;
+            jacobian[q]     = j;
           }
-      }
-  for (unsigned int q = 0; q < m; ++q)
-    {
-      Tensor<1, spacedim> tangent1, tangent2;
-      for (unsigned int c = 0; c < 3; ++c)
-        {
-          set.points[q][c] = x[c * m + q];
-          tangent1[c]      = x1[c * m + q];
-          tangent2[c]      = x2[c * m + q];
-        }
-      const Tensor<1, spacedim> normal   = cross_product_3d(tangent1, tangent2);
-      const double              jacobian = normal.norm();
-      set.normals[q]   = (data.orientation / jacobian) * normal;
-      set.jacobians[q] = jacobian;
-    }
+        for (unsigned int q = 0; q < count; ++q)
+          {
+            Point<spacedim>     &point = set.points[begin + q];
+            Tensor<1, spacedim> &no    = set.normals[begin + q];
+            for (unsigned int c = 0; c < 3; ++c)
+              {
+                point[c] = s[c][q];
+                no[c]    = normal[c][q];
+              }
+            set.jacobians[begin + q] = jacobian[q];
+          }
+      });
+  profile.geometry_points += m;
+  profile.geometry_seconds += std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() -
+                                geometry_start)
+                                .count();
 }
 
 
@@ -2382,6 +2428,18 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_shapes(
   const std::vector<Point<2>> &reference_points,
   std::vector<double>         &shapes) const
 {
+  const auto shape_start = std::chrono::steady_clock::now();
+  struct Timer
+  {
+    double                                &total;
+    std::chrono::steady_clock::time_point  start;
+    ~Timer()
+    {
+      total += std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                             start)
+                 .count();
+    }
+  } timer{profile.shape_seconds, shape_start};
   const unsigned int dpc = finite_element.dofs_per_cell;
   const unsigned int m   = reference_points.size();
   shapes.resize(dpc * m);

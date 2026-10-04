@@ -11,6 +11,8 @@
 #include <memory>
 #include <deal.II/fe/mapping.h>
 #include <deal.II/base/function.h>
+
+#include "projected_mapping.h"
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/vector.h>
@@ -141,7 +143,9 @@ public:
    *
    * Returns whether the path is active: it needs a MappingQ, and it is
    * checked against FEValues on every cell, the largest deviation being
-   * available from light_geometry_deviation().
+   * available from light_geometry_deviation(). On an
+   * ExactGeometry::ProjectedMapping the reconstruction is that of the mesh
+   * mapping, and every point is projected onto the exact geometry.
    */
   bool
   set_light_geometry(const bool enable);
@@ -185,6 +189,11 @@ public:
     unsigned long long singular_points   = 0;
     unsigned long long regular_leaves    = 0;
     double             regular_seconds   = 0.0;
+    /// On the direct path: points at which the cell geometry was evaluated,
+    /// the seconds it took, and the seconds spent on the shape values.
+    unsigned long long geometry_points   = 0;
+    double             geometry_seconds  = 0.0;
+    double             shape_seconds     = 0.0;
   };
 
   const RhsProfile &
@@ -845,6 +854,8 @@ private:
   /// Position (a, b) of the support point of each basis function in the
   /// tensor grid of shape_nodes: the function is L_a(x) L_b(y).
   std::vector<std::array<unsigned int, 2>> shape_tensor_index;
+  /// The Lagrange bases through geometry_nodes and shape_nodes: nodes and
+  /// weights of the product form.
   std::vector<double>              geometry_coefficients;
   std::vector<double>              shape_coefficients;
   mutable std::vector<LightCell>   light_cells;
@@ -860,6 +871,14 @@ private:
   /// component by component, each over all points.
   mutable std::vector<double> geometry_work;
   mutable std::unique_ptr<FEValues<2, spacedim>>  light_check_values;
+  /// On a mapping onto the exact geometry (ExactGeometry::ProjectedMapping),
+  /// the direct path reconstructs the cells of the mesh mapping and projects
+  /// every point with this evaluator.
+  const ExactGeometry::ProjectedMapping<2, spacedim> *projected_mapping =
+    nullptr;
+  mutable std::unique_ptr<
+    typename ExactGeometry::ProjectedMapping<2, spacedim>::Evaluator>
+    exact_evaluator;
   mutable std::map<unsigned int, QGauss<2>>       gauss_rules;
 
   const Mapping<spacedim - 1, spacedim>       &mapping;

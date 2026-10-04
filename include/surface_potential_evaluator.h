@@ -9,7 +9,10 @@
 #include <deal.II/lac/vector.h>
 
 #include <array>
+#include <memory>
 #include <vector>
+
+#include "projected_mapping.h"
 
 using namespace dealii;
 
@@ -145,6 +148,8 @@ private:
   {
     CellIterator              cell;
     std::vector<Point<3>>     nodes;
+    /// The nodes in structure-of-arrays form, for TensorMapKernel.
+    std::vector<double>       soa_nodes;
     double                    orientation = 1.0;
     Point<3>                  centre;
     double                    radius   = 0.0;
@@ -158,10 +163,28 @@ private:
   source(const CellData &data, const Point<2> &reference, const double weight)
     const;
 
+  /// The densities of a source whose point and normal are set.
+  void
+  complete_source(const CellData &data,
+                  const Point<2> &reference,
+                  Source         &s) const;
+
+  /// The sources at many points of a cell, the geometry of the polynomial
+  /// map evaluated by TensorMapKernel.
+  void
+  sources(const CellData              &data,
+          const std::vector<Point<2>> &references,
+          const std::vector<double>   &weights,
+          std::vector<Source>         &out) const;
+
   Geometry
   geometry(const CellData &data,
            const Point<2> &reference,
            const bool      with_curvature = false) const;
+
+  /// The polynomial geometry of the nodes, point and tangents only.
+  Geometry
+  geometry_of_nodes(const CellData &data, const Point<2> &reference) const;
 
   void
   add(const Point<3>     &x,
@@ -223,7 +246,19 @@ private:
 
   double maximum_geometry_deviation = 0.0;
 
+  /// On a mapping onto the exact geometry, the nodes are those of the mesh
+  /// mapping and geometry() projects the points it reconstructs.
+  const dealii::ExactGeometry::ProjectedMapping<2, 3> *projected_mapping =
+    nullptr;
+  mutable std::unique_ptr<
+    dealii::ExactGeometry::ProjectedMapping<2, 3>::Evaluator>
+    exact_evaluator;
+
   mutable Vector<double>             gradient_buffer;
+  /// Scratch space of the batched sources.
+  mutable std::vector<Point<2>>      batch_points;
+  mutable std::vector<double>        batch_weights;
+  mutable std::vector<Source>        batch_sources;
   mutable unsigned long long         n_far      = 0;
   mutable unsigned long long         n_leaves   = 0;
   mutable unsigned long long         n_singular = 0;

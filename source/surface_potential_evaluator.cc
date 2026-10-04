@@ -1,4 +1,5 @@
 #include "../include/surface_potential_evaluator.h"
+#include "../include/tensor_map_kernel.h"
 
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/quadrature_lib.h>
@@ -11,7 +12,7 @@
 
 namespace
 {
-  constexpr unsigned int maximum_nodes = 8;
+  constexpr unsigned int maximum_nodes = 12;
   using Basis = std::array<double, maximum_nodes>;
 
   // Values, first and second derivatives of the Lagrange basis through the
@@ -66,59 +67,68 @@ namespace
       }
   }
 
-  // The same basis in monomial form: rows 0..n-1 hold the coefficients of
-  // the basis functions from the constant term up, rows n..2n-1 those of
-  // their first derivatives and rows 2n..3n-1 those of their second. Horner's
-  // rule then evaluates only the derivatives a caller asks for, with no
-  // division; the product form above costs a cubic loop per point.
+  // The same basis for fast evaluation: the nodes x_k and the weights
+  // w_i = 1 / prod_{k != i} (x_i - x_k), with L_i(t) = w_i P_i(t) S_i(t),
+  // P_i and S_i the products of (t - x_k) over k < i and k > i. Built up by
+  // prefix and suffix products with their derivatives (fast_basis), the
+  // basis and its first two derivatives cost O(n) per function, and are
+  // accurate to rounding at any degree, where the monomial form on [0, 1]
+  // loses a digit per node; the product form above costs a cubic loop.
   std::vector<double>
-  monomial_basis(const std::vector<double> &nodes)
+  lagrange_data(const std::vector<double> &nodes)
   {
     const unsigned int  n = nodes.size();
-    std::vector<double> result(3 * n * n, 0.0);
+    std::vector<double> result(2 * n);
     for (unsigned int i = 0; i < n; ++i)
       {
-        std::vector<double> c(n, 0.0);
-        c[0]                = 1.0;
-        unsigned int degree = 0;
+        double product = 1.0;
         for (unsigned int k = 0; k < n; ++k)
           if (k != i)
-            {
-              const double scale = 1.0 / (nodes[i] - nodes[k]);
-              for (unsigned int m = degree + 1; m > 0; --m)
-                c[m] = scale * (c[m - 1] - nodes[k] * c[m]);
-              c[0] = -scale * nodes[k] * c[0];
-              ++degree;
-            }
-        for (unsigned int m = 0; m < n; ++m)
-          result[i * n + m] = c[m];
-        for (unsigned int m = 1; m < n; ++m)
-          result[(n + i) * n + m - 1] = m * c[m];
-        for (unsigned int m = 2; m < n; ++m)
-          result[(2 * n + i) * n + m - 2] = m * (m - 1) * c[m];
+            product *= nodes[i] - nodes[k];
+        result[i]     = nodes[i];
+        result[n + i] = 1.0 / product;
       }
     return result;
   }
 
+  // Values and first and second derivatives of the basis at t, from the
+  // prefix and suffix products and their derivatives.
   void
-  horner_basis(const std::vector<double> &coefficients,
+  fast_basis(const std::vector<double> &data,
                const unsigned int         n,
                const double               t,
                Basis                     *value,
                Basis                     *first,
                Basis                     *second)
   {
-    Basis *const out[3] = {value, first, second};
-    for (unsigned int block = 0; block < 3; ++block)
-      if (out[block] != nullptr)
-        for (unsigned int i = 0; i < n; ++i)
-          {
-            const double *c = &coefficients[(block * n + i) * n];
-            double        v = c[n - 1];
-            for (unsigned int m = n - 1; m > 0; --m)
-              v = v * t + c[m - 1];
-            (*out[block])[i] = v;
-          }
+    const double *x = data.data(), *w = data.data() + n;
+    Basis         P, dP, d2P, S, dS, d2S;
+    P[0] = 1.0, dP[0] = 0.0, d2P[0] = 0.0;
+    S[n - 1] = 1.0, dS[n - 1] = 0.0, d2S[n - 1] = 0.0;
+    for (unsigned int k = 0; k + 1 < n; ++k)
+      {
+        const double f = t - x[k];
+        d2P[k + 1]     = d2P[k] * f + 2.0 * dP[k];
+        dP[k + 1]      = dP[k] * f + P[k];
+        P[k + 1]       = P[k] * f;
+      }
+    for (unsigned int k = n - 1; k > 0; --k)
+      {
+        const double f = t - x[k];
+        d2S[k - 1]     = d2S[k] * f + 2.0 * dS[k];
+        dS[k - 1]      = dS[k] * f + S[k];
+        S[k - 1]       = S[k] * f;
+      }
+    for (unsigned int i = 0; i < n; ++i)
+      {
+        if (value != nullptr)
+          (*value)[i] = w[i] * P[i] * S[i];
+        if (first != nullptr)
+          (*first)[i] = w[i] * (dP[i] * S[i] + P[i] * dS[i]);
+        if (second != nullptr)
+          (*second)[i] =
+            w[i] * (d2P[i] * S[i] + 2.0 * dP[i] * dS[i] + P[i] * d2S[i]);
+      }
   }
 
   const QGauss<1> &
@@ -168,7 +178,7 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
   const QGaussLobatto<1> lobatto(this->geometry_degree + 1);
   for (unsigned int i = 0; i < lobatto.size(); ++i)
     lagrange_nodes.push_back(lobatto.point(i)[0]);
-  lagrange_coefficients = monomial_basis(lagrange_nodes);
+  lagrange_coefficients = lagrange_data(lagrange_nodes);
 
   const FiniteElement<2, 3> &fe = dof_handler.get_fe();
 
@@ -223,7 +233,7 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
         {
           shape_nodes        = nodes;
           shape_tensor_index = index;
-          shape_coefficients = monomial_basis(nodes);
+          shape_coefficients = lagrange_data(nodes);
         }
     }
 
@@ -239,6 +249,13 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
       update_values | update_quadrature_points | update_normal_vectors |
         update_JxW_values));
 
+  projected_mapping =
+    dynamic_cast<const ExactGeometry::ProjectedMapping<2, 3> *>(&mapping);
+  if (projected_mapping != nullptr)
+    exact_evaluator =
+      std::make_unique<ExactGeometry::ProjectedMapping<2, 3>::Evaluator>(
+        *projected_mapping);
+
   std::vector<types::global_dof_index> dof_indices(fe.dofs_per_cell);
   cells.reserve(dof_handler.get_triangulation().n_active_cells());
   cell_position.assign(dof_handler.get_triangulation().n_active_cells(),
@@ -250,10 +267,19 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
       data.cell = cell;
       const unsigned int n = lagrange_nodes.size();
       data.nodes.resize(n * n);
+      const Mapping<2, 3> &nodal_mapping =
+        projected_mapping != nullptr ?
+          static_cast<const Mapping<2, 3> &>(
+            projected_mapping->get_mesh_mapping()) :
+          mapping;
       for (unsigned int j = 0; j < n; ++j)
         for (unsigned int i = 0; i < n; ++i)
-          data.nodes[i + n * j] = mapping.transform_unit_to_real_cell(
+          data.nodes[i + n * j] = nodal_mapping.transform_unit_to_real_cell(
             cell, Point<2>(lagrange_nodes[i], lagrange_nodes[j]));
+      data.soa_nodes.resize(3 * n * n);
+      for (unsigned int k = 0; k < n * n; ++k)
+        for (unsigned int c = 0; c < 3; ++c)
+          data.soa_nodes[c * n * n + k] = data.nodes[k][c];
 
       cell->get_dof_indices(dof_indices);
       if (densities.flux_coefficients != nullptr)
@@ -369,15 +395,39 @@ SurfacePotentialEvaluator::geometry(const CellIterator &cell,
 
 
 SurfacePotentialEvaluator::Geometry
+SurfacePotentialEvaluator::geometry_of_nodes(const CellData &data,
+                                             const Point<2> &reference) const
+{
+  const unsigned int n = lagrange_nodes.size();
+  Basis              v0, d0, v1, d1;
+  fast_basis(lagrange_coefficients, n, reference[0], &v0, &d0, nullptr);
+  fast_basis(lagrange_coefficients, n, reference[1], &v1, &d1, nullptr);
+  Tensor<1, 3> x, x1, x2;
+  for (unsigned int j = 0; j < n; ++j)
+    for (unsigned int i = 0; i < n; ++i)
+      {
+        const Tensor<1, 3> &node = data.nodes[i + n * j];
+        x += v0[i] * v1[j] * node;
+        x1 += d0[i] * v1[j] * node;
+        x2 += v0[i] * d1[j] * node;
+      }
+  Geometry g;
+  g.point    = Point<3>(x);
+  g.tangents = {{x1, x2}};
+  return g;
+}
+
+
+SurfacePotentialEvaluator::Geometry
 SurfacePotentialEvaluator::geometry(const CellData &data,
                                     const Point<2> &reference,
                                     const bool      with_curvature) const
 {
   const unsigned int n = lagrange_nodes.size();
   Basis              v0, d0, s0, v1, d1, s1;
-  horner_basis(lagrange_coefficients, n, reference[0], &v0, &d0,
+  fast_basis(lagrange_coefficients, n, reference[0], &v0, &d0,
                with_curvature ? &s0 : nullptr);
-  horner_basis(lagrange_coefficients, n, reference[1], &v1, &d1,
+  fast_basis(lagrange_coefficients, n, reference[1], &v1, &d1,
                with_curvature ? &s1 : nullptr);
 
   Tensor<1, 3> x, x1, x2, x11, x12, x22;
@@ -398,6 +448,61 @@ SurfacePotentialEvaluator::geometry(const CellData &data,
 
   Geometry g;
   g.point            = Point<3>(x);
+  if (exact_evaluator)
+    {
+      // The point of the mesh mapping and its tangents, projected onto the
+      // exact geometry; the second derivatives of the exact map are central
+      // differences of its first ones.
+      const auto project = [&](const Point<2>     &r,
+                               const Tensor<1, 3> &y0,
+                               const Tensor<1, 3> &y1,
+                               const Tensor<1, 3> &y2,
+                               Point<3>           &image,
+                               Tensor<1, 3>       &t1,
+                               Tensor<1, 3>       &t2) {
+        DerivativeForm<1, 2, 3> V, D;
+        for (unsigned int c = 0; c < 3; ++c)
+          {
+            V[c][0] = y1[c];
+            V[c][1] = y2[c];
+          }
+        exact_evaluator->project(r, Point<3>(y0), V, image, D);
+        for (unsigned int c = 0; c < 3; ++c)
+          {
+            t1[c] = D[c][0];
+            t2[c] = D[c][1];
+          }
+      };
+      exact_evaluator->reinit(data.cell);
+      project(reference, x, x1, x2, g.point, x1, x2);
+      if (with_curvature)
+        {
+          const double h = 1e-4;
+          std::array<std::array<Tensor<1, 3>, 2>, 2> tangent_plus,
+            tangent_minus;
+          for (unsigned int b = 0; b < 2; ++b)
+            for (const int sign : {1, -1})
+              {
+                Point<2> r = reference;
+                r[b] += sign * h;
+                const Geometry mesh = geometry_of_nodes(data, r);
+                Point<3>       image;
+                auto &t = (sign > 0) ? tangent_plus[b] : tangent_minus[b];
+                project(r,
+                        mesh.point,
+                        mesh.tangents[0],
+                        mesh.tangents[1],
+                        image,
+                        t[0],
+                        t[1]);
+              }
+          x11 = (tangent_plus[0][0] - tangent_minus[0][0]) / (2 * h);
+          x22 = (tangent_plus[1][1] - tangent_minus[1][1]) / (2 * h);
+          x12 = 0.5 * ((tangent_plus[1][0] - tangent_minus[1][0]) +
+                       (tangent_plus[0][1] - tangent_minus[0][1])) /
+                (2 * h);
+        }
+    }
   g.tangents         = {{x1, x2}};
   const Tensor<1, 3> N = cross_product_3d(x1, x2);
   g.jacobian         = N.norm();
@@ -426,7 +531,61 @@ SurfacePotentialEvaluator::source(const CellData &data,
   s.point  = g.point;
   s.normal = g.normal;
   s.weight = weight * g.jacobian;
+  complete_source(data, reference, s);
+  return s;
+}
 
+
+void
+SurfacePotentialEvaluator::sources(const CellData              &data,
+                                   const std::vector<Point<2>> &references,
+                                   const std::vector<double>   &weights,
+                                   std::vector<Source>         &out) const
+{
+  const unsigned int m = references.size();
+  out.resize(m);
+  if (exact_evaluator)
+    {
+      for (unsigned int q = 0; q < m; ++q)
+        out[q] = source(data, references[q], weights[q]);
+      return;
+    }
+  n_sources += m;
+  const double orientation = data.orientation;
+  TensorMapKernel::evaluate(
+    lagrange_nodes.size(),
+    data.soa_nodes.data(),
+    lagrange_coefficients.data(),
+    references.data(),
+    m,
+    [&](const unsigned int begin,
+        const unsigned int count,
+        const double (&s)[9][4]) {
+      for (unsigned int q = 0; q < count; ++q)
+        {
+          Source &y = out[begin + q];
+          for (unsigned int c = 0; c < 3; ++c)
+            y.point[c] = s[c][q];
+          const double nx = s[4][q] * s[8][q] - s[5][q] * s[7][q];
+          const double ny = s[5][q] * s[6][q] - s[3][q] * s[8][q];
+          const double nz = s[3][q] * s[7][q] - s[4][q] * s[6][q];
+          const double j  = std::sqrt(nx * nx + ny * ny + nz * nz);
+          y.normal[0]     = orientation * nx / j;
+          y.normal[1]     = orientation * ny / j;
+          y.normal[2]     = orientation * nz / j;
+          y.weight        = weights[begin + q] * j;
+        }
+    });
+  for (unsigned int q = 0; q < m; ++q)
+    complete_source(data, references[q], out[q]);
+}
+
+
+void
+SurfacePotentialEvaluator::complete_source(const CellData &data,
+                                           const Point<2> &reference,
+                                           Source         &s) const
+{
   const FiniteElement<2, 3> &fe = dof_handler.get_fe();
   if (!data.flux_local.empty() || !data.trace_local.empty())
     {
@@ -434,9 +593,9 @@ SurfacePotentialEvaluator::source(const CellData &data,
       const unsigned int n1 = shape_nodes.size();
       if (n1 > 0)
         {
-          horner_basis(shape_coefficients, n1, reference[0], &v0, nullptr,
+          fast_basis(shape_coefficients, n1, reference[0], &v0, nullptr,
                        nullptr);
-          horner_basis(shape_coefficients, n1, reference[1], &v1, nullptr,
+          fast_basis(shape_coefficients, n1, reference[1], &v1, nullptr,
                        nullptr);
         }
       double flux = 0.0, trace = 0.0;
@@ -470,7 +629,6 @@ SurfacePotentialEvaluator::source(const CellData &data,
         grad[d] = gradient_buffer[d];
       s.curl_density = cross_product_3d(s.normal, grad);
     }
-  return s;
 }
 
 
@@ -608,6 +766,8 @@ SurfacePotentialEvaluator::integrate_near(const CellData     &data,
       const double u0 = stretch_t ? std::asinh((0.0 - foot) / width) : 0.0;
       const double u1 = stretch_t ? std::asinh((1.0 - foot) / width) : 1.0;
 
+      batch_points.clear();
+      batch_weights.clear();
       for (unsigned int j = 0; j < rule.size(); ++j)
         {
           double t = rule.point(j)[0], dt = 1.0;
@@ -631,17 +791,14 @@ SurfacePotentialEvaluator::integrate_near(const CellData     &data,
                   s  = delta * std::sinh(tau * span);
                   ds = delta * span * std::cosh(tau * span);
                 }
-              const Point<2> xi = apex + s * ray;
-              add(x,
-                  normal,
-                  trace_at_x,
-                  source(data,
-                         xi,
-                         rule.weight(i) * rule.weight(j) * s * ds * dt *
-                           factor),
-                  values);
+              batch_points.push_back(apex + s * ray);
+              batch_weights.push_back(rule.weight(i) * rule.weight(j) * s *
+                                      ds * dt * factor);
             }
         }
+      sources(data, batch_points, batch_weights, batch_sources);
+      for (const Source &y : batch_sources)
+        add(x, normal, trace_at_x, y, values);
     }
 }
 
@@ -678,19 +835,19 @@ SurfacePotentialEvaluator::integrate_patch(const CellData     &data,
       const QGauss<1> &rule = gauss_rule(depth >= maximum_depth ? 12 : 8);
       const double     area =
         (upper[0] - lower[0]) * (upper[1] - lower[1]);
+      batch_points.clear();
+      batch_weights.clear();
       for (unsigned int j = 0; j < rule.size(); ++j)
         for (unsigned int i = 0; i < rule.size(); ++i)
           {
-            const Point<2> xi(lower[0] +
-                                rule.point(i)[0] * (upper[0] - lower[0]),
-                              lower[1] +
-                                rule.point(j)[0] * (upper[1] - lower[1]));
-            add(x,
-                normal,
-                trace_at_x,
-                source(data, xi, rule.weight(i) * rule.weight(j) * area),
-                values);
+            batch_points.emplace_back(
+              lower[0] + rule.point(i)[0] * (upper[0] - lower[0]),
+              lower[1] + rule.point(j)[0] * (upper[1] - lower[1]));
+            batch_weights.push_back(rule.weight(i) * rule.weight(j) * area);
           }
+      sources(data, batch_points, batch_weights, batch_sources);
+      for (const Source &y : batch_sources)
+        add(x, normal, trace_at_x, y, values);
       return;
     }
 
