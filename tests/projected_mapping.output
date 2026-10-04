@@ -1,0 +1,13 @@
+
+DEAL::area through FEValues: relative error below 1e-12, difference to ProjectedQuadrature below 1e-12
+DEAL::surface divergence theorem on every cell: relative residual below 1e-12
+DEAL::support points: largest distance from the sphere below 1e-12
+DEAL::transform_real_to_unit_cell: largest error below 1e-12
+DEAL::second derivatives against central differences of the first: below 1e-5
+DEAL::interpolation of the exact sphere, 96 flat cells: degree, deviation of points and surface elements, estimate on every fourth cell, relative error of the area
+DEAL::2: 3.1e-03, 3.7e-02; estimate 3.1e-03, 3.7e-02; area 7.8e-05
+DEAL::4: 1.8e-05, 4.6e-04; estimate 1.8e-05, 4.6e-04; area 7.0e-09
+DEAL::6: 1.5e-07, 5.2e-06; estimate 1.5e-07, 5.2e-06; area below 1e-12
+DEAL::8: 1.2e-09, 5.8e-08; estimate 1.2e-09, 5.8e-08; area below 1e-12
+DEAL::cap of the cylinder: length of the edges on the trimming circle, relative error below 1e-12
+DEAL::cylinder: area through FEValues, relative error below 1e-12

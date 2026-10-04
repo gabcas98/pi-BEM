@@ -1,0 +1,61 @@
+
+DEAL::sphere, interpolated normal: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::sphere, closest point: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::sphere, vector field: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::sphere, 8 x 8 points: relative errors of area <1e-13 , volume <1e-13 
+DEAL::NURBS sphere, interpolated normal: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::NURBS sphere, closest point: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::NURBS sphere, vector field: largest differences to the analytic projection: points <1e-13 , Jacobians <1e-13 , JxW <1e-13 ; irregular projections 0
+DEAL::NURBS sphere, 8 x 8 points: relative errors of area <1e-13 , volume <1e-13 
+DEAL::
+DEAL::torus, 256 flat cells; relative errors of area and volume
+DEAL::points   mesh               projected
+DEAL::2      2.2e-02 5.0e-02    2.7e-04 2.7e-04    
+DEAL::4      2.2e-02 5.0e-02    2.6e-08 2.6e-08    
+DEAL::6      2.2e-02 5.0e-02    2.5e-12 2.5e-12    
+DEAL::8      2.2e-02 5.0e-02    <1e-13  <1e-13     
+DEAL::10     2.2e-02 5.0e-02    <1e-13  <1e-13     
+DEAL::irregular projections: 0
+DEAL::
+DEAL::cylinder: 3 faces, 288 flat cells; relative errors of area and volume, 8 x 8 points
+DEAL::  mesh: 1.1e-02, 2.6e-02
+DEAL::  projection: 6.4e-03, 8.5e-03
+DEAL::  trimming curves: <1e-13 , <1e-13 
+DEAL::  trimming curves, interpolated normal: <1e-13 , <1e-13 
+DEAL::  irregular projections: 0
+DEAL::cylinder: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::cylinder, interpolated normal: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::plate with a hole: 1 faces, 128 flat cells; relative errors of area and volume, 8 x 8 points
+DEAL::  mesh: 1.6e-03
+DEAL::  projection: 1.6e-03
+DEAL::  trimming curves: <1e-13 
+DEAL::  trimming curves, interpolated normal: <1e-13 
+DEAL::  irregular projections: 0
+DEAL::plate with a hole: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::plate with a hole, interpolated normal: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::spherical cap: 2 faces, 160 flat cells; relative errors of area and volume, 8 x 8 points
+DEAL::  mesh: 2.4e-02, 3.7e-02
+DEAL::  projection: 2.0e-02, 4.5e-04
+DEAL::  trimming curves: <1e-13 , <1e-13 
+DEAL::  trimming curves, interpolated normal: 1.1e-11, 5.1e-11
+DEAL::  irregular projections: 0
+DEAL::spherical cap: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::spherical cap, interpolated normal: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::
+DEAL::circle, 24 segments: relative error of the length
+DEAL::points   mesh       projected
+DEAL::2      2.9e-03    2.6e-05
+DEAL::4      2.9e-03    5.1e-10
+DEAL::6      2.9e-03    <1e-13 
+DEAL::8      2.9e-03    <1e-13 
+DEAL::10     2.9e-03    <1e-13 
+DEAL::irregular projections: 0
+DEAL::ellipse, 24 segments: relative error of the length
+DEAL::points   mesh       projected
+DEAL::2      2.9e-03    2.6e-05
+DEAL::4      2.9e-03    1.8e-08
+DEAL::6      2.9e-03    1.8e-10
+DEAL::8      2.9e-03    4.9e-13
+DEAL::10     2.9e-03    <1e-13 
+DEAL::irregular projections: 0
+DEAL::rims of the cylinder, 3 edges, 8 points: relative error of the length <1e-13 , irregular projections 0

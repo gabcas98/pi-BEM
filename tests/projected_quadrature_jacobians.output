@@ -1,0 +1,17 @@
+
+DEAL::torus, rho = 0.2: |J| = 1.19727, difference to central differences below 1e-8
+DEAL::torus, rho = 0.2: [I + rho J_n] J = I - n n holds
+DEAL::torus, rho = -0.3: |J| = 2.71743, difference to central differences below 1e-8
+DEAL::torus, rho = -0.3: [I + rho J_n] J = I - n n holds
+DEAL::helix: |J| = 1.22472, difference to central differences below 1e-8
+DEAL::ellipse: |J| = 1.51950, difference to central differences below 1e-8
+DEAL::ellipse: [I + rho J_n] J = I - n n holds
+DEAL::sphere, closest point: projected point 1.3234 0.10772 0.072435, difference of J V to central differences below 1e-8
+DEAL::sphere, mesh normal: projected point 1.3231 0.10823 0.071814, difference of J V to central differences below 1e-8
+DEAL::sphere, vector field: projected point 1.3250 0.10144 0.071746, difference of J V to central differences below 1e-8
+DEAL::sphere, interpolated normal: projected point 1.3230 0.10835 0.071674, difference of J V to central differences below 1e-8
+DEAL::cylinder, closest point: projected point 1.0569 0.041692 0.13235, difference of J V to central differences below 1e-8
+DEAL::circle, closest point: projected point 1.4731 0.22768, difference of J V to central differences below 1e-8
+DEAL::circle, mesh normal: projected point 1.4752 0.22138, difference of J V to central differences below 1e-8
+DEAL::circle, vector field: projected point 1.4559 0.27451, difference of J V to central differences below 1e-8
+DEAL::circle, interpolated normal: projected point 1.4717 0.23164, difference of J V to central differences below 1e-8
