@@ -6,6 +6,7 @@
 // already:
 
 #include "../include/boundary_conditions.h"
+#include "mapping_hanging_constraints.h"
 
 #include <deal.II/dofs/dof_handler.h>
 
@@ -352,6 +353,20 @@ BoundaryConditions<dim>::compute_errors()
 {
   Teuchos::TimeMonitor LocalTimer(*ErrorsTime);
 
+  // The mixed solver has its own block operator and row residuals. The
+  // Dirichlet-only operator below is not its operator (and may be empty).
+  bool mixed_galerkin_problem = false;
+  if (bem.boundary_integral_formulation == "galerkin")
+    {
+      mixed_galerkin_problem = std::getenv("PIBEM_FORCE_MIXED") != nullptr;
+      unsigned int locally_dirichlet = 0;
+      for (const auto i : bem.this_cpu_set)
+        if (bem.dirichlet_nodes[i] > 0.5)
+          ++locally_dirichlet;
+      mixed_galerkin_problem = mixed_galerkin_problem ||
+        Utilities::MPI::sum(locally_dirichlet, mpi_communicator) != bem.dh.n_dofs();
+    }
+
   // We still need to communicate our results to compute the errors.
   bem.gradient_normal_from_flux = false;
   if (bem.gradient_recovery == "hypersingular")
@@ -418,8 +433,11 @@ BoundaryConditions<dim>::compute_errors()
   if (has_global_l2_projection)
     {
       AffineConstraints<double> hanging_node_constraints;
-      DoFTools::make_hanging_node_constraints(bem.dh,
-                                              hanging_node_constraints);
+      if (bem.exact_geometry)
+        ExactGeometry::make_mapping_hanging_node_constraints(
+          *bem.mapping, bem.dh, hanging_node_constraints);
+      else
+        DoFTools::make_hanging_node_constraints(bem.dh, hanging_node_constraints);
       hanging_node_constraints.close();
       DynamicSparsityPattern dsp(bem.dh.n_dofs());
       DoFTools::make_sparsity_pattern(bem.dh,
@@ -557,8 +575,11 @@ BoundaryConditions<dim>::compute_errors()
                          bem.constraints,
                          bem.constr_cpu_set,
                          mpi_communicator);
-  constrained_operator.vmult(exact_residual, parallel_exact_dphi_dn);
-  exact_residual.add(-1.0, bem.system_rhs);
+  if (!mixed_galerkin_problem)
+    {
+      constrained_operator.vmult(exact_residual, parallel_exact_dphi_dn);
+      exact_residual.add(-1.0, bem.system_rhs);
+    }
   const double exact_residual_l2   = exact_residual.l2_norm();
   const double exact_residual_linf = exact_residual.linfty_norm();
   const double rhs_l2              = bem.system_rhs.l2_norm();
@@ -651,7 +672,11 @@ BoundaryConditions<dim>::compute_errors()
   // with whatever collective the others reach next - returning a number
   // built from mismatched reductions rather than hanging outright.
   double algebraic_energy_square = 0.0;
-  if (exact_residual_uses_l2_projection)
+  // The mixed Galerkin problem frees the single-layer matrix of the
+  // Dirichlet path.
+  const bool has_algebraic_energy_distance = !mixed_galerkin_problem &&
+    exact_residual_uses_l2_projection && bem.dirichlet_matrix.m() > 0;
+  if (has_algebraic_energy_distance)
     {
       // The energy distance between the Galerkin solution and the best L2
       // approximation in the same space. Unlike the energy norm of the error
@@ -1247,6 +1272,22 @@ BoundaryConditions<dim>::compute_errors()
 
       const double grad_phi_max_error =
         vector_gradients_node_error.linfty_norm();
+      types::global_dof_index gradient_max_node = 0;
+      unsigned int gradient_max_component = 0;
+      double gradient_max_value = -1.;
+      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs(); ++scalar_i)
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            const auto original_i = bem.sub_wise_to_original[scalar_i];
+            const auto vector_i = bem.vec_original_to_sub_wise[
+              d * bem.dh.n_dofs() + original_i];
+            if (std::abs(vector_gradients_node_error[vector_i]) > gradient_max_value)
+              {
+                gradient_max_value = std::abs(vector_gradients_node_error[vector_i]);
+                gradient_max_node = scalar_i;
+                gradient_max_component = d;
+              }
+          }
       const types::global_dof_index n_active_cells =
         comp_dom.tria.n_active_cells();
       const types::global_dof_index n_dofs = bem.dh.n_dofs();
@@ -1319,7 +1360,7 @@ BoundaryConditions<dim>::compute_errors()
             << relative_true_dphi_dn_L2_error << std::endl;
       pcout << "Exact nodal-normal dPhidN interpolation L_2 norm: "
             << dphi_dn_interpolation_L2_error << std::endl;
-      if (exact_residual_uses_l2_projection)
+      if (has_algebraic_energy_distance)
         pcout << "dPhidN algebraic energy distance to best projection: "
               << std::sqrt(std::max(algebraic_energy_square, 0.0))
               << " (raw " << algebraic_energy_square << ")" << std::endl;
@@ -1338,7 +1379,9 @@ BoundaryConditions<dim>::compute_errors()
                       projection_L2_error / exact_dphi_dn_L2_norm :
                       projection_L2_error)
                 << std::endl;
-          pcout << "Galerkin error / best-projection error: "
+          pcout << (mixed_galerkin_problem ?
+                      "All-surface flux error / best full-space projection: " :
+                      "Galerkin error / best-projection error: ")
                 << (projection_L2_error > 0.0 ?
                       true_dphi_dn_L2_error / projection_L2_error :
                       true_dphi_dn_L2_error)
@@ -1546,16 +1589,24 @@ BoundaryConditions<dim>::compute_errors()
             << difference_per_cell_2.linfty_norm() << ", at cell "
             << max_dphi_cell_index << ", material " << max_dphi_material_id
             << ", center " << max_dphi_cell_center << std::endl;
-      pcout << "Exact dPhidN discrete residual L_inf norm: "
-            << exact_residual_linf << std::endl;
-      pcout << "Exact dPhidN discrete residual L_2 norm: "
-            << exact_residual_l2 << std::endl;
-      pcout << "Exact dPhidN relative discrete residual: "
-            << relative_exact_residual << std::endl;
-      if (exact_residual_uses_l2_projection)
-        pcout << "  (using the cellwise L2 projection of grad(phi).n)"
+      if (!mixed_galerkin_problem)
+        {
+          pcout << "Exact dPhidN discrete residual L_inf norm: "
+                << exact_residual_linf << std::endl;
+          pcout << "Exact dPhidN discrete residual L_2 norm: "
+                << exact_residual_l2 << std::endl;
+          pcout << "Exact dPhidN relative discrete residual: "
+                << relative_exact_residual << std::endl;
+          if (exact_residual_uses_l2_projection)
+            pcout << "  (using the L2 projection of grad(phi).n)"
+                  << std::endl;
+        }
+      else
+        pcout << "Dirichlet-only residual diagnostics: not applicable to the "
+                 "mixed problem; use the flux/potential row residuals above"
               << std::endl;
-      if (bem.boundary_integral_formulation == "galerkin" &&
+      if (!mixed_galerkin_problem &&
+          bem.boundary_integral_formulation == "galerkin" &&
           bem.detailed_error_diagnostics &&
           (sphere_box_grid ||
            (bem.galerkin_component_rhs_diagnostics &&
@@ -1725,6 +1776,9 @@ BoundaryConditions<dim>::compute_errors()
         }
       pcout << "Phi Nodes Gradient error L_inf norm: " << grad_phi_max_error
             << std::endl;
+      pcout << "Phi gradient maximum nodal component at point "
+            << support_points[gradient_max_node] << ", component "
+            << gradient_max_component << std::endl;
       pcout << "Phi Cells Gradient  error L_2 norm: " << grad_L2_error
             << std::endl;
       // pcout<<"alpha Nodes error L_inf norm:
@@ -1772,25 +1826,34 @@ BoundaryConditions<dim>::compute_errors()
       // either optional or a breakdown of these few numbers.
       pcout << "----- summary -----" << std::endl;
       pcout << "  mesh              " << n_active_cells << " cells, "
-            << n_dofs << " dofs, FE_DGQ(" << bem.fe->degree << ")"
-            << std::endl;
+            << n_dofs << " dofs, " << bem.fe->get_name() << std::endl;
+      if (mixed_galerkin_problem)
+        pcout << "  scope             all-surface postprocessing; unknown "
+                 "flux on D and prescribed Neumann data on N. Mixed solve "
+                 "errors and row residuals are printed above"
+              << std::endl;
       pcout << "  dPhidN L2 error   " << true_dphi_dn_L2_error
             << "  (relative " << relative_true_dphi_dn_L2_error << ")"
             << std::endl;
       if (has_l2_projection)
         pcout << "  best L2 projection " << projection_L2_error
-              << "  (Galerkin / best "
+              << (mixed_galerkin_problem ? "  (all-surface / best " :
+                                           "  (Galerkin / best ")
               << (projection_L2_error > 0.0 ?
                     true_dphi_dn_L2_error / projection_L2_error :
                     0.0)
               << ")" << std::endl;
       if (bem.compute_energy_norm)
-        pcout << "  energy norm error " << energy_norm_error
-              << "  (to best projection "
-              << std::sqrt(std::max(algebraic_energy_square, 0.0)) << ")"
-              << std::endl;
-      pcout << "  discrete residual " << relative_exact_residual
-            << " relative" << std::endl;
+        {
+          pcout << "  energy norm error " << energy_norm_error;
+          if (has_algebraic_energy_distance)
+            pcout << "  (to best projection "
+                  << std::sqrt(std::max(algebraic_energy_square, 0.0)) << ")";
+          pcout << std::endl;
+        }
+      if (!mixed_galerkin_problem)
+        pcout << "  discrete residual " << relative_exact_residual
+              << " relative" << std::endl;
       pcout << "-------------------" << std::endl;
     }
 }

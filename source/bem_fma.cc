@@ -103,6 +103,27 @@ BEMFMA<dim>::declare_parameters(ParameterHandler &prm)
       Patterns::Integer(1),
       "Galerkin FMM only: largest number of quadrature points in a leaf of "
       "the octree.");
+    prm.declare_entry(
+      "Galerkin dipole order increase",
+      "2",
+      Patterns::Integer(0),
+      "Mixed Galerkin problem through the FMM only: the double layer and its "
+      "transpose, sums of dipoles, use the truncation order plus this "
+      "increase.");
+    prm.declare_entry(
+      "Galerkin preconditioner truncation order",
+      "0",
+      Patterns::Integer(0),
+      "Mixed Galerkin problem through the FMM only: the order of the "
+      "expansions in the products of the Calderon preconditioner, which need "
+      "not be accurate; zero for the truncation order.");
+    prm.declare_entry(
+      "Galerkin preconditioner opening criterion",
+      "0",
+      Patterns::Double(0.0, 1.0),
+      "Mixed Galerkin problem through the FMM only: the opening criterion "
+      "of the products of the Calderon preconditioner; zero for that of the "
+      "operator.");
   }
   prm.leave_subsection();
 
@@ -133,6 +154,12 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
     galerkin_opening_criterion = prm.get_double("Galerkin opening criterion");
     galerkin_points_per_leaf =
       prm.get_integer("Galerkin maximum points per leaf");
+    galerkin_dipole_order_increase =
+      prm.get_integer("Galerkin dipole order increase");
+    galerkin_preconditioner_order =
+      prm.get_integer("Galerkin preconditioner truncation order");
+    galerkin_preconditioner_theta =
+      prm.get_double("Galerkin preconditioner opening criterion");
   }
   prm.leave_subsection();
 

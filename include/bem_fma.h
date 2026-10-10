@@ -233,6 +233,28 @@ public:
     return galerkin_points_per_leaf;
   }
 
+  /// Increase of the truncation order for the dipole sums of the mixed
+  /// Galerkin problem.
+  unsigned int
+  dipole_order_increase() const
+  {
+    return galerkin_dipole_order_increase;
+  }
+
+  /// Order and opening criterion of the preconditioner products of the
+  /// mixed Galerkin problem, zero for those of the operator.
+  unsigned int
+  preconditioner_order() const
+  {
+    return galerkin_preconditioner_order;
+  }
+
+  double
+  preconditioner_theta() const
+  {
+    return galerkin_preconditioner_theta;
+  }
+
 protected:
   /// Three pointers to the problem parameters to be set equal to
   /// the ones in the calling problem through the init function
@@ -249,6 +271,9 @@ protected:
   /// Parameters of the octree of the Galerkin FMM (class LaplaceFMM).
   double       galerkin_opening_criterion = 0.5;
   unsigned int galerkin_points_per_leaf   = 64;
+  unsigned int galerkin_dipole_order_increase = 2;
+  unsigned int galerkin_preconditioner_order  = 0;
+  double       galerkin_preconditioner_theta  = 0.;
 
   /// Sparsity pattern for the
   /// initial preconditioning matrix

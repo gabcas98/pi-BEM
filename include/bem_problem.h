@@ -274,6 +274,19 @@ public:
     TrilinosWrappers::MPI::Vector &dphi_dn,
     const Function<dim>           *dirichlet_gradient = nullptr);
 
+  /// The mixed problem in the symmetric Galerkin formulation: the flux on
+  /// the Dirichlet part and the potential on the Neumann part, both in the
+  /// continuous space of the scalar element, from the block system
+  ///   [ V  -K ] [t]   [ (1/2 M + K) u_D - V g_N   ]
+  ///   [ K'  W ] [u] = [ (1/2 M - K') g_N - W u_D ],
+  /// tested on the Dirichlet and on the Neumann part, with K' the transpose
+  /// of K. Dense matrices; the Laplace kernel.
+  void
+  solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
+                       TrilinosWrappers::MPI::Vector &dphi_dn,
+                       const Function<dim>           &potential,
+                       const Function<dim>           &gradient);
+
   /// The third method computes the
   /// product between the solution vector
   /// and the (fully populated) sytstem
@@ -434,12 +447,26 @@ public:
   /// analytic manifolds attached to the triangulation.
   bool         exact_geometry = false;
   std::string  exact_geometry_source;
+  std::string  exact_geometry_map = "projection";
+  std::string  mixed_galerkin_preconditioner = "diagonal";
+  std::string  mixed_galerkin_dirichlet_datum = "projection";
   /// Degree of the polynomial interpolation of the exact geometry, a
   /// MappingQCache filled by ExactGeometry::interpolate_exact_geometry, or
   /// zero for the lowest degree that meets the tolerance; zero degree and
   /// zero tolerance project every point.
   unsigned int exact_geometry_degree    = 0;
   double       exact_geometry_tolerance = 1e-10;
+  /// Nodal normals of the collocation data and constraints: the L2
+  /// projection of the normals of the mapping (projection), or the
+  /// normals of the mapping at the nodes, averaged over the cells that
+  /// share a node (interpolation), which on a curved exact geometry are
+  /// the normals of the surface.
+  std::string  nodal_normals = "projection";
+  /// The mixed Galerkin problem with the boundary data and the errors taken
+  /// at the points of the exact surface that correspond to the points of the
+  /// mesh, as for data given on a CAD model, while kernel, normals and
+  /// surface elements are those of the mesh.
+  bool         boundary_data_on_exact_surface = false;
   bool         interpolate_exact_geometry = false;
   std::shared_ptr<ExactGeometry::ProjectedMapping<dim - 1, dim>>
     exact_mapping;
@@ -482,6 +509,11 @@ public:
   unsigned int singular_quadrature_order;
   unsigned int galerkin_quadrature_order;
   unsigned int galerkin_singular_quadrature_order;
+  unsigned int galerkin_folded_singular_quadrature_order = 0;
+  unsigned int galerkin_material_singular_quadrature_order = 0;
+  unsigned int galerkin_skewed_singular_quadrature_order = 0;
+  double       galerkin_skewed_minimum_angle = 30.;
+  std::set<types::material_id> galerkin_singular_quadrature_material_ids;
   unsigned int galerkin_duffy_outer_subdivisions;
   double       galerkin_near_singular_distance_ratio;
   unsigned int galerkin_near_singular_maximum_depth;
