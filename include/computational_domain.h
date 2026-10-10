@@ -91,6 +91,58 @@ using namespace dealii;
  * (METIS);
  *  - it reads the domain from an external file.
  */
+/**
+ * The arclength projection onto a CAD curve with a check. Where the two
+ * branches of a closed curve come close, as at the closed trailing edge of a
+ * wing, the pull-back of OpenCASCADE may return the parameter of the other
+ * branch, and the new point lands on the wrong side of the curve, silently
+ * in release mode. A new point farther from the closest point of the curve
+ * to the weighted average of the surrounding points than 5% of their
+ * largest distance plus twice the distance of the average from the curve is
+ * replaced by that closest point; every other point is that of the base
+ * class.
+ */
+class CheckedArclengthProjectionLineManifold
+  : public OpenCASCADE::ArclengthProjectionLineManifold<2, 3>
+{
+public:
+  CheckedArclengthProjectionLineManifold(const TopoDS_Shape &shape,
+                                         const double        tolerance);
+
+  std::unique_ptr<Manifold<2, 3>>
+  clone() const override;
+
+  Point<3>
+  get_intermediate_point(const Point<3> &p1,
+                         const Point<3> &p2,
+                         const double    w) const override;
+
+  Point<3>
+  get_new_point(const ArrayView<const Point<3>> &surrounding_points,
+                const ArrayView<const double>   &weights) const override;
+
+  void
+  get_new_points(const ArrayView<const Point<3>> &surrounding_points,
+                 const Table<2, double>          &weights,
+                 ArrayView<Point<3>>              new_points) const override;
+
+  /// The number of new points replaced so far, by all manifolds of this
+  /// class in the process.
+  static unsigned int
+  n_corrected();
+
+private:
+  /// The candidate, or the closest point of the curve to the average if the
+  /// candidate is far from it.
+  Point<3>
+  checked(const Point<3>                  &candidate,
+          const ArrayView<const Point<3>> &surrounding_points,
+          const ArrayView<const double>   &weights) const;
+
+  const TopoDS_Shape shape;
+  const double       tolerance;
+};
+
 template <int dim>
 class ComputationalDomain : public ParameterAcceptor
 {
@@ -280,6 +332,30 @@ public:
   // maximum number of curvature based refinement cycles
   unsigned int max_curvature_ref_cycles;
 
+  // refine across the directions of the cell in which the normal of the CAD
+  // surface turns too much, instead of isotropically by the diameter
+  bool anisotropic_curvature_refinement = false;
+
+  // after the curvature refinement, cut every cell longer than this ratio
+  // times its neighbour across a face, in the direction across that face,
+  // until none is (zero: no grading)
+  double curvature_refinement_grading = 0;
+
+  // after the curvature refinement, cut the cells whose aspect ratio
+  // exceeds the maximum again
+  bool aspect_ratio_after_curvature_refinement = false;
+  /// Cut the coarse side of every hanging node across the edge that holds
+  /// it, until none is left, before the global refinement.
+  bool remove_hanging_nodes = false;
+  /// Cycles of refinement of the cells with a vertex on an edge of the
+  /// surface (a boundary face, where two CAD surfaces meet), after the global
+  /// refinement.
+  unsigned int edge_refinement_cycles = 0;
+
+  /// Optimize interior vertices on selected planar patches after refinement.
+  std::set<types::material_id> planar_smoothing_material_ids;
+  unsigned int planar_smoothing_iterations = 0;
+
   // ratio between the tolerance found in the cad files and the
   // one to be prescribed to the projectors
   double cad_to_projectors_tolerance_ratio;
@@ -330,8 +406,7 @@ public:
   std::vector<
     std::shared_ptr<OpenCASCADE::NormalToMeshProjectionManifold<2, 3>>>
     normal_to_mesh_projectors;
-  std::vector<
-    std::shared_ptr<OpenCASCADE::ArclengthProjectionLineManifold<2, 3>>>
+  std::vector<std::shared_ptr<CheckedArclengthProjectionLineManifold>>
     line_projectors;
 };
 

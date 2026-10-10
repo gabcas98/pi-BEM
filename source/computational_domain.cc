@@ -2,6 +2,9 @@
 
 #include "../include/computational_domain.h"
 
+#include <atomic>
+#include "planar_mesh_quality.h"
+
 #include <deal.II/grid/grid_tools.h>
 
 using namespace std;
@@ -101,6 +104,52 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
   prm.declare_entry("Maximum number of curvature adaptive refinement cycles",
                     "5",
                     Patterns::Integer());
+
+  // The curvature refinement above compares the diameter of a cell with the
+  // radius of curvature, and refines isotropically: a cell elongated along a
+  // line of high curvature, as along the leading edge of a wing, is divided
+  // along the line too. With this option a cell is cut only across the
+  // directions in which the normal of the CAD surface turns by more than
+  // 2 pi / (Cells per circle) between its opposite faces, as the aspect
+  // ratio reduction cuts it.
+  prm.declare_entry("Anisotropic curvature refinement",
+                    "false",
+                    Patterns::Bool());
+
+  // A refinement concentrated on a curved line leaves cells much longer
+  // than their neighbours across it, and the Galerkin solution deteriorates
+  // where the size jumps. With a positive ratio, after the curvature
+  // refinement every cell longer than the ratio times a neighbour across a
+  // face, both measured across that face, is cut in that direction, until
+  // no cell is. Only neighbours of the same material count: across an edge
+  // between two surfaces the lengths are measured in different directions
+  // (along the span on one side, through the thickness on the other).
+  prm.declare_entry("Curvature refinement grading ratio",
+                    "0",
+                    Patterns::Double(0.));
+
+  // The anisotropic curvature refinement makes the cells across a curved
+  // line thin; with this option they are then cut along their longer
+  // direction until no aspect ratio exceeds Max aspect ratio, as the input
+  // grid is before the curvature refinement.
+  prm.declare_entry("Aspect ratio reduction after curvature refinement",
+                    "false",
+                    Patterns::Bool());
+
+  // Before the global refinement, the coarse side of every hanging node is
+  // cut across the edge that holds it, cycle after cycle, until the mesh has
+  // no hanging node; the global refinements keep it so.
+  prm.declare_entry("Remove hanging nodes", "false", Patterns::Bool());
+
+  // After the global refinement, the cells with a vertex on an edge of the
+  // surface, a boundary face of the triangulation where two CAD surfaces
+  // meet, are refined, this many times: a geometric grading towards the
+  // edges, one ring of cells per size, that leaves the rest of the mesh as
+  // it is.
+  prm.declare_entry("Edge refinement cycles", "0", Patterns::Integer(0));
+  prm.declare_entry("Planar mesh smoothing material ids", "",
+                    Patterns::List(Patterns::Integer(0)));
+  prm.declare_entry("Planar mesh smoothing iterations", "0", Patterns::Integer(0));
 
   prm.declare_entry(
     "Number of global refinement to be executed before local refinement cycle",
@@ -272,6 +321,21 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
     prm.get_integer("Exponential refinement maximum cycles");
   max_curvature_ref_cycles =
     prm.get_integer("Maximum number of curvature adaptive refinement cycles");
+  anisotropic_curvature_refinement =
+    prm.get_bool("Anisotropic curvature refinement");
+  curvature_refinement_grading =
+    prm.get_double("Curvature refinement grading ratio");
+  aspect_ratio_after_curvature_refinement =
+    prm.get_bool("Aspect ratio reduction after curvature refinement");
+  remove_hanging_nodes = prm.get_bool("Remove hanging nodes");
+  edge_refinement_cycles = prm.get_integer("Edge refinement cycles");
+  planar_smoothing_iterations = prm.get_integer("Planar mesh smoothing iterations");
+  planar_smoothing_material_ids.clear();
+  for (const auto &id : Utilities::split_string_list(
+         prm.get("Planar mesh smoothing material ids")))
+    if (!id.empty())
+      planar_smoothing_material_ids.insert(
+        static_cast<types::material_id>(Utilities::string_to_int(id)));
   cad_to_projectors_tolerance_ratio =
     prm.get_double("Cad tolerance to projectors tolerance ratio");
 
@@ -656,6 +720,110 @@ ComputationalDomain<dim>::create_initial_mesh()
   tria.set_manifold(0, manifold);
 }
 
+namespace
+{
+  std::atomic<unsigned int> checked_arclength_corrections{0};
+}
+
+
+CheckedArclengthProjectionLineManifold::CheckedArclengthProjectionLineManifold(
+  const TopoDS_Shape &shape,
+  const double        tolerance)
+  : OpenCASCADE::ArclengthProjectionLineManifold<2, 3>(shape, tolerance)
+  , shape(shape)
+  , tolerance(tolerance)
+{}
+
+
+std::unique_ptr<Manifold<2, 3>>
+CheckedArclengthProjectionLineManifold::clone() const
+{
+  return std::make_unique<CheckedArclengthProjectionLineManifold>(shape,
+                                                                  tolerance);
+}
+
+
+unsigned int
+CheckedArclengthProjectionLineManifold::n_corrected()
+{
+  return checked_arclength_corrections;
+}
+
+
+Point<3>
+CheckedArclengthProjectionLineManifold::checked(
+  const Point<3>                  &candidate,
+  const ArrayView<const Point<3>> &surrounding_points,
+  const ArrayView<const double>   &weights) const
+{
+  Point<3> average;
+  for (unsigned int i = 0; i < surrounding_points.size(); ++i)
+    average += weights[i] * surrounding_points[i];
+  double scale = 0;
+  for (unsigned int i = 0; i < surrounding_points.size(); ++i)
+    for (unsigned int j = i + 1; j < surrounding_points.size(); ++j)
+      scale =
+        std::max(scale, surrounding_points[i].distance(surrounding_points[j]));
+  // The closest point of the curve to the average is near the right
+  // point, and the average lies within a sagitta of the curve; a candidate
+  // on the other branch is far from it.
+  const Point<3> closest = OpenCASCADE::closest_point(shape, average, tolerance);
+  const double   sagitta = closest.distance(average);
+  if (candidate.distance(closest) <= 0.05 * scale + 2. * sagitta)
+    return candidate;
+  ++checked_arclength_corrections;
+  return closest;
+}
+
+
+Point<3>
+CheckedArclengthProjectionLineManifold::get_intermediate_point(
+  const Point<3> &p1,
+  const Point<3> &p2,
+  const double    w) const
+{
+  const std::array<Point<3>, 2> points  = {{p1, p2}};
+  const std::array<double, 2>   weights = {{1. - w, w}};
+  return checked(
+    OpenCASCADE::ArclengthProjectionLineManifold<2, 3>::get_intermediate_point(
+      p1, p2, w),
+    make_array_view(points),
+    make_array_view(weights));
+}
+
+
+Point<3>
+CheckedArclengthProjectionLineManifold::get_new_point(
+  const ArrayView<const Point<3>> &surrounding_points,
+  const ArrayView<const double>   &weights) const
+{
+  return checked(
+    OpenCASCADE::ArclengthProjectionLineManifold<2, 3>::get_new_point(
+      surrounding_points, weights),
+    surrounding_points,
+    weights);
+}
+
+
+void
+CheckedArclengthProjectionLineManifold::get_new_points(
+  const ArrayView<const Point<3>> &surrounding_points,
+  const Table<2, double>          &weights,
+  ArrayView<Point<3>>              new_points) const
+{
+  OpenCASCADE::ArclengthProjectionLineManifold<2, 3>::get_new_points(
+    surrounding_points, weights, new_points);
+  std::vector<double> row(surrounding_points.size());
+  for (unsigned int k = 0; k < new_points.size(); ++k)
+    {
+      for (unsigned int i = 0; i < row.size(); ++i)
+        row[i] = weights(k, i);
+      new_points[k] =
+        checked(new_points[k], surrounding_points, make_array_view(row));
+    }
+}
+
+
 // @sect4{ComputationalDomain::refine_and_resize}
 
 // This function globally refines the
@@ -765,9 +933,8 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
       for (unsigned int i = 0; i < cad_curves.size(); ++i)
         {
           line_projectors.push_back(
-            std::make_shared<
-              OpenCASCADE::ArclengthProjectionLineManifold<2, 3>>(cad_curves[i],
-                                                                  tolerance));
+            std::make_shared<CheckedArclengthProjectionLineManifold>(
+              cad_curves[i], tolerance));
         }
       /////////////////////////////////////////
       // these lines are placed to fix a problem that deal developers have
@@ -901,6 +1068,43 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
           Triangulation<2, 3>::active_cell_iterator endc = tria.end();
           for (; cell != endc; ++cell)
             {
+              if (anisotropic_curvature_refinement)
+                {
+                  // The angle between the normals of the CAD surface at the
+                  // centres of the opposite faces of the cell in each of its
+                  // directions; the cell is cut across those in which it
+                  // exceeds a cells_per_circle fraction of the circle.
+                  if (int(cell->material_id()) - 1 >= (int)cad_surfaces.size())
+                    continue;
+                  const TopoDS_Shape &shape =
+                    cad_surfaces[int(cell->material_id()) - 1];
+                  bool cut[2] = {false, false};
+                  for (unsigned int a = 0; a < 2; ++a)
+                    {
+                      const auto lower =
+                        OpenCASCADE::closest_point_and_differential_forms(
+                          shape, cell->face(2 * a)->center(), tolerance);
+                      const auto upper =
+                        OpenCASCADE::closest_point_and_differential_forms(
+                          shape, cell->face(2 * a + 1)->center(), tolerance);
+                      const double cosine =
+                        std::get<1>(lower) * std::get<1>(upper) /
+                        (std::get<1>(lower).norm() * std::get<1>(upper).norm());
+                      const double angle =
+                        std::acos(std::max(-1., std::min(1., cosine)));
+                      cut[a] = (angle > 2 * dealii::numbers::PI /
+                                          cells_per_circle) &&
+                               (cell->extent_in_direction(a) > 10 * tolerance);
+                    }
+                  if (cut[0] && cut[1])
+                    cell->set_refine_flag();
+                  else if (cut[0] || cut[1])
+                    cell->set_refine_flag(
+                      RefinementCase<2>::cut_axis(cut[0] ? 0 : 1));
+                  if (cut[0] || cut[1])
+                    refinedCellCounter++;
+                  continue;
+                }
               // In the following lines, we try to come up with an estimation
               // of the cell normal. It is obtained from the average of the
               // normal to the 4 triangles in which the cell can be split using
@@ -1031,9 +1235,143 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
           //                         ".stl" );
           // SaveSTL(tria,stl_filename);
         }
+
+      if (curvature_refinement_grading > 0)
+        {
+          // Two faces of cells of one material are neighbours when they lie
+          // on one line and overlap; a cell is cut across a face when it is
+          // longer across it than the ratio times the neighbour across the
+          // matching face. The coarse
+          // mesh has a few hundred cells, so the pairs are simply all
+          // compared.
+          for (unsigned int pass = 0; pass < 20; ++pass)
+            {
+              std::vector<Triangulation<2, 3>::active_cell_iterator> cells;
+              for (const auto &cell : tria.active_cell_iterators())
+                cells.push_back(cell);
+              unsigned int n_cut = 0;
+              for (const auto &cell : cells)
+                {
+                  bool cut[2] = {false, false};
+                  for (unsigned int f = 0; f < 4; ++f)
+                    {
+                      const Point<3>     a      = cell->face(f)->vertex(0);
+                      const Point<3>     b      = cell->face(f)->vertex(1);
+                      const Tensor<1, 3> ab     = b - a;
+                      const double       length = ab.norm();
+                      const double tolerance_f = 1e-6 * length;
+                      for (const auto &other : cells)
+                        {
+                          if (other == cell ||
+                              other->material_id() != cell->material_id())
+                            continue;
+                          for (unsigned int g = 0; g < 4; ++g)
+                            {
+                              const Point<3> c = other->face(g)->vertex(0);
+                              const Point<3> d = other->face(g)->vertex(1);
+                              // Collinear: both ends of the other face on
+                              // the line of this one.
+                              const auto off_line = [&](const Point<3> &p) {
+                                const Tensor<1, 3> ap = p - a;
+                                return (ap - (ap * ab) / (length * length) * ab)
+                                         .norm() > tolerance_f;
+                              };
+                              if (off_line(c) || off_line(d))
+                                continue;
+                              // Overlapping with a positive length.
+                              const double tc = (c - a) * ab / (length * length);
+                              const double td = (d - a) * ab / (length * length);
+                              const double overlap =
+                                std::min(1., std::max(tc, td)) -
+                                std::max(0., std::min(tc, td));
+                              if (overlap <= 1e-6)
+                                continue;
+                              if (cell->extent_in_direction(f / 2) >
+                                  curvature_refinement_grading *
+                                    other->extent_in_direction(g / 2) *
+                                    (1 + 1e-6))
+                                cut[f / 2] = true;
+                            }
+                        }
+                    }
+                  if (cut[0] && cut[1])
+                    cell->set_refine_flag();
+                  else if (cut[0] || cut[1])
+                    cell->set_refine_flag(
+                      RefinementCase<2>::cut_axis(cut[0] ? 0 : 1));
+                  if (cut[0] || cut[1])
+                    ++n_cut;
+                }
+              pcout << "Curvature refinement grading pass " << pass << " ("
+                    << n_cut << ")" << endl;
+              if (n_cut == 0)
+                break;
+              tria.execute_coarsening_and_refinement();
+              make_edges_conformal();
+            }
+        }
+
+      if (aspect_ratio_after_curvature_refinement)
+        for (unsigned int cycle = 0; cycle < 10; ++cycle)
+          {
+            // As the aspect ratio reduction of the input grid above.
+            unsigned int n_cut = 0;
+            for (const auto &cell : tria.active_cell_iterators())
+              {
+                const unsigned int longer =
+                  cell->extent_in_direction(0) < cell->extent_in_direction(1) ?
+                    1 :
+                    0;
+                if (cell->extent_in_direction(longer) >
+                    max_element_aspect_ratio *
+                      cell->extent_in_direction(1 - longer))
+                  {
+                    cell->set_refine_flag(RefinementCase<2>::cut_axis(longer));
+                    ++n_cut;
+                  }
+              }
+            pcout << "Aspect ratio reduction after the curvature refinement, "
+                     "cycle "
+                  << cycle << " (" << n_cut << ")" << endl;
+            if (n_cut == 0)
+              break;
+            tria.execute_coarsening_and_refinement();
+            make_edges_conformal();
+          }
     }
   //*/
-  
+
+  // A face with children is the edge of a hanging node: its cell is cut
+  // across that face (faces 0 and 1 run along the second direction, 2 and 3
+  // along the first), which moves the hanging nodes to the opposite face,
+  // until they reach cells that are as fine.
+  if (remove_hanging_nodes)
+    for (unsigned int cycle = 0; cycle < 50; ++cycle)
+      {
+        unsigned int n_cut = 0;
+        for (const auto &cell : tria.active_cell_iterators())
+          {
+            bool cut[2] = {false, false};
+            for (const unsigned int f : cell->face_indices())
+              if (!cell->at_boundary(f) && cell->face(f)->has_children())
+                cut[f < 2 ? 1 : 0] = true;
+            if (cut[0] || cut[1])
+              {
+                cell->set_refine_flag(
+                  cut[0] && cut[1] ?
+                    RefinementCase<2>(RefinementCase<2>::isotropic_refinement) :
+                    RefinementCase<2>::cut_axis(cut[0] ? 0 : 1));
+                ++n_cut;
+              }
+          }
+        pcout << "Removing hanging nodes, cycle " << cycle << " (" << n_cut
+              << ")" << endl;
+        if (n_cut == 0)
+          break;
+        tria.execute_coarsening_and_refinement();
+        make_edges_conformal();
+      }
+
   if( input_grid_name == "../grids/sphere_box_flipped" ||
       input_grid_name == "../grids/sphere_box_flipped_double_nodes" ||
       input_grid_name == "../grids/sphere_box_flipped_new")
@@ -1112,6 +1450,41 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
   {
     tria.refine_global(refinement_level);
   }
+
+  for (unsigned int cycle = 0; cycle < edge_refinement_cycles; ++cycle)
+    {
+      std::vector<std::pair<Point<dim>, Point<dim>>> edges;
+      for (const auto &cell : tria.active_cell_iterators())
+        for (const unsigned int f : cell->face_indices())
+          if (cell->at_boundary(f))
+            edges.emplace_back(cell->face(f)->vertex(0),
+                               cell->face(f)->vertex(1));
+      const auto distance_to_edges = [&](const Point<dim> &x) {
+        double d = std::numeric_limits<double>::max();
+        for (const auto &[a, b] : edges)
+          {
+            const Tensor<1, dim> ab = b - a;
+            const double t = std::clamp((x - a) * ab / ab.norm_square(), 0., 1.);
+            d = std::min(d, x.distance(a + t * ab));
+          }
+        return d;
+      };
+      unsigned int flagged = 0;
+      for (const auto &cell : tria.active_cell_iterators())
+        for (const unsigned int v : cell->vertex_indices())
+          if (distance_to_edges(cell->vertex(v)) < 1e-10 * cell->diameter())
+            {
+              cell->set_refine_flag();
+              ++flagged;
+              break;
+            }
+      pcout << "Refinement towards the edges of the surface, cycle " << cycle
+            << " (" << flagged << " of " << tria.n_active_cells()
+            << " cells)" << std::endl;
+      tria.prepare_coarsening_and_refinement();
+      tria.execute_coarsening_and_refinement();
+      make_edges_conformal();
+    }
   
   //else just do the global refinement
   //tria.refine_global(refinement_level);
@@ -1170,8 +1543,22 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
   if (graded_refinement_maximum_cycles > 0 &&
       !graded_refinement_material_ids.empty())
     {
-      tria.set_mesh_smoothing(
-        Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+      // Limit levels only during these local refinement passes. Leaving
+      // this flag enabled makes a later seam-conformity pass equalize the
+      // anisotropic refinement levels of unrelated surface directions,
+      // which can turn a local NACA refinement into a global cascade.
+      const auto previous_smoothing = tria.get_mesh_smoothing();
+      bool isotropic_history = true;
+      for (const auto &cell : tria.cell_iterators())
+        if (cell->has_children() &&
+            cell->refinement_case() != RefinementCase<dim - 1>::isotropic_refinement)
+          isotropic_history = false;
+      if (isotropic_history)
+        tria.set_mesh_smoothing(
+          Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+      // Anisotropic levels count cuts in different directions, not a
+      // uniform physical size. Equalizing them would refine unselected
+      // materials and erase the locality of the requested grading.
 
       unsigned int cycle = 0;
       for (; cycle < graded_refinement_maximum_cycles; ++cycle)
@@ -1221,6 +1608,7 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
         pcout << " " << static_cast<unsigned int>(entry.first) << "="
               << entry.second;
       pcout << std::endl;
+      tria.set_mesh_smoothing(previous_smoothing);
     }
 
   // Exponential refinement, with the level difference limited to one as for
@@ -1228,8 +1616,22 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
   if (exponential_refinement_maximum_cycles > 0 &&
       !exponential_refinement_decay_vector.empty())
     {
-      tria.set_mesh_smoothing(
-        Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+      // Limit levels only during these local refinement passes. Leaving
+      // this flag enabled makes a later seam-conformity pass equalize the
+      // anisotropic refinement levels of unrelated surface directions,
+      // which can turn a local NACA refinement into a global cascade.
+      const auto previous_smoothing = tria.get_mesh_smoothing();
+      bool isotropic_history = true;
+      for (const auto &cell : tria.cell_iterators())
+        if (cell->has_children() &&
+            cell->refinement_case() != RefinementCase<dim - 1>::isotropic_refinement)
+          isotropic_history = false;
+      if (isotropic_history)
+        tria.set_mesh_smoothing(
+          Triangulation<dim - 1, dim>::limit_level_difference_at_vertices);
+      // Anisotropic levels count cuts in different directions, not a
+      // uniform physical size. Equalizing them would refine unselected
+      // materials and erase the locality of the requested grading.
       Tensor<1, dim> k;
       for (unsigned int d = 0; d < dim; ++d)
         k[d] = exponential_refinement_decay_vector[d];
@@ -1277,8 +1679,26 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
         pcout << " " << static_cast<unsigned int>(entry.first) << "="
               << entry.second;
       pcout << std::endl;
+      tria.set_mesh_smoothing(previous_smoothing);
     }
 
+  if (planar_smoothing_iterations > 0 && !planar_smoothing_material_ids.empty())
+    {
+      const auto quality = PlanarMeshQuality::smooth(
+        tria, planar_smoothing_material_ids, planar_smoothing_iterations);
+      pcout << "Planar mesh quality: " << quality.accepted_moves
+            << " accepted vertex moves; minimum corner mean ratio "
+            << quality.minimum_before << " -> " << quality.minimum_after
+            << ", mean cell quality " << quality.mean_before
+            << " -> " << quality.mean_after << std::endl;
+    }
+
+  if (CheckedArclengthProjectionLineManifold::n_corrected() > 0)
+    pcout << "CAD curves: "
+          << CheckedArclengthProjectionLineManifold::n_corrected()
+          << " new points of the arclength projection on the wrong branch, "
+             "replaced by the closest point of the curve"
+          << std::endl;
   pcout << "We have a tria of " << tria.n_active_cells() << " cells."
         << std::endl;
   GridTools::partition_triangulation(n_mpi_processes, tria);
