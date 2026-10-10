@@ -782,6 +782,434 @@ LaplaceFMM::particle_to_particle(const unsigned int a,
 
 
 void
+LaplaceFMM::particle_to_particle_gradient(const unsigned int a,
+                                          const unsigned int b,
+                                          const double      *q,
+                                          double            *u,
+                                          double            *g) const
+{
+  const Box         &A = boxes[a];
+  const Box         &B = boxes[b];
+  const double      *x = sorted_coordinates[0].data();
+  const double      *y = sorted_coordinates[1].data();
+  const double      *z = sorted_coordinates[2].data();
+  const unsigned int n = points.size();
+  double *gx = g, *gy = g + n, *gz = g + 2 * n;
+  for (unsigned int i = A.begin; i < A.end; ++i)
+    {
+      const double xi = x[i], yi = y[i], zi = z[i];
+      double       sum = 0, sx = 0, sy = 0, sz = 0;
+      unsigned int j = B.begin;
+#if defined(__AVX2__) && defined(__FMA__)
+      const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
+                    vz = _mm256_set1_pd(zi);
+      __m256d acc = _mm256_setzero_pd(), acc_x = _mm256_setzero_pd(),
+              acc_y = _mm256_setzero_pd(), acc_z = _mm256_setzero_pd();
+      // grad_x q / |x - y| = -q (x - y) / |x - y|^3; the point itself, at
+      // distance zero, has a zero inverse.
+      const auto interact = [&](const __m256d px,
+                                const __m256d py,
+                                const __m256d pz,
+                                const __m256d qj) {
+        const __m256d rx = _mm256_sub_pd(vx, px);
+        const __m256d ry = _mm256_sub_pd(vy, py);
+        const __m256d rz = _mm256_sub_pd(vz, pz);
+        const __m256d r2 = _mm256_fmadd_pd(
+          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d inverse = inverse_sqrt(r2);
+        const __m256d qk      = _mm256_mul_pd(qj, inverse);
+        acc                   = _mm256_add_pd(acc, qk);
+        const __m256d f =
+          _mm256_mul_pd(qk, _mm256_mul_pd(inverse, inverse));
+        acc_x = _mm256_fnmadd_pd(f, rx, acc_x);
+        acc_y = _mm256_fnmadd_pd(f, ry, acc_y);
+        acc_z = _mm256_fnmadd_pd(f, rz, acc_z);
+      };
+      for (; j + 4 <= B.end; j += 4)
+        interact(_mm256_loadu_pd(x + j),
+                 _mm256_loadu_pd(y + j),
+                 _mm256_loadu_pd(z + j),
+                 _mm256_loadu_pd(q + j));
+      if (j < B.end)
+        {
+          const __m256i mask =
+            _mm256_cmpgt_epi64(_mm256_set1_epi64x(B.end - j),
+                               _mm256_set_epi64x(3, 2, 1, 0));
+          interact(_mm256_maskload_pd(x + j, mask),
+                   _mm256_maskload_pd(y + j, mask),
+                   _mm256_maskload_pd(z + j, mask),
+                   _mm256_maskload_pd(q + j, mask));
+          j = B.end;
+        }
+      sum = horizontal_sum(acc);
+      sx  = horizontal_sum(acc_x);
+      sy  = horizontal_sum(acc_y);
+      sz  = horizontal_sum(acc_z);
+#endif
+      for (; j < B.end; ++j)
+        {
+          const double rx = xi - x[j], ry = yi - y[j], rz = zi - z[j];
+          const double r2       = rx * rx + ry * ry + rz * rz;
+          const bool   distinct = r2 > 0.;
+          const double inverse =
+            (distinct ? 1. : 0.) / std::sqrt(distinct ? r2 : 1.);
+          const double qk = q[j] * inverse;
+          const double f  = qk * inverse * inverse;
+          sum += qk;
+          sx -= f * rx;
+          sy -= f * ry;
+          sz -= f * rz;
+        }
+      u[i] += sum;
+      gx[i] += sx;
+      gy[i] += sy;
+      gz[i] += sz;
+    }
+}
+
+
+
+template <unsigned int k>
+void
+LaplaceFMM::particle_to_particle_multiple(const unsigned int a,
+                                          const unsigned int b,
+                                          const double      *q,
+                                          double            *u) const
+{
+  const Box         &A = boxes[a];
+  const Box         &B = boxes[b];
+  const double      *x = sorted_coordinates[0].data();
+  const double      *y = sorted_coordinates[1].data();
+  const double      *z = sorted_coordinates[2].data();
+  const unsigned int n = points.size();
+  for (unsigned int i = A.begin; i < A.end; ++i)
+    {
+      const double xi = x[i], yi = y[i], zi = z[i];
+      double       sum[k];
+      for (unsigned int s = 0; s < k; ++s)
+        sum[s] = 0;
+      unsigned int j = B.begin;
+#if defined(__AVX2__) && defined(__FMA__)
+      const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
+                    vz = _mm256_set1_pd(zi);
+      __m256d acc[k];
+      for (unsigned int s = 0; s < k; ++s)
+        acc[s] = _mm256_setzero_pd();
+      const auto inverse_at = [&](const __m256d px,
+                                  const __m256d py,
+                                  const __m256d pz) {
+        const __m256d rx = _mm256_sub_pd(vx, px);
+        const __m256d ry = _mm256_sub_pd(vy, py);
+        const __m256d rz = _mm256_sub_pd(vz, pz);
+        return inverse_sqrt(_mm256_fmadd_pd(
+          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz))));
+      };
+      for (; j + 4 <= B.end; j += 4)
+        {
+          const __m256d inverse = inverse_at(_mm256_loadu_pd(x + j),
+                                             _mm256_loadu_pd(y + j),
+                                             _mm256_loadu_pd(z + j));
+          for (unsigned int s = 0; s < k; ++s)
+            acc[s] =
+              _mm256_fmadd_pd(_mm256_loadu_pd(q + s * n + j), inverse, acc[s]);
+        }
+      if (j < B.end)
+        {
+          const __m256i mask =
+            _mm256_cmpgt_epi64(_mm256_set1_epi64x(B.end - j),
+                               _mm256_set_epi64x(3, 2, 1, 0));
+          const __m256d inverse = inverse_at(_mm256_maskload_pd(x + j, mask),
+                                             _mm256_maskload_pd(y + j, mask),
+                                             _mm256_maskload_pd(z + j, mask));
+          for (unsigned int s = 0; s < k; ++s)
+            acc[s] = _mm256_fmadd_pd(_mm256_maskload_pd(q + s * n + j, mask),
+                                     inverse,
+                                     acc[s]);
+          j = B.end;
+        }
+      for (unsigned int s = 0; s < k; ++s)
+        sum[s] = horizontal_sum(acc[s]);
+#endif
+      for (; j < B.end; ++j)
+        {
+          const double rx = xi - x[j], ry = yi - y[j], rz = zi - z[j];
+          const double r2       = rx * rx + ry * ry + rz * rz;
+          const bool   distinct = r2 > 0.;
+          const double inverse =
+            (distinct ? 1. : 0.) / std::sqrt(distinct ? r2 : 1.);
+          for (unsigned int s = 0; s < k; ++s)
+            sum[s] += q[s * n + j] * inverse;
+        }
+      for (unsigned int s = 0; s < k; ++s)
+        u[s * n + i] += sum[s];
+    }
+}
+
+
+
+void
+LaplaceFMM::far_field_laplace_multiple(const unsigned int         k,
+                                       const std::vector<double> &q,
+                                       std::vector<double>       &u) const
+{
+  const unsigned int p        = data.order;
+  const unsigned int nc       = LE::n_coefficients(p);
+  const unsigned int n        = points.size();
+  const unsigned int n_boxes  = boxes.size();
+  std::vector<LE::complex> M(k * n_boxes * nc, 0.), L(k * n_boxes * nc, 0.);
+  LE::Workspace            w(p);
+
+  auto start = std::chrono::steady_clock::now();
+  for (unsigned int s = 0; s < k; ++s)
+    {
+      LE::complex *const Ms = &M[s * n_boxes * nc];
+      for (const unsigned int leaf : my_leaves)
+        {
+          const Box &box = boxes[leaf];
+          for (unsigned int i = box.begin; i < box.end; ++i)
+            LE::add_charge(w,
+                           q[s * n + i],
+                           sorted_points[i] - box.center,
+                           &Ms[leaf * nc]);
+        }
+      for (auto b = my_boxes.rbegin(); b != my_boxes.rend(); ++b)
+        if (boxes[*b].parent != invalid)
+          {
+            const Box &box = boxes[*b];
+            LE::multipole_to_multipole(w,
+                                       &Ms[*b * nc],
+                                       box.center - boxes[box.parent].center,
+                                       &Ms[box.parent * nc]);
+          }
+    }
+  phase_time[0] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  if (n_mpi_processes > 1)
+    sum_over_processes(M, mpi_communicator);
+  phase_time[1] += seconds_since(start);
+
+  // M2L as in far_field_laplace(), the rotation of a group shared by all
+  // sets.
+  start = std::chrono::steady_clock::now();
+  {
+    constexpr unsigned int B  = 8;
+    const unsigned int     nr = YE::n_coefficients(p);
+    std::vector<double>    X(nr * B), Y(nr * B), work(nr * B);
+    YE::Operators::Angles  angles;
+    for (const auto &group : m2l_groups)
+      {
+        rotations->angles(-group.tau, angles);
+        const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
+        for (unsigned int s = 0; s < k; ++s)
+          {
+            const LE::complex *Ms = &M[s * n_boxes * nc];
+            LE::complex       *Ls = &L[s * n_boxes * nc];
+            for (unsigned int first = group.begin; first < group.end;
+                 first += B)
+              {
+                const unsigned int count = std::min(B, group.end - first);
+                for (unsigned int j = 0; j < count; ++j)
+                  {
+                    const unsigned int pair = m2l_order[first + j];
+                    const LE::complex *Mp =
+                      &Ms[my_m2l_pairs[pair].second * nc];
+                    const double inverse_unit = 1. / m2l_unit[pair];
+                    double       scale        = 1.;
+                    for (unsigned int nn = 0; nn <= p;
+                         ++nn, scale *= inverse_unit)
+                      {
+                        const unsigned int c = LE::index(nn, 0);
+                        X[YE::index(nn, 0) * B + j] =
+                          scale * real_outgoing[c] * Mp[c].real();
+                        for (unsigned int m = 1; m <= nn; ++m)
+                          {
+                            const double f = scale * real_outgoing[c + m];
+                            X[YE::index(nn, m) * B + j] = f * Mp[c + m].real();
+                            X[YE::index(nn, -int(m)) * B + j] =
+                              -f * Mp[c + m].imag();
+                          }
+                      }
+                  }
+                for (unsigned int j = count; j < B; ++j)
+                  for (unsigned int a = 0; a < nr; ++a)
+                    X[a * B + j] = 0.;
+                std::fill(Y.begin(), Y.end(), 0.);
+                rotations->translate<B>(
+                  angles, Tz, X.data(), Y.data(), work.data());
+                for (unsigned int j = 0; j < count; ++j)
+                  {
+                    const unsigned int pair = m2l_order[first + j];
+                    LE::complex *Lp = &Ls[my_m2l_pairs[pair].first * nc];
+                    const double inverse_unit = 1. / m2l_unit[pair];
+                    double       scale        = inverse_unit;
+                    for (unsigned int kk = 0; kk <= p;
+                         ++kk, scale *= inverse_unit)
+                      {
+                        const unsigned int c = LE::index(kk, 0);
+                        Lp[c] +=
+                          scale * real_local[c] * Y[YE::index(kk, 0) * B + j];
+                        for (unsigned int l = 1; l <= kk; ++l)
+                          Lp[c + l] +=
+                            scale * real_local[c + l] *
+                            LE::complex(Y[YE::index(kk, l) * B + j],
+                                        Y[YE::index(kk, -int(l)) * B + j]);
+                      }
+                  }
+              }
+          }
+      }
+  }
+  phase_time[2] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  for (unsigned int s = 0; s < k; ++s)
+    {
+      LE::complex *Ls = &L[s * n_boxes * nc];
+      for (const unsigned int b : my_boxes)
+        if (boxes[b].parent != invalid)
+          {
+            const Box &box = boxes[b];
+            LE::local_to_local(w,
+                               &Ls[box.parent * nc],
+                               box.center - boxes[box.parent].center,
+                               &Ls[b * nc]);
+          }
+      for (const unsigned int leaf : my_leaves)
+        {
+          const Box &box = boxes[leaf];
+          for (unsigned int i = box.begin; i < box.end; ++i)
+            u[s * n + i] += LE::evaluate_local(w,
+                                               &Ls[leaf * nc],
+                                               sorted_points[i] - box.center);
+        }
+    }
+  phase_time[3] += seconds_since(start);
+}
+
+
+
+void
+LaplaceFMM::evaluate_multiple(
+  const std::vector<std::vector<double>> &charges,
+  std::vector<std::vector<double>>       &potentials) const
+{
+  AssertThrow(data.kappa == 0.,
+              ExcMessage("Several sets of charges are implemented for the "
+                         "Laplace kernel."));
+  const unsigned int k = charges.size();
+  const unsigned int n = points.size();
+  AssertThrow(k >= 1 && k <= 4,
+              ExcMessage("One to four sets of charges at once."));
+  std::vector<double> q(k * n);
+  for (unsigned int s = 0; s < k; ++s)
+    {
+      AssertThrow(charges[s].size() == n,
+                  ExcDimensionMismatch(charges[s].size(), n));
+      for (unsigned int i = 0; i < n; ++i)
+        q[s * n + i] = charges[s][permutation[i]];
+    }
+  const std::array<double, 6> times_before = phase_time;
+  std::vector<double>         u(k * n, 0.);
+  far_field_laplace_multiple(k, q, u);
+
+  auto start = std::chrono::steady_clock::now();
+  for (const auto &[a, b] : my_p2p_pairs)
+    switch (k)
+      {
+        case 1:
+          particle_to_particle_multiple<1>(a, b, q.data(), u.data());
+          break;
+        case 2:
+          particle_to_particle_multiple<2>(a, b, q.data(), u.data());
+          break;
+        case 3:
+          particle_to_particle_multiple<3>(a, b, q.data(), u.data());
+          break;
+        default:
+          particle_to_particle_multiple<4>(a, b, q.data(), u.data());
+      }
+  phase_time[4] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  std::vector<double> all(k * n, 0.);
+  for (unsigned int s = 0; s < k; ++s)
+    for (unsigned int i = 0; i < n; ++i)
+      all[s * n + permutation[i]] = u[s * n + i];
+  if (n_mpi_processes > 1)
+    sum_over_processes(all, mpi_communicator);
+  potentials.resize(k);
+  for (unsigned int s = 0; s < k; ++s)
+    potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+  phase_time[5] += seconds_since(start);
+  ++n_evaluations;
+  if (n_evaluations == 1 && n_mpi_processes > 1)
+    {
+      std::array<double, 6> times;
+      for (unsigned int i = 0; i < times.size(); ++i)
+        times[i] = phase_time[i] - times_before[i];
+      rebalance(times);
+    }
+}
+
+
+
+void
+LaplaceFMM::evaluate_with_gradient(const std::vector<double>  &charges,
+                                   std::vector<double>        &potentials,
+                                   std::vector<Tensor<1, 3>>  &gradients) const
+{
+  AssertThrow(data.kappa == 0.,
+              ExcMessage("Gradients are implemented for the Laplace kernel."));
+  const unsigned int n = points.size();
+  AssertThrow(charges.size() == n, ExcDimensionMismatch(charges.size(), n));
+  std::vector<double> q(n);
+  for (unsigned int i = 0; i < n; ++i)
+    q[i] = charges[permutation[i]];
+
+  const std::array<double, 6> times_before = phase_time;
+  // Potentials and the three components of the gradient, sorted numbering.
+  std::vector<double> u(n, 0.), g(3 * n, 0.);
+  far_field_laplace(q, {}, u, &g);
+
+  auto start = std::chrono::steady_clock::now();
+  for (const auto &[a, b] : my_p2p_pairs)
+    particle_to_particle_gradient(a, b, q.data(), u.data(), g.data());
+  phase_time[4] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  std::vector<double> all(4 * n, 0.);
+  for (unsigned int i = 0; i < n; ++i)
+    {
+      const unsigned int k = permutation[i];
+      all[4 * k]           = u[i];
+      for (unsigned int c = 0; c < 3; ++c)
+        all[4 * k + 1 + c] = g[c * n + i];
+    }
+  if (n_mpi_processes > 1)
+    sum_over_processes(all, mpi_communicator);
+  potentials.resize(n);
+  gradients.resize(n);
+  for (unsigned int k = 0; k < n; ++k)
+    {
+      potentials[k] = all[4 * k];
+      for (unsigned int c = 0; c < 3; ++c)
+        gradients[k][c] = all[4 * k + 1 + c];
+    }
+  phase_time[5] += seconds_since(start);
+  ++n_evaluations;
+  if (n_evaluations == 1 && n_mpi_processes > 1)
+    {
+      std::array<double, 6> times;
+      for (unsigned int i = 0; i < times.size(); ++i)
+        times[i] = phase_time[i] - times_before[i];
+      rebalance(times);
+    }
+}
+
+
+
+void
 LaplaceFMM::evaluate(const std::vector<double>       &charges,
                      const std::vector<Tensor<1, 3>> &dipoles,
                      std::vector<double>             &potentials) const
@@ -855,7 +1283,8 @@ LaplaceFMM::evaluate(const std::vector<double>       &charges,
 void
 LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
                               const std::vector<Tensor<1, 3>> &d,
-                              std::vector<double>             &u) const
+                              std::vector<double>             &u,
+                              std::vector<double>             *g) const
 {
   const unsigned int p  = data.order;
   const unsigned int nc = LE::n_coefficients(p);
@@ -975,13 +1404,25 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
                            box.center - boxes[box.parent].center,
                            &locals[b * nc]);
       }
+  const unsigned int n = u.size();
   for (const unsigned int leaf : my_leaves)
     {
       const Box &box = boxes[leaf];
       for (unsigned int i = box.begin; i < box.end; ++i)
-        u[i] += LE::evaluate_local(w,
-                                   &locals[leaf * nc],
-                                   sorted_points[i] - box.center);
+        {
+          u[i] += LE::evaluate_local(w,
+                                     &locals[leaf * nc],
+                                     sorted_points[i] - box.center);
+          if (g != nullptr)
+            {
+              const Tensor<1, 3> gradient =
+                LE::evaluate_local_gradient(w,
+                                            &locals[leaf * nc],
+                                            sorted_points[i] - box.center);
+              for (unsigned int c = 0; c < 3; ++c)
+                (*g)[c * n + i] += gradient[c];
+            }
+        }
     }
   phase_time[3] += seconds_since(start);
 }

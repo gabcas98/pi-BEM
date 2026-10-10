@@ -90,5 +90,52 @@ main(int argc, char **argv)
                   << ": relative error below " << bound << ": "
                   << (error / scale < bound ? "yes" : "no") << std::endl;
         }
+      if (kappa > 0)
+        continue;
+      // The gradient of the potential of the charges, against the direct
+      // sum of -q_j (x_i - x_j) / |x_i - x_j|^3; one order slower.
+      std::vector<double>       potentials, plain;
+      std::vector<Tensor<1, 3>> gradients;
+      fmm.evaluate_with_gradient(q, potentials, gradients);
+      fmm.evaluate(q, {}, plain);
+      double error = 0, scale = 0, difference = 0;
+      for (const unsigned int i : targets)
+        {
+          Tensor<1, 3> exact;
+          for (unsigned int j = 0; j < points.size(); ++j)
+            if (j != i)
+              {
+                const Tensor<1, 3> r = points[i] - points[j];
+                exact -= q[j] * r / std::pow(r.norm(), 3);
+              }
+          error      = std::max(error, (gradients[i] - exact).norm());
+          scale      = std::max(scale, exact.norm());
+          difference = std::max(difference, std::abs(potentials[i] - plain[i]));
+        }
+      const double bound = std::pow(0.5, order - 1.);
+      deallog << "kappa 0, order " << order
+              << ", gradient of the charges: relative error below " << bound
+              << ": " << (error / scale < bound ? "yes" : "no")
+              << "; potential as without the gradient: "
+              << (difference < 1e-12 ? "yes" : "no") << std::endl;
+      // Several sets of charges at once, against one at a time.
+      std::vector<double> q2(points.size());
+      for (unsigned int i = 0; i < points.size(); ++i)
+        q2[i] = q[i] * normals[i][0];
+      std::vector<std::vector<double>> sets;
+      fmm.evaluate_multiple({q, q2}, sets);
+      std::vector<double> single2;
+      fmm.evaluate(q2, {}, single2);
+      double deviation = 0, size = 0;
+      for (unsigned int i = 0; i < points.size(); ++i)
+        {
+          deviation = std::max({deviation,
+                                std::abs(sets[0][i] - plain[i]),
+                                std::abs(sets[1][i] - single2[i])});
+          size      = std::max(size, std::abs(plain[i]));
+        }
+      deallog << "kappa 0, order " << order
+              << ", two sets of charges at once as one at a time: "
+              << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
     }
 }

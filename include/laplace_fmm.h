@@ -104,6 +104,27 @@ public:
            const std::vector<dealii::Tensor<1, 3>> &dipoles,
            std::vector<double>                     &potentials) const;
 
+  /**
+   * Potentials and their gradients at all points, on every process, of the
+   * given charges: sum_{j != i} q_j / |x_i - x_j| and its gradient with
+   * respect to x_i. The Laplace kernel only. The gradient of the local
+   * expansions converges one order more slowly than the potential.
+   */
+  void
+  evaluate_with_gradient(const std::vector<double>         &charges,
+                         std::vector<double>               &potentials,
+                         std::vector<dealii::Tensor<1, 3>> &gradients) const;
+
+  /**
+   * The potentials at all points, on every process, of several sets of
+   * charges at once, Laplace kernel: the tree passes, the direct
+   * interactions, whose kernel is computed once for all sets, and the sums
+   * over the processes are shared, the translations repeated for each set.
+   */
+  void
+  evaluate_multiple(const std::vector<std::vector<double>> &charges,
+                    std::vector<std::vector<double>>       &potentials) const;
+
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
   evaluate_directly(const std::vector<double>               &charges,
@@ -180,13 +201,44 @@ private:
                        const double      *d,
                        double            *u) const;
 
+  /// Direct interaction of the k sets of charges q (k arrays of the points,
+  /// one after the other) of the source leaf b with the points of the
+  /// target leaf a, potentials u (k arrays), sorted numbering, Laplace
+  /// kernel.
+  template <unsigned int k>
+  void
+  particle_to_particle_multiple(const unsigned int a,
+                                const unsigned int b,
+                                const double      *q,
+                                double            *u) const;
+
+  /// The far field of k sets of charges (k arrays of the points), Laplace
+  /// kernel, potentials added to u (k arrays).
+  void
+  far_field_laplace_multiple(const unsigned int         k,
+                             const std::vector<double> &q,
+                             std::vector<double>       &u) const;
+
+  /// Direct interaction of the charges of the source leaf b with the points
+  /// of the target leaf a, potentials u and gradients g (three arrays, one
+  /// per component), sorted numbering, Laplace kernel.
+  void
+  particle_to_particle_gradient(const unsigned int a,
+                                const unsigned int b,
+                                const double      *q,
+                                double            *u,
+                                double            *g) const;
+
   /// The far field through the expansions, from the multipoles of the own
-  /// leaves to the potentials u at the own points, for each kernel; the
-  /// times of the phases are added to phase_time[0..3].
+  /// leaves to the potentials u at the own points, for each kernel, and for
+  /// the Laplace kernel optionally their gradients g (three arrays of the
+  /// size of u, one per component); the times of the phases are added to
+  /// phase_time[0..3].
   void
   far_field_laplace(const std::vector<double>               &q,
                     const std::vector<dealii::Tensor<1, 3>> &d,
-                    std::vector<double>                     &u) const;
+                    std::vector<double>                     &u,
+                    std::vector<double>                     *g = nullptr) const;
   void
   far_field_yukawa(const std::vector<double>               &q,
                    const std::vector<dealii::Tensor<1, 3>> &d,

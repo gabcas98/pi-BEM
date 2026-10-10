@@ -2,9 +2,13 @@
 DEAL::kappa 0.00000, order 6, charges: relative error below 0.0156250: yes
 DEAL::kappa 0.00000, order 6, dipoles: relative error below 0.0312500: yes
 DEAL::kappa 0.00000, order 6, charges and dipoles: relative error below 0.0312500: yes
+DEAL::kappa 0, order 6, gradient of the charges: relative error below 0.0312500: yes; potential as without the gradient: yes
+DEAL::kappa 0, order 6, two sets of charges at once as one at a time: yes
 DEAL::kappa 0.00000, order 12, charges: relative error below 0.000244141: yes
 DEAL::kappa 0.00000, order 12, dipoles: relative error below 0.000488281: yes
 DEAL::kappa 0.00000, order 12, charges and dipoles: relative error below 0.000488281: yes
+DEAL::kappa 0, order 12, gradient of the charges: relative error below 0.000488281: yes; potential as without the gradient: yes
+DEAL::kappa 0, order 12, two sets of charges at once as one at a time: yes
 DEAL::kappa 3.00000, order 6, charges: relative error below 0.0156250: yes
 DEAL::kappa 3.00000, order 6, dipoles: relative error below 0.0312500: yes
 DEAL::kappa 3.00000, order 6, charges and dipoles: relative error below 0.0312500: yes

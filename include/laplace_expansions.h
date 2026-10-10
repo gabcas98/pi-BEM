@@ -277,6 +277,39 @@ namespace LaplaceExpansions
   }
 
   /**
+   * L2P: the gradient of the local expansion L at the offset x - z. With
+   * the harmonics of this namespace, d/dz R_n^m = R_{n-1}^m and
+   * (d/dx - i d/dy) R_n^m = R_{n-1}^{m-1}, so that for the real potential
+   * phi = sum L_n^m conj(R_n^m),
+   * d phi/dx + i d phi/dy = sum L_n^m conj(R_{n-1}^{m-1}) and
+   * d phi/dz = sum L_n^m conj(R_{n-1}^m).
+   */
+  inline dealii::Tensor<1, 3>
+  evaluate_local_gradient(Workspace                  &w,
+                          const complex              *L,
+                          const dealii::Tensor<1, 3> &x_minus_z)
+  {
+    dealii::Tensor<1, 3> gradient;
+    if (w.p == 0)
+      return gradient;
+    regular_harmonics(w.p - 1, x_minus_z, w.harmonics.data());
+    const complex *R = w.harmonics.data();
+    complex        xy(0., 0.), z(0., 0.);
+    for (unsigned int n = 1; n <= w.p; ++n)
+      {
+        const int k = n - 1;
+        for (int m = -k; m <= k; ++m)
+          z += get(L, n, m) * std::conj(get(R, k, m));
+        for (int m = -k + 1; m <= int(n); ++m)
+          xy += get(L, n, m) * std::conj(get(R, k, m - 1));
+      }
+    gradient[0] = xy.real();
+    gradient[1] = xy.imag();
+    gradient[2] = z.real();
+    return gradient;
+  }
+
+  /**
    * M2M: add the multipole M about z, translated to z', to M_out; the
    * argument is z - z'.
    */
