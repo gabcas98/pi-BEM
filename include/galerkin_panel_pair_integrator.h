@@ -3,12 +3,15 @@
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_handler.h>
+
+#include <functional>
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_values.h>
 
 #include <chrono>
 #include <map>
 #include <memory>
+#include <set>
 #include <deal.II/fe/mapping.h>
 #include <deal.II/base/function.h>
 
@@ -81,6 +84,50 @@ public:
    * of zero, the default, disables the reduction and keeps the full order
    * everywhere.
    */
+  /**
+   * The order of the singular rule for folded pairs, cells with a common
+   * edge or vertex whose normals make a cosine below the given one, as the
+   * upper and lower cells at a thin trailing edge: the integrand is then
+   * nearly singular across both cells, and the rule of the other singular
+   * pairs loses accuracy. Zero, the default, uses the singular order for
+   * them too.
+   */
+  void
+  set_folded_singular_order(const unsigned int order,
+                            const double       cosine = -0.5)
+  {
+    folded_singular_order  = order;
+    folded_singular_cosine = cosine;
+  }
+
+  /** Promote touching pairs involving any selected material, including
+   * coincident pairs. This also covers orthogonal surface--tip contacts,
+   * which the folded-pair normal criterion does not select. Empty ids or
+   * order zero leave the ordinary singular rule unchanged.
+   */
+  void
+  set_material_singular_order(const std::set<types::material_id> &ids,
+                              const unsigned int order)
+  {
+    singular_material_ids = ids;
+    material_singular_order = order;
+  }
+
+  /** Promote touching pairs involving a skewed cell: one with an interior
+   * angle, measured at its vertices, below the given one, as the thin
+   * rhombi of a planar face near a sharp corner of its boundary. Their
+   * edges have similar lengths, so the anisotropic balancing does not split
+   * them, and the singular rules lose accuracy on them. Order zero leaves
+   * the ordinary singular rule unchanged.
+   */
+  void
+  set_skewed_singular_order(const unsigned int order,
+                            const double       minimum_angle_degrees = 30.)
+  {
+    skewed_singular_order = order;
+    skewed_minimum_angle  = minimum_angle_degrees * M_PI / 180.;
+  }
+
   void
   set_far_field_tolerance(const double tolerance)
   {
@@ -157,6 +204,19 @@ public:
   light_geometry_deviation() const
   {
     return maximum_light_deviation;
+  }
+
+  /// Global indices of the degrees of freedom of a cell for
+  /// assemble_single_layer(), assemble_double_layer() and
+  /// assemble_weak_hypersingular(), in place of those of the DoFHandler: a
+  /// block formulation may give a shape function different indices on
+  /// different cells. An empty function restores the DoFHandler.
+  void
+  set_dof_index_map(
+    std::function<void(const CellIterator &,
+                       std::vector<types::global_dof_index> &)> map)
+  {
+    dof_index_map = std::move(map);
   }
 
   /// Whether the direct path evaluates the element as a tensor Lagrange
@@ -259,6 +319,21 @@ public:
   integrate_weak_hypersingular(const CellIterator &test_cell,
                                const CellIterator &trial_cell,
                                const unsigned int  order) const;
+
+  /// V, K and W of the Laplace kernel for one panel pair from the same
+  /// quadrature points: the columns of V, then of K, then of W.
+  FullMatrix<double>
+  integrate_single_double_hypersingular(const CellIterator &test_cell,
+                                        const CellIterator &trial_cell,
+                                        const unsigned int  order) const;
+
+  /// The same, and in a fourth block of columns K of the pair the other way
+  /// round, trial cell as test cell, transposed: entry (i, 3 dpc + j) is
+  /// entry (j, i) of the K of (trial cell, test cell), from the same points.
+  FullMatrix<double>
+  integrate_single_double_hypersingular_both(const CellIterator &test_cell,
+                                             const CellIterator &trial_cell,
+                                             const unsigned int  order) const;
 
   /** Integrate V(test,trial) and K'(test,trial) in one traversal. This
    * routine is intended for geometrically disjoint panel pairs, for which
@@ -468,6 +543,29 @@ public:
     const types::material_id selected_trial_material =
       numbers::invalid_material_id) const;
 
+  /** Assemble the single layer V, the double layer K and the weak
+   * hypersingular operator W of the Laplace kernel in one traversal of the
+   * panel pairs. The far pairs share their points, the order chosen by the
+   * far-field tolerance and the kernel block of 1/(4 pi r), which V and W
+   * contract with the shape functions and with their surface curls, while K
+   * contracts the block of the double-layer kernel; every contraction goes
+   * one index at a time. The near and singular pairs integrate the three
+   * from the same points, integrate_single_double_hypersingular(). Constraints
+   * apply to test and trial functions; the caller owns initialization and
+   * compression.
+   */
+  template <typename MatrixType>
+  void
+  assemble_single_double_hypersingular(
+    const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+    const AffineConstraints<double>           &constraints,
+    MatrixType                                &single_layer,
+    MatrixType                                &double_layer,
+    MatrixType                                &hypersingular,
+    const unsigned int                         order,
+    const types::subdomain_id locally_owned_subdomain =
+      numbers::invalid_subdomain_id) const;
+
 private:
   enum class OperatorType
   {
@@ -481,8 +579,23 @@ private:
     single_and_double_layer,
     // The same, and in one more column the right-hand side of the pair seen
     // the other way round, trial cell as test cell, from the same points.
-    single_and_double_layer_both
+    single_and_double_layer_both,
+    // V, K and W of the Laplace kernel from the same points: the local
+    // result holds V in the first dofs_per_cell columns, K in the next and
+    // W in the last.
+    single_double_hypersingular,
+    // The same, and in a fourth block K of the pair the other way round,
+    // transposed.
+    single_double_hypersingular_both
   };
+
+  /// Whether the operator is V, K and W together.
+  static bool
+  is_joint(const OperatorType operator_type)
+  {
+    return operator_type == OperatorType::single_double_hypersingular ||
+           operator_type == OperatorType::single_double_hypersingular_both;
+  }
 
   struct ReferencePatch
   {
@@ -503,9 +616,51 @@ private:
                   const CellIterator   &trial_cell,
                   const ReferencePatch &trial_patch) const;
 
+  /**
+   * The contact of two cells along part of an edge: an edge of one of them,
+   * the containing cell, holds an edge of the other, and the two edges do
+   * not coincide, as across a hanging node. The ends of the shorter edge are
+   * pulled back onto the mapped edge of the containing cell, which on the
+   * exact geometry is curved and passes through the hanging vertex while
+   * its chord does not; their reference coordinates along it bound the
+   * contact. The test does not use the refinement levels: after anisotropic
+   * refinement, cells of different levels may share a whole edge (a
+   * conforming pair), and cells of one level only part of one.
+   */
+  struct EdgeContact
+  {
+    bool         found = false;
+    /// Whether the test cell (true) or the trial cell holds the edge.
+    bool         test_contains = true;
+    /// The face of the containing cell, and the reference coordinates along
+    /// it, increasing, of the ends of the edge of the other cell.
+    unsigned int face = 0;
+    double       begin = 0, end = 1;
+  };
+
+  EdgeContact
+  nonconforming_contact(const CellIterator &test_cell,
+                        const CellIterator &trial_cell) const;
+
   bool
   share_nonconforming_edge(const CellIterator &test_cell,
                            const CellIterator &trial_cell) const;
+
+  /// The containing cell of a contact cut into strips across its edge at
+  /// the ends of the contact: the middle strip shares a whole edge with the
+  /// other cell, the others touch it at a vertex or not at all.
+  std::vector<ReferencePatch>
+  contact_strips(const EdgeContact &contact) const;
+
+  /// For two patches with a common edge, the reference direction of each
+  /// along that edge: the balancing of a singular pair halves both patches
+  /// across the middle of the edge rather than one, which would leave half
+  /// an edge shared, a pair that no rule treats.
+  std::array<unsigned int, 2>
+  common_edge_directions(const CellIterator   &test_cell,
+                         const ReferencePatch &test_patch,
+                         const CellIterator   &trial_cell,
+                         const ReferencePatch &trial_patch) const;
 
   GalerkinPanelPairType
   classify(const CellIterator   &test_cell,
@@ -624,7 +779,8 @@ private:
   // accuracy that no increase of its order recovers. These split the larger
   // panel until the touching pair is balanced; the subpatches that stop
   // touching are classified as regular by the patch-aware dispatch and
-  // integrated as such.
+  // integrated as such. An elongated panel with itself is halved across its
+  // long direction in both copies.
   // The two physical side lengths of a patch, in the order of the reference
   // directions. Sauter-Schwab degrades with the aspect ratio of the touching
   // panels, not with their diameter, so these are what the balancing test
@@ -717,7 +873,11 @@ private:
   {
     const unsigned int dpc  = finite_element.dofs_per_cell;
     const unsigned int flux = flux_function != nullptr ? 1 : 0;
-    return operator_type == OperatorType::single_and_double_layer_both ?
+    return operator_type == OperatorType::single_double_hypersingular ?
+             3 * dpc :
+           operator_type == OperatorType::single_double_hypersingular_both ?
+             4 * dpc :
+           operator_type == OperatorType::single_and_double_layer_both ?
              dpc + 2 + 2 * flux :
            operator_type == OperatorType::single_and_double_layer ?
              dpc + 1 + flux :
@@ -745,6 +905,11 @@ private:
     std::vector<Tensor<1, spacedim>> normals;
     std::vector<double>              jacobians;
     std::vector<double>              shapes;
+    // With light_derivatives, the tangents of the map in the two reference
+    // directions times the orientation of the cell: the surface curl of a
+    // shape function is (d0 phi tangents1 - d1 phi tangents0) / jacobian.
+    std::vector<Tensor<1, spacedim>> tangents0;
+    std::vector<Tensor<1, spacedim>> tangents1;
   };
 
   /// A singular rule of the direct path, in the coordinates of its two
@@ -757,6 +922,17 @@ private:
     std::vector<double>   weights;
     std::vector<double>   test_shapes;
     std::vector<double>   trial_shapes;
+    // The derivatives of the shape functions in the two reference
+    // directions, laid out as the values.
+    std::vector<double>   test_derivatives0;
+    std::vector<double>   test_derivatives1;
+    std::vector<double>   trial_derivatives0;
+    std::vector<double>   trial_derivatives1;
+    /// The last lookup, for the eviction of the rules of raised orders.
+    unsigned long long    last_use = 0;
+
+    std::size_t
+    memory_consumption() const;
   };
 
   const LightCell &
@@ -772,6 +948,16 @@ private:
   evaluate_geometry(const CellIterator          &cell,
                     const std::vector<Point<2>> &reference_points,
                     PointSet                    &set) const;
+
+  void
+  evaluate_shape_derivatives(const std::vector<Point<2>> &reference_points,
+                             std::vector<double>         &derivatives0,
+                             std::vector<double>         &derivatives1) const;
+
+  /// Set by integrate_light() for the operators that need the surface
+  /// curls: evaluate_geometry() then keeps the tangents and
+  /// prepare_light_leaf() the derivatives of the shape functions.
+  mutable bool light_derivatives = false;
 
   void
   evaluate_shapes(const std::vector<Point<2>> &reference_points,
@@ -796,7 +982,19 @@ private:
     std::vector<double>        own_test_shapes;
     std::vector<double>        own_trial_shapes;
     std::vector<double>        own_weights;
+    // Derivatives of the shape functions, with light_derivatives.
+    const std::vector<double> *test_derivatives0  = nullptr;
+    const std::vector<double> *test_derivatives1  = nullptr;
+    const std::vector<double> *trial_derivatives0 = nullptr;
+    const std::vector<double> *trial_derivatives1 = nullptr;
+    std::vector<double>        own_derivatives[4];
   };
+
+  /// W, or V, K and W, of a leaf of the direct path, whose point sets carry
+  /// tangents and whose leaf carries the derivatives of the shape functions.
+  FullMatrix<double>
+  integrate_light_hypersingular(const LightLeaf   &leaf,
+                                const OperatorType operator_type) const;
 
   void
   prepare_light_leaf(const CellIterator   &test_cell,
@@ -862,6 +1060,14 @@ private:
   mutable std::vector<bool>        light_cell_valid;
   mutable double                   maximum_light_deviation = 0.0;
   mutable std::map<std::array<int, 7>, LightRule> light_rule_cache;
+  /// The rules of orders above singular_order (folded, material and skewed
+  /// pairs) serve few pairs but are large, 6 n^4 points for a common edge,
+  /// in up to 32 configurations: they stay cached while their total stays
+  /// below this size, the least recently used evicted first.
+  static constexpr std::size_t maximum_raised_rule_bytes = std::size_t(128)
+                                                           << 20;
+  mutable std::size_t        raised_rule_bytes = 0;
+  mutable unsigned long long light_rule_clock  = 0;
   // Point sets of the direct path, reused from pair to pair, the FEValues
   // that checks the reconstructed geometry, and the tensor Gauss rules.
   mutable PointSet                                test_set;
@@ -885,6 +1091,20 @@ private:
   const FiniteElement<spacedim - 1, spacedim> &finite_element;
   const GalerkinSingularQuadrature             singular_quadrature;
   const unsigned int                           singular_order;
+  unsigned int folded_singular_order  = 0;
+  double       folded_singular_cosine = -0.5;
+  std::set<types::material_id> singular_material_ids;
+  unsigned int material_singular_order = 0;
+  /// The order for pairs with a skewed cell, and the angle below which a
+  /// cell is skewed (set_skewed_singular_order()).
+  unsigned int skewed_singular_order = 0;
+  double       skewed_minimum_angle  = 0.;
+
+  /// The order of the singular rule for a pair (set_folded_singular_order()).
+  unsigned int
+  singular_order_for(const CellIterator &test_cell,
+                     const CellIterator &trial_cell,
+                     const unsigned int  order) const;
   const unsigned int                           duffy_outer_subdivisions;
   const double                                 near_singular_distance_ratio;
   const unsigned int                           near_singular_maximum_depth;
@@ -924,6 +1144,19 @@ private:
   double                                      screening           = 0.0;
   const Function<spacedim>                   *flux_function       = nullptr;
   mutable RhsProfile                          profile;
+  std::function<void(const CellIterator &,
+                     std::vector<types::global_dof_index> &)>
+    dof_index_map;
+
+  void
+  cell_dof_indices(const CellIterator                   &cell,
+                   std::vector<types::global_dof_index> &indices) const
+  {
+    if (dof_index_map)
+      dof_index_map(cell, indices);
+    else
+      cell->get_dof_indices(indices);
+  }
 
   /// exp(-kappa r) / (4 pi r).
   double
@@ -1053,14 +1286,14 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
           test_cell->material_id() != selected_test_material)
         continue;
 
-      test_cell->get_dof_indices(test_indices);
+      cell_dof_indices(test_cell, test_indices);
       for (const auto &trial_data : cell_data)
         {
           const auto &trial_cell = trial_data.cell;
           if (selected_trial_material != numbers::invalid_material_id &&
               trial_cell->material_id() != selected_trial_material)
             continue;
-          trial_cell->get_dof_indices(trial_indices);
+          cell_dof_indices(trial_cell, trial_indices);
           FullMatrix<double> local_matrix(finite_element.dofs_per_cell,
                                           finite_element.dofs_per_cell);
           const auto pair_start = std::chrono::steady_clock::now();
@@ -1429,13 +1662,13 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer(
           test_cell->material_id() != selected_test_material)
         continue;
 
-      test_cell->get_dof_indices(test_indices);
+      cell_dof_indices(test_cell, test_indices);
       for (const auto &trial_cell : dof_handler.active_cell_iterators())
         {
           if (selected_trial_material != numbers::invalid_material_id &&
               trial_cell->material_id() != selected_trial_material)
             continue;
-          trial_cell->get_dof_indices(trial_indices);
+          cell_dof_indices(trial_cell, trial_indices);
           const FullMatrix<double> local_matrix =
             integrate_double_layer(test_cell, trial_cell, order);
           constraints.distribute_local_to_global(local_matrix,
@@ -1687,14 +1920,14 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
           test_cell->material_id() != selected_test_material)
         continue;
 
-      test_cell->get_dof_indices(test_indices);
+      cell_dof_indices(test_cell, test_indices);
       for (const auto &trial_data : cell_data)
         {
           const auto &trial_cell = trial_data.cell;
           if (selected_trial_material != numbers::invalid_material_id &&
               trial_cell->material_id() != selected_trial_material)
             continue;
-          trial_cell->get_dof_indices(trial_indices);
+          cell_dof_indices(trial_cell, trial_indices);
           FullMatrix<double> local_matrix(finite_element.dofs_per_cell,
                                           finite_element.dofs_per_cell);
           if (classify(test_cell, trial_cell) ==
@@ -1734,6 +1967,225 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
         }
     }
 }
+
+template <int spacedim>
+template <typename MatrixType>
+void
+GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
+  const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+  const AffineConstraints<double>           &constraints,
+  MatrixType                                &single_layer,
+  MatrixType                                &double_layer,
+  MatrixType                                &hypersingular,
+  const unsigned int                         order,
+  const types::subdomain_id                  locally_owned_subdomain) const
+{
+  AssertThrow(screening == 0.0,
+              ExcMessage("The joint assembly of V, K and W is implemented "
+                         "for the Laplace kernel only."));
+  AssertDimension(dof_handler.get_fe().dofs_per_cell,
+                  finite_element.dofs_per_cell);
+  const unsigned int dpc = finite_element.dofs_per_cell;
+
+  struct CellQuadratureData
+  {
+    CellIterator                                  cell;
+    std::vector<Point<spacedim>>                  points;
+    std::vector<Tensor<1, spacedim>>              normals;
+    std::vector<double>                           jxw;
+    std::vector<std::vector<double>>              shape_values;
+    std::vector<std::vector<Tensor<1, spacedim>>> surface_curls;
+  };
+
+  // Per-cell data for every order the far field may select.
+  const unsigned int lowest_order =
+    far_field_tolerance > 0.0 ? std::min(2u, order) : order;
+  std::vector<std::vector<CellQuadratureData>> data_by_order(order + 1);
+  for (unsigned int o = lowest_order; o <= order; ++o)
+    {
+      const QGauss<spacedim - 1>       rule(o);
+      FEValues<spacedim - 1, spacedim> values(mapping,
+                                              finite_element,
+                                              rule,
+                                              update_values | update_gradients |
+                                                update_normal_vectors |
+                                                update_quadrature_points |
+                                                update_JxW_values);
+      auto &set = data_by_order[o];
+      set.reserve(dof_handler.get_triangulation().n_active_cells());
+      for (const auto &cell : dof_handler.active_cell_iterators())
+        {
+          values.reinit(cell);
+          CellQuadratureData data;
+          data.cell    = cell;
+          data.points  = values.get_quadrature_points();
+          data.normals = values.get_normal_vectors();
+          data.jxw.resize(rule.size());
+          data.shape_values.assign(dpc, std::vector<double>(rule.size()));
+          data.surface_curls.assign(
+            dpc, std::vector<Tensor<1, spacedim>>(rule.size()));
+          for (unsigned int q = 0; q < rule.size(); ++q)
+            {
+              data.jxw[q] = values.JxW(q);
+              for (unsigned int i = 0; i < dpc; ++i)
+                {
+                  data.shape_values[i][q] = values.shape_value(i, q);
+                  data.surface_curls[i][q] = cross_product_3d(
+                    values.normal_vector(q), values.shape_grad(i, q));
+                }
+            }
+          set.push_back(std::move(data));
+        }
+    }
+  const std::vector<CellQuadratureData> &cell_data = data_by_order[order];
+
+  // Smallest order whose convergence factor meets the tolerance, as for the
+  // single layer: the double-layer kernel is singular at the same points.
+  const auto far_field_order = [&](const CellIterator &test_cell,
+                                   const CellIterator &trial_cell) {
+    if (far_field_tolerance <= 0.0)
+      return order;
+    const CellGeometry &g1         = full_patch_geometry(test_cell);
+    const CellGeometry &g2         = full_patch_geometry(trial_cell);
+    const double        separation = g1.centre.distance(g2.centre);
+    if (separation <= 0.0)
+      return order;
+    const double rho = (g1.radius + g2.radius) / separation;
+    if (rho >= 1.0 || rho <= 0.0)
+      return order;
+    const unsigned int needed = static_cast<unsigned int>(
+      std::ceil(std::log(far_field_tolerance) / (2.0 * std::log(rho))));
+    return std::min(order, std::max(lowest_order, needed));
+  };
+
+  const unsigned int  n_q = QGauss<spacedim - 1>(order).size();
+  std::vector<double> single_block(n_q * n_q), double_block(n_q * n_q),
+    partial(dpc * n_q);
+  std::vector<types::global_dof_index> test_indices(dpc), trial_indices(dpc);
+  FullMatrix<double> v_local(dpc, dpc), k_local(dpc, dpc), w_local(dpc, dpc);
+
+  // local(i, j) += sum_qx sum_qy u_i(qx) block(qx, qy) v_j(qy), one index at
+  // a time.
+  const auto contract = [&](const unsigned int                       m,
+                            const std::vector<double>               &block,
+                            const auto                              &u,
+                            const auto                              &v,
+                            FullMatrix<double>                      &local) {
+    for (unsigned int i = 0; i < dpc; ++i)
+      for (unsigned int qy = 0; qy < m; ++qy)
+        {
+          double acc = 0.0;
+          for (unsigned int qx = 0; qx < m; ++qx)
+            acc += u(i, qx) * block[qx * m + qy];
+          partial[i * m + qy] = acc;
+        }
+    for (unsigned int i = 0; i < dpc; ++i)
+      for (unsigned int j = 0; j < dpc; ++j)
+        {
+          double acc = 0.0;
+          for (unsigned int qy = 0; qy < m; ++qy)
+            acc += partial[i * m + qy] * v(j, qy);
+          local(i, j) += acc;
+        }
+  };
+
+  const auto add = [&](MatrixType &matrix, const FullMatrix<double> &local) {
+    if (constraints.n_constraints() == 0)
+      matrix.add(test_indices, trial_indices, local);
+    else
+      constraints.distribute_local_to_global(local,
+                                             test_indices,
+                                             trial_indices,
+                                             matrix);
+  };
+
+  for (const auto &test_data : cell_data)
+    {
+      const auto &test_cell = test_data.cell;
+      if (locally_owned_subdomain != numbers::invalid_subdomain_id &&
+          test_cell->subdomain_id() != locally_owned_subdomain)
+        continue;
+      cell_dof_indices(test_cell, test_indices);
+      for (const auto &trial_data : cell_data)
+        {
+          const auto &trial_cell = trial_data.cell;
+          cell_dof_indices(trial_cell, trial_indices);
+          const auto pair_start = std::chrono::steady_clock::now();
+          const bool far_pair =
+            classify(test_cell, trial_cell) ==
+              GalerkinPanelPairType::regular &&
+            !is_near_singular(test_cell,
+                              {Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)},
+                              trial_cell,
+                              {Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)});
+          if (far_pair)
+            {
+              const unsigned int pair_order =
+                far_field_order(test_cell, trial_cell);
+              ++far_field_order_histogram[pair_order];
+              const CellQuadratureData &t =
+                data_by_order[pair_order][&test_data - cell_data.data()];
+              const CellQuadratureData &r =
+                data_by_order[pair_order][&trial_data - cell_data.data()];
+              const unsigned int m = t.jxw.size();
+              for (unsigned int qx = 0; qx < m; ++qx)
+                for (unsigned int qy = 0; qy < m; ++qy)
+                  {
+                    const Tensor<1, spacedim> displacement =
+                      r.points[qy] - t.points[qx];
+                    const double distance = displacement.norm();
+                    const double weight   = t.jxw[qx] * r.jxw[qy] /
+                                          (4.0 * numbers::PI * distance);
+                    single_block[qx * m + qy] = weight;
+                    double_block[qx * m + qy] =
+                      -weight * (displacement * r.normals[qy]) /
+                      (distance * distance);
+                  }
+              v_local = 0;
+              k_local = 0;
+              w_local = 0;
+              const auto values_of = [](const CellQuadratureData &d) {
+                return [&d](const unsigned int i, const unsigned int q) {
+                  return d.shape_values[i][q];
+                };
+              };
+              contract(m, single_block, values_of(t), values_of(r), v_local);
+              contract(m, double_block, values_of(t), values_of(r), k_local);
+              for (unsigned int c = 0; c < spacedim; ++c)
+                {
+                  const auto curl_of = [c](const CellQuadratureData &d) {
+                    return [&d, c](const unsigned int i, const unsigned int q) {
+                      return d.surface_curls[i][q][c];
+                    };
+                  };
+                  contract(m, single_block, curl_of(t), curl_of(r), w_local);
+                }
+            }
+          else
+            {
+              const FullMatrix<double> joint =
+                integrate_single_double_hypersingular(test_cell,
+                                                      trial_cell,
+                                                      order);
+              for (unsigned int i = 0; i < dpc; ++i)
+                for (unsigned int j = 0; j < dpc; ++j)
+                  {
+                    v_local(i, j) = joint(i, j);
+                    k_local(i, j) = joint(i, dpc + j);
+                    w_local(i, j) = joint(i, 2 * dpc + j);
+                  }
+            }
+          (far_pair ? profile.far_seconds : profile.near_seconds) +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          pair_start)
+              .count();
+          add(single_layer, v_local);
+          add(double_layer, k_local);
+          add(hypersingular, w_local);
+        }
+    }
+}
+
 
 template <int spacedim>
 template <typename MatrixType, typename VectorType>
