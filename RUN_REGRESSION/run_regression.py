@@ -10,9 +10,14 @@ Each case writes parameters_bem_3.prm from a frozen base file in base/, runs
 the solver built in ../build on 8 processes, and reads a few quantities from
 the log. They are compared with reference.json: the load vector and the
 Frobenius norm of V, printed with sixteen digits, to 1e-12 relative; the
-errors, printed with six, to 1e-5 relative. The checks also cover what went
-wrong before: an executable in a run folder older than the library, and runs
-that fail or hang instead of finishing.
+errors, printed with six, to 1e-5 relative; Gauss's identity of the mixed
+problem, a difference of nearly equal sums, to 1e-3; the peak memory of a
+process, where checked, may exceed its reference by at most a quarter. The
+checks also cover what went wrong before: an executable in a run folder
+older than the library, and runs that fail or hang instead of finishing.
+
+The mixed problem runs on the NACA wing of the report, whose coarse mesh and
+CAD files are frozen in naca/.
 
 The base files are copies, so later edits to the study files in RUN_EXP do
 not move the reference. The run folder sits next to RUN_EXP because the
@@ -31,7 +36,9 @@ ROOT = os.path.dirname(HERE)
 EXECUTABLE = os.path.join(ROOT, 'build', 'bem_fma_3d')
 REFERENCE = os.path.join(HERE, 'reference.json')
 
-FORMAT = {'sixteen': 1e-12, 'six': 1e-5}
+FORMAT = {'sixteen': 1e-12, 'six': 1e-5, 'loose': 1e-3}
+# A measured value may exceed its reference by this factor.
+CEILING = 1.25
 
 # quantity: (pattern, precision class)
 QUANTITIES = {
@@ -46,7 +53,18 @@ QUANTITIES = {
     'iterations': (r'(?:CG|GMRES) iterations: (\d+)', 'exact'),
     'manufactured_norm': (r'\|b_manufactured\| (\S+),', 'six'),
     'rhs_difference': (r'\|b_manufactured \+ b_regularized\| (\S+),', 'six'),
+    'mixed_flux': (r'flux on the Dirichlet part, relative L2 error (\S+);',
+                   'six'),
+    'mixed_potential': (r'potential on the Neumann part, relative L2 error '
+                        r'(\S+)', 'six'),
+    'mixed_gauss': (r'\|\(1/2 M \+ K\) 1\| / \|1/2 M 1\| = (\S+),', 'loose'),
+    'memory_kb': (r'RSS (\d+) kB', 'ceiling'),
 }
+
+# The mixed problem on the NACA wing: flux on the lower surface, potential
+# on the upper surface and the tips, data on the exact surface.
+MIXED = ['mixed_flux', 'mixed_potential', 'mixed_gauss', 'iterations',
+         'memory_kb']
 
 # name: (base file, settings in BEMProblem<3>, quantities to compare)
 CASES = {
@@ -129,6 +147,32 @@ CASES = {
                         'Dirichlet RHS treatment': 'nodal',
                         'Gradient recovery': 'projection'},
                        ['flux', 'gradient', 'iterations']),
+    # Flat cells with the data in space, p = 1, level 1, multipole method
+    # and Calderon preconditioner, as in the final campaign of the report.
+    'naca_mixed_flat_p1_fmm': ('naca_mixed.prm',
+                               {'Finite element order': '1'}, MIXED),
+    # The exact parametric geometry, p = 2, level 1: folded pairs (order
+    # 10) at the trailing edge, skewed cells (order 12) on the tips, the
+    # Dirichlet datum by its L2 projection.
+    'naca_mixed_exact_p2_fmm': ('naca_mixed.prm',
+                                {'Exact geometry': 'true',
+                                 'Exact geometry map': 'parametric'}, MIXED),
+    # One cycle of graded refinement around the source on the exact
+    # geometry, dense matrices: hanging nodes on curved edges, with the
+    # constraints at the physical points and the contacts found on the
+    # mapped edges.
+    'naca_mixed_graded_p1_dense': ('naca_mixed.prm',
+                                   {'Finite element order': '1',
+                                    'Solution method': 'Direct',
+                                    'Exact geometry': 'true',
+                                    'Exact geometry map': 'parametric',
+                                    'Graded refinement material ids': '3,4',
+                                    'Graded refinement focus': '0.4,0.3,0',
+                                    'Graded refinement size ratio': '0.4',
+                                    'Graded refinement minimum size': '0.10',
+                                    'Graded refinement growth exponent': '1',
+                                    'Graded refinement maximum cycles': '1'},
+                                   MIXED),
 }
 
 
@@ -153,7 +197,8 @@ def run_case(name):
     log = os.path.join(HERE, f'{name}.log')
     start = time.time()
     with open(log, 'w') as fh:
-        status = subprocess.run(['timeout', '-k', '30', '900', 'mpirun',
+        status = subprocess.run(['/usr/bin/time', '-f', 'WALL %e s RSS %M kB',
+                                 'timeout', '-k', '30', '900', 'mpirun',
                                  '-np', '8', EXECUTABLE, '1'],
                                 cwd=HERE, stdout=fh, stderr=subprocess.STDOUT)
     seconds = time.time() - start
@@ -208,6 +253,10 @@ def main():
             if precision == 'exact':
                 if int(v) != int(r):
                     bad.append(f'{q} {r} -> {v}')
+                continue
+            if precision == 'ceiling':
+                if float(v) > CEILING * float(r):
+                    bad.append(f'{q} {r} -> {v} (more than {CEILING} times)')
                 continue
             d = abs(float(v) - float(r)) / max(abs(float(r)), 1e-300)
             if d > FORMAT[precision]:
