@@ -21,6 +21,7 @@
 
 #  include <TopoDS_Shape.hxx>
 
+#  include <array>
 #  include <memory>
 #  include <vector>
 
@@ -92,6 +93,47 @@ namespace OpenCASCADE
    * the closest point and to projections along a vector field, not along
    * the normal of the mesh, which does not partition the face anyway.
    *
+   * <h3>Parametric map</h3>
+   *
+   * The closest point of a flat cell converges slowly where the surface
+   * bends over a length comparable with the cell, as across the nose of a
+   * wing: the centres of curvature, where the projection is singular, lie
+   * close to the cell, and the polynomial interpolation of the projected map
+   * (ExactGeometry::interpolate_exact_geometry()) gains only a factor of two
+   * per degree. With set_parametric(), the faces are instead mapped through
+   * their parametrization S(u, v): the parameters of the vertices of the
+   * cell are those of their closest points, every edge is given a curve in
+   * the parameters, and the interior is S of the transfinite interpolation
+   * of Gordon and Hall of the four curves:
+   *  - an edge inside a face is the segment between the parameters of its
+   *    vertices, which both cells along it share;
+   *  - an edge on a trimming curve runs along the curve, its parameter
+   *    linear in that of the edge, through the curve of the edge on the face
+   *    (or, where its parameter differs from that of the edge in space, the
+   *    closest points of the curve on the face); two faces along a curve
+   *    then map their edges onto the same points when their curves share
+   *    the parametrization up to an affine change, as the curves of an
+   *    edge do in OpenCASCADE, and as the boundaries of patches built from
+   *    the same poles do;
+   *  - as for the transfinite map, the curves are shifted linearly to end at
+   *    the parameters of the vertices, which changes them only where the
+   *    vertices of the mesh lie off the trimming curves.
+   * No point is projected but the vertices, and the map is analytic on a
+   * cell wherever the surface is: on a polynomial patch it is a polynomial,
+   * which the interpolation of the exact geometry reproduces at that
+   * degree. A vertex at a degenerate point of the parametrization, such as
+   * a pole, takes the free parameter of the other end of each of its edges,
+   * so that the edges run along the meridians, and an edge takes the
+   * shorter way on a periodic parameter, so that two cells agree on it
+   * across a seam. Near a pole, however, the segments in the parameters
+   * wind about it: an edge closer to a pole of its face (a degenerate edge
+   * of the face) than twice its length is mapped by the closest point of
+   * the edge of the mesh, a rule that depends on the edge alone. Where an
+   * edge is so projected, or the curves of the edges do not close in the
+   * parameters, the interior is the closest point of the transfinite
+   * interpolation of the images of the edges in space. The map ignores the
+   * direction of the projector.
+   *
    * The projection of a point is not regular when Newton does not
    * converge, when the projected point falls outside the trimmed patch, or
    * when it lies beyond a focal point of the patch, and when the line along
@@ -147,6 +189,12 @@ namespace OpenCASCADE
     void
     set_follow_trimming_curves(const bool follow);
 
+    /// Map the cells of faces through the parametrization of the faces
+    /// (see the class documentation) instead of projecting them; off by
+    /// default.
+    void
+    set_parametric(const bool parametric);
+
     /// The number of faces or edges onto which the projector projects.
     unsigned int
     n_patches() const;
@@ -163,6 +211,19 @@ namespace OpenCASCADE
     n_trimmed_edges(const Cache &cache) const;
 
   private:
+    /// The parametric map of the current cell, from the positions of its
+    /// vertices on the mesh (faces only).
+    void
+    reinit_parametric(const Mapping<dim, 3>                               &mapping,
+                      const typename Triangulation<dim, 3>::cell_iterator &cell,
+                      const std::array<Point<3>, 4> &vertices,
+                      Cache                         &cache) const;
+
+    /// A point of the current cell under the parametric map (faces only).
+    ExactGeometry::ProjectionResult<3>
+    project_parametric(const ExactGeometry::MeshPoint<dim, 3> &x,
+                       Cache                                  &cache) const;
+
     std::vector<std::unique_ptr<internal::CADPatch<dim>>> patches;
     /// The trimming curves of the faces: their edges that are neither
     /// degenerate nor seams.
@@ -170,6 +231,7 @@ namespace OpenCASCADE
     const ExactGeometry::Direction<3>                   direction;
     const double                                        tolerance;
     bool follow_trimming_curves = true;
+    bool parametric             = false;
   };
 } // namespace OpenCASCADE
 

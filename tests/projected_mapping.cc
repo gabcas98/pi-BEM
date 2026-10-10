@@ -359,6 +359,47 @@ trimmed_disk()
                     1)
           << std::endl;
 }
+
+
+void
+parametric_interpolation()
+{
+  // The cylinder of deal.II without refinement: its lateral cells span a
+  // quarter of the circle. The closest point of a flat cell is singular on
+  // the axis, close to the cell, and its interpolation converges slowly; the
+  // map through the parametrization of the faces is the cylinder with the
+  // angle linear along the cell, and that of the caps a plane trimmed by
+  // the circle.
+  const double     R = 1, half_length = 1.5;
+  Triangulation<3> volume, flat_volume;
+  GridGenerator::cylinder(volume, R, half_length);
+  GridGenerator::flatten_triangulation(volume, flat_volume);
+  Triangulation<2, 3> tria;
+  GridGenerator::extract_boundary_mesh(flat_volume, tria);
+  const TopoDS_Shape shape =
+    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-half_length, 0, 0),
+                                    gp_Dir(1, 0, 0)),
+                             R,
+                             2 * half_length)
+      .Shape();
+  OpenCASCADE::ShapeProjector<2> projection(shape), parametric(shape);
+  parametric.set_parametric(true);
+  const ProjectedMapping<2, 3> by_projection(1, projection);
+  const ProjectedMapping<2, 3> by_parameters(1, parametric);
+  deallog << "interpolation of the exact cylinder, " << tria.n_active_cells()
+          << " flat cells: degree, deviation of points and surface elements "
+             "of the projection and of the parametric map"
+          << std::endl;
+  for (unsigned int degree = 2; degree <= 10; degree += 2)
+    {
+      MappingQCache<2, 3> cache(degree);
+      const auto a = interpolate_exact_geometry(cache, by_projection, tria);
+      const auto b = interpolate_exact_geometry(cache, by_parameters, tria);
+      deallog << degree << ": " << format(a.first) << ", " << format(a.second)
+              << "; " << format(b.first) << ", " << format(b.second)
+              << std::endl;
+    }
+}
 #endif
 
 
@@ -370,5 +411,6 @@ main()
   interpolation();
 #ifdef DEAL_II_WITH_OPENCASCADE
   trimmed_disk();
+  parametric_interpolation();
 #endif
 }

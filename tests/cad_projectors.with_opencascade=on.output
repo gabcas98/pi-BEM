@@ -22,25 +22,31 @@ DEAL::  mesh: 1.1e-02, 2.6e-02
 DEAL::  projection: 6.4e-03, 8.5e-03
 DEAL::  trimming curves: <1e-13 , <1e-13 
 DEAL::  trimming curves, interpolated normal: <1e-13 , <1e-13 
+DEAL::  parametric: <1e-13 , <1e-13 
 DEAL::  irregular projections: 0
 DEAL::cylinder: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::cylinder, interpolated normal: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::cylinder, parametric: 288 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::plate with a hole: 1 faces, 128 flat cells; relative errors of area and volume, 8 x 8 points
 DEAL::  mesh: 1.6e-03
 DEAL::  projection: 1.6e-03
 DEAL::  trimming curves: <1e-13 
 DEAL::  trimming curves, interpolated normal: <1e-13 
+DEAL::  parametric: <1e-13 
 DEAL::  irregular projections: 0
 DEAL::plate with a hole: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::plate with a hole, interpolated normal: 64 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::plate with a hole, parametric: 128 cells with 64 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::spherical cap: 2 faces, 160 flat cells; relative errors of area and volume, 8 x 8 points
 DEAL::  mesh: 2.4e-02, 3.7e-02
 DEAL::  projection: 2.0e-02, 4.5e-04
 DEAL::  trimming curves: <1e-13 , <1e-13 
 DEAL::  trimming curves, interpolated normal: 1.1e-11, 5.1e-11
+DEAL::  parametric: <1e-13 , <1e-13 
 DEAL::  irregular projections: 0
 DEAL::spherical cap: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::spherical cap, interpolated normal: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::spherical cap, parametric: 160 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::
 DEAL::circle, 24 segments: relative error of the length
 DEAL::points   mesh       projected

@@ -270,13 +270,14 @@ torus()
 }
 
 
-// The derivative J V of the map of the cells with edges on trimming curves
-// against central differences in the reference coordinates, at one point of
-// every such cell.
+// The derivative J V of the map of the cells with edges on trimming curves,
+// or of all cells, against central differences in the reference
+// coordinates, at one point of every such cell.
 void
 check_transfinite(const std::string                    &name,
                   const Triangulation<2, 3>            &tria,
-                  const OpenCASCADE::ShapeProjector<2> &projector)
+                  const OpenCASCADE::ShapeProjector<2> &projector,
+                  const bool                            all_cells = false)
 {
   const MappingQ<2, 3>  mapping(1);
   const FE_Nothing<2, 3> fe;
@@ -286,7 +287,7 @@ check_transfinite(const std::string                    &name,
   for (const auto &cell : tria.active_cell_iterators())
     {
       projector.reinit(mapping, cell, *cache);
-      if (projector.n_trimmed_edges(*cache) == 0)
+      if (projector.n_trimmed_edges(*cache) == 0 && !all_cells)
         continue;
       ++n_cells;
       n_edges += projector.n_trimmed_edges(*cache);
@@ -343,6 +344,8 @@ trimmed(const std::string         &name,
   const MappingQ<2, 3>           mapping(1);
   OpenCASCADE::ShapeProjector<2> along_vertex_normal(
     shape, Direction<3>::interpolated_mesh_normal(tria, mapping));
+  OpenCASCADE::ShapeProjector<2> parametric(shape);
+  parametric.set_parametric(true);
   const ProjectorCollection<2, 3> mesh;
   deallog << name << ": " << projector.n_patches() << " faces, "
           << tria.n_active_cells()
@@ -358,7 +361,9 @@ trimmed(const std::string         &name,
                        static_cast<const Projector<2, 3> *>(&projector)),
         std::make_pair(std::string("trimming curves, interpolated normal"),
                        static_cast<const Projector<2, 3> *>(
-                         &along_vertex_normal))})
+                         &along_vertex_normal)),
+        std::make_pair(std::string("parametric"),
+                       static_cast<const Projector<2, 3> *>(&parametric))})
     {
       const auto integrals = integrate(tria, *p, 8, n_irregular);
       deallog << "  " << method << ": " << format(integrals[0] / area - 1);
@@ -369,6 +374,7 @@ trimmed(const std::string         &name,
   deallog << "  irregular projections: " << n_irregular << std::endl;
   check_transfinite(name, tria, projector);
   check_transfinite(name + ", interpolated normal", tria, along_vertex_normal);
+  check_transfinite(name + ", parametric", tria, parametric, true);
 }
 
 

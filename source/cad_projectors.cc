@@ -26,6 +26,7 @@
 #  include <BRepTopAdaptor_FClass2d.hxx>
 #  include <BRep_Tool.hxx>
 #  include <Bnd_Box.hxx>
+#  include <Geom2d_Curve.hxx>
 #  include <Geom_Curve.hxx>
 #  include <Geom_Surface.hxx>
 #  include <ShapeAnalysis_Curve.hxx>
@@ -39,6 +40,7 @@
 #  include <gp_Pnt.hxx>
 #  include <gp_Pnt2d.hxx>
 #  include <gp_Vec.hxx>
+#  include <gp_Vec2d.hxx>
 
 #  include <algorithm>
 #  include <array>
@@ -144,8 +146,10 @@ namespace OpenCASCADE
       std::array<double, 3> box_min, box_max;
       double                diameter;
 
-      /// Faces: the indices of their trimming curves.
+      /// Faces: the indices of their trimming curves, and their poles, the
+      /// points of their degenerate edges.
       std::vector<unsigned int> trims;
+      std::vector<Point<3>>     poles;
 
       void
       evaluate(const Point<dim>          &theta,
@@ -325,10 +329,31 @@ namespace OpenCASCADE
         std::vector<Point<3>> nodes;
         std::array<double, 2> parameter;
         std::array<Point<3>, 2> end;
+
+        /// The parametric map (set_parametric()): the parameters of the
+        /// ends on the face; on a trimming curve, the curve of the edge on
+        /// the face (null where its parameter differs from that of the
+        /// curve in space, which is then pulled back point by point), the
+        /// period added to it, and the shifts of its ends to the
+        /// parameters of the vertices.
+        std::array<Point<2>, 2>     theta;
+        bool                        projected = false;
+        Handle(Geom2d_Curve)        pcurve;
+        Tensor<1, 2>                offset;
+        std::array<Tensor<1, 2>, 2> shift;
       };
       unsigned int                                       n_trimmed = 0;
       std::array<Edge, 4>                                edges;
       std::array<Point<3>, 4>                            corners;
+
+      /// Whether the current cell is mapped through the parametrization of
+      /// its face, the parameters of its vertices, and whether the curves of
+      /// its edges do not close in the parameters (a vertex at a degenerate
+      /// point of the parametrization, or a pole inside the cell), so that
+      /// the cell is blended in space.
+      bool                    parametric_cell = false;
+      bool                    degenerate      = false;
+      std::array<Point<2>, 4> vertex_theta;
       const std::vector<Polynomials::Polynomial<double>> *basis = nullptr;
       std::map<unsigned int, std::vector<Polynomials::Polynomial<double>>>
         bases;
@@ -709,6 +734,79 @@ namespace OpenCASCADE
 
 
 
+    /**
+     * The parameters on a face of the point of a trimming curve at its
+     * parameter t, and their derivative in t: from the curve of the edge on
+     * the face where there is one, else from the closest point of the curve
+     * point on the face, started from theta, with the derivative of the
+     * curve pulled back, d theta / dt = G^{-1} A^T dC/dt, as the curve lies
+     * on the face.
+     */
+    void
+    curve_parameters(const Handle(Geom2d_Curve) &pcurve,
+                     const CADPatch<1>          &curve,
+                     const CADPatch<2>          &face,
+                     const double                t,
+                     Point<2>                   &theta,
+                     Tensor<1, 2>               &dtheta)
+    {
+      if (!pcurve.IsNull())
+        {
+          gp_Pnt2d P;
+          gp_Vec2d V;
+          pcurve->D1(t, P, V);
+          theta  = Point<2>(P.X(), P.Y());
+          dtheta = Tensor<1, 2>({V.X(), V.Y()});
+          return;
+        }
+      Point<3>                C;
+      DerivativeForm<1, 1, 3> dC;
+      DerivativeForm<2, 1, 3> d2C;
+      curve.evaluate(Point<1>(t), C, dC, d2C);
+      Point<3>                S;
+      DerivativeForm<1, 2, 3> dS;
+      DerivativeForm<2, 2, 3> d2S;
+      closest_point(face, C, theta, S, dS, d2S);
+      Tensor<1, 2> g;
+      for (unsigned int a = 0; a < 2; ++a)
+        for (unsigned int i = 0; i < 3; ++i)
+          g[a] += dS[i][a] * dC[i][0];
+      dtheta = invert(gram(dS)) * g;
+    }
+
+
+
+    // D (V^T V)^{-1} V^T, the Jacobian whose product with V is D.
+    Tensor<2, 3>
+    jacobian_of(const DerivativeForm<1, 2, 3> &D,
+                const DerivativeForm<1, 2, 3> &V)
+    {
+      const Tensor<2, 2> G_inverse = invert(gram(V));
+      Tensor<2, 3>       J;
+      for (unsigned int i = 0; i < 3; ++i)
+        for (unsigned int j = 0; j < 3; ++j)
+          for (unsigned int a = 0; a < 2; ++a)
+            for (unsigned int b = 0; b < 2; ++b)
+              J[i][j] += D[i][a] * G_inverse[a][b] * V[j][b];
+      return J;
+    }
+
+
+
+    // The number of Gauss-Lobatto points on which the mapping of an edge is
+    // interpolated: the degree of a polynomial mapping plus one, at most
+    // nine.
+    template <int dim>
+    unsigned int
+    parametric_nodes(const Mapping<dim, 3> &mapping)
+    {
+      if (const auto q = dynamic_cast<const MappingQ<dim, 3> *>(&mapping))
+        return std::min(q->get_degree() + 1, 9u);
+      return 9;
+    }
+
+
+
     // The mapping on an edge of the cell, interpolated from its values at
     // the Gauss-Lobatto points, and its derivative in t.
     std::pair<Point<3>, Tensor<1, 3>>
@@ -757,8 +855,13 @@ namespace OpenCASCADE
             for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next())
               {
                 const TopoDS_Edge edge = TopoDS::Edge(e.Current());
-                if (BRep_Tool::Degenerated(edge) ||
-                    BRep_Tool::IsClosed(edge, face))
+                if (BRep_Tool::Degenerated(edge))
+                  {
+                    patch->poles.push_back(
+                      to_point(BRep_Tool::Pnt(TopExp::FirstVertex(edge))));
+                    continue;
+                  }
+                if (BRep_Tool::IsClosed(edge, face))
                   continue;
                 int index = edges.FindIndex(edge);
                 if (index == 0)
@@ -801,6 +904,15 @@ namespace OpenCASCADE
   ShapeProjector<dim>::set_follow_trimming_curves(const bool follow)
   {
     follow_trimming_curves = follow;
+  }
+
+
+
+  template <int dim>
+  void
+  ShapeProjector<dim>::set_parametric(const bool parametric)
+  {
+    this->parametric = parametric;
   }
 
 
@@ -956,10 +1068,14 @@ namespace OpenCASCADE
 
     if constexpr (dim == 2)
       {
-        const auto &face = *patches[data.patch];
-        if (!follow_trimming_curves || direction.is_mesh_normal() ||
-            face.trims.empty() ||
-            cell->reference_cell() != ReferenceCells::Quadrilateral)
+        const auto &face     = *patches[data.patch];
+        data.parametric_cell = false;
+        if (cell->reference_cell() != ReferenceCells::Quadrilateral)
+          return;
+        if (parametric)
+          data.parametric_cell = true;
+        else if (!follow_trimming_curves || direction.is_mesh_normal() ||
+                 face.trims.empty())
           return;
 
         // The edges of the cell on trimming curves: vertices on the curve,
@@ -1026,6 +1142,11 @@ namespace OpenCASCADE
                 ++data.n_trimmed;
                 break;
               }
+          }
+        if (data.parametric_cell)
+          {
+            reinit_parametric(mapping, cell, vertices, data);
+            return;
           }
         if (data.n_trimmed == 0)
           return;
@@ -1107,6 +1228,10 @@ namespace OpenCASCADE
     auto &data = static_cast<ShapeCache<dim> &>(cache);
     Assert(data.patch != none, ExcMessage("Call reinit() first."));
     const auto &patch = *patches[data.patch];
+
+    if constexpr (dim == 2)
+      if (data.parametric_cell)
+        return project_parametric(x, cache);
 
     if constexpr (dim == 2)
       if (data.n_trimmed > 0)
@@ -1203,6 +1328,358 @@ namespace OpenCASCADE
 
     Point<dim> theta = data.start(x.unit_point);
     return project_onto_patch(patch, data, direction, tolerance, x, theta);
+  }
+
+
+
+  template <int dim>
+  void
+  ShapeProjector<dim>::reinit_parametric(
+    const Mapping<dim, 3>                               &mapping,
+    const typename Triangulation<dim, 3>::cell_iterator &cell,
+    const std::array<Point<3>, 4>                       &vertices,
+    Cache                                               &cache) const
+  {
+    if constexpr (dim == 2)
+      {
+        auto       &data = static_cast<ShapeCache<2> &>(cache);
+        const auto &face = *patches[data.patch];
+
+        // The parameters of the vertices: those of their closest points,
+        // from the feet at the corner nodes of reinit(), unwrapped on
+        // periodic parameters to the period of the centre. A parameter is
+        // free where its column of dS/dtheta vanishes, as the longitude at a
+        // pole.
+        constexpr unsigned int             vertex_node[4] = {0, 2, 6, 8};
+        std::array<std::array<bool, 2>, 4> free{};
+        data.degenerate = false;
+        for (unsigned int v = 0; v < 4; ++v)
+          {
+            MeshPoint<2, 3> x;
+            x.point        = vertices[v];
+            Point<2> theta = data.node_theta[vertex_node[v]];
+            project_onto_patch(
+              face, data, direction, tolerance, x, theta, true, false);
+            for (unsigned int a = 0; a < 2; ++a)
+              if (face.periodic[a])
+                {
+                  const double period = face.upper[a] - face.lower[a];
+                  theta[a] -=
+                    period * std::round((theta[a] - data.theta[a]) / period);
+                }
+            data.vertex_theta[v] = theta;
+            Point<3>                S;
+            DerivativeForm<1, 2, 3> dS;
+            DerivativeForm<2, 2, 3> d2S;
+            face.evaluate(theta, S, dS, d2S);
+            data.corners[v]      = S;
+            const Tensor<2, 2> G = gram(dS);
+            for (unsigned int a = 0; a < 2; ++a)
+              if (G[a][a] <= 1e-16 * trace(G))
+                {
+                  free[v][a]      = true;
+                  data.degenerate = true;
+                }
+          }
+
+        for (unsigned int e = 0; e < 4; ++e)
+          {
+            auto              &edge = data.edges[e];
+            const unsigned int a    = edge_vertices[e][0];
+            const unsigned int b    = edge_vertices[e][1];
+            // A free parameter of an end is that of the other end. On a
+            // periodic parameter the edge takes the shorter way, which
+            // depends on its vertices alone, as for the cell on its other
+            // side; a cell whose edges then do not close in the parameters,
+            // as around a pole, is blended in space.
+            edge.theta = {{data.vertex_theta[a], data.vertex_theta[b]}};
+            for (unsigned int c = 0; c < 2; ++c)
+              {
+                if (free[a][c] && !free[b][c])
+                  edge.theta[0][c] = edge.theta[1][c];
+                if (free[b][c] && !free[a][c])
+                  edge.theta[1][c] = edge.theta[0][c];
+                if (face.periodic[c])
+                  {
+                    const double period = face.upper[c] - face.lower[c];
+                    const double turns  = std::round(
+                      (edge.theta[1][c] - edge.theta[0][c]) / period);
+                    if (turns != 0)
+                      {
+                        edge.theta[1][c] -= turns * period;
+                        data.degenerate = true;
+                      }
+                  }
+              }
+            edge.pcurve.Nullify();
+            edge.offset = Tensor<1, 2>();
+            edge.shift  = {{Tensor<1, 2>(), Tensor<1, 2>()}};
+
+            // Close to a pole the segments in the parameters wind about it:
+            // an edge closer to a pole than twice its length is the
+            // closest point of the edge of the mesh, as both cells along it
+            // find, and the cell is blended in space.
+            edge.projected = false;
+            if (edge.curve == none)
+              {
+                const Point<3>    &x_a    = vertices[a];
+                const Point<3>    &x_b    = vertices[b];
+                const Tensor<1, 3> chord  = x_b - x_a;
+                const double       length = chord.norm();
+                for (const Point<3> &pole : face.poles)
+                  {
+                    const double r = std::clamp((pole - x_a) * chord /
+                                                  std::max(length * length,
+                                                           1e-300),
+                                                0.,
+                                                1.);
+                    if (pole.distance(x_a + r * chord) < 2 * length)
+                      edge.projected = true;
+                  }
+                if (edge.projected)
+                  {
+                    data.degenerate = true;
+                    if (data.basis == nullptr ||
+                        data.basis->size() != parametric_nodes(mapping))
+                      {
+                        const unsigned int n = parametric_nodes(mapping);
+                        auto basis = data.bases.find(n);
+                        if (basis == data.bases.end())
+                          basis =
+                            data.bases
+                              .emplace(n,
+                                       Polynomials::
+                                         generate_complete_Lagrange_basis(
+                                           QGaussLobatto<1>(n).get_points()))
+                              .first;
+                        data.basis = &basis->second;
+                      }
+                    const std::vector<Point<1>> nodes =
+                      QGaussLobatto<1>(data.basis->size()).get_points();
+                    edge.nodes.resize(nodes.size());
+                    for (unsigned int j = 0; j < nodes.size(); ++j)
+                      edge.nodes[j] = mapping.transform_unit_to_real_cell(
+                        cell, edge_point(e, nodes[j][0]));
+                  }
+              }
+            if (edge.curve == none)
+              continue;
+
+            // On a trimming curve: the parameters of the closest points of
+            // the vertices on the curve, and the curve of the edge on the
+            // face if its parameter is that of the curve in space.
+            const auto &curve = *trimming_curves[edge.curve];
+            for (unsigned int i = 0; i < 2; ++i)
+              project_onto_curve(curve,
+                                 vertices[edge_vertices[e][i]],
+                                 edge.parameter[i],
+                                 tolerance);
+            double first, last;
+            edge.pcurve =
+              BRep_Tool::CurveOnSurface(TopoDS::Edge(curve.shape),
+                                        TopoDS::Face(face.shape),
+                                        first,
+                                        last);
+            if (!edge.pcurve.IsNull())
+              {
+                const double middle =
+                  0.5 * (edge.parameter[0] + edge.parameter[1]);
+                const gp_Pnt2d          uv = edge.pcurve->Value(middle);
+                Point<3>                S, C;
+                DerivativeForm<1, 2, 3> dS;
+                DerivativeForm<2, 2, 3> d2S;
+                DerivativeForm<1, 1, 3> dC;
+                DerivativeForm<2, 1, 3> d2C;
+                face.evaluate(Point<2>(uv.X(), uv.Y()), S, dS, d2S);
+                curve.evaluate(Point<1>(middle), C, dC, d2C);
+                if (S.distance(C) > 1e-9 * std::max(1., face.diameter))
+                  edge.pcurve.Nullify();
+              }
+
+            // The ends of the curve on the face, the period that brings them
+            // to the parameters of the vertices, and the remaining shifts,
+            // zero where the vertices lie on the curve; a free parameter of
+            // a vertex is that of the curve.
+            std::array<Point<2>, 2> ends = edge.theta;
+            for (unsigned int i = 0; i < 2; ++i)
+              {
+                Tensor<1, 2> derivative;
+                curve_parameters(edge.pcurve,
+                                 curve,
+                                 face,
+                                 edge.parameter[i],
+                                 ends[i],
+                                 derivative);
+              }
+            for (unsigned int c = 0; c < 2; ++c)
+              if (face.periodic[c])
+                {
+                  const double period = face.upper[c] - face.lower[c];
+                  edge.offset[c] =
+                    period *
+                    std::round((edge.theta[0][c] - ends[0][c]) / period);
+                }
+            for (unsigned int i = 0; i < 2; ++i)
+              {
+                edge.shift[i] = edge.theta[i] - (ends[i] + edge.offset);
+                for (unsigned int c = 0; c < 2; ++c)
+                  if (free[edge_vertices[e][i]][c])
+                    edge.shift[i][c] = 0;
+              }
+          }
+      }
+    else
+      {
+        (void)mapping;
+        (void)cell;
+        (void)vertices;
+        (void)cache;
+      }
+  }
+
+
+
+  template <int dim>
+  ProjectionResult<3>
+  ShapeProjector<dim>::project_parametric(const MeshPoint<dim, 3> &x,
+                                          Cache                   &cache) const
+  {
+    ProjectionResult<3> result;
+    if constexpr (dim == 2)
+      {
+        auto       &data = static_cast<ShapeCache<2> &>(cache);
+        const auto &face = *patches[data.patch];
+        const double s = x.unit_point[0], t = x.unit_point[1];
+
+        // The curves of the edges in the parameters of the face.
+        std::array<Tensor<1, 2>, 4> c, dc;
+        for (unsigned int e = 0; e < 4; ++e)
+          {
+            const auto  &edge  = data.edges[e];
+            const double r     = (e < 2) ? t : s;
+            const Tensor<1, 2> chord = edge.theta[1] - edge.theta[0];
+            if (edge.projected)
+              continue;
+            if (edge.curve == none)
+              {
+                c[e]  = edge.theta[0] + r * chord;
+                dc[e] = chord;
+              }
+            else
+              {
+                const double parameter =
+                  (1 - r) * edge.parameter[0] + r * edge.parameter[1];
+                Point<2>     theta = edge.theta[0] + r * chord - edge.offset;
+                Tensor<1, 2> dtheta;
+                curve_parameters(edge.pcurve,
+                                 *trimming_curves[edge.curve],
+                                 face,
+                                 parameter,
+                                 theta,
+                                 dtheta);
+                c[e] = theta + edge.offset + (1 - r) * edge.shift[0] +
+                       r * edge.shift[1];
+                dc[e] = (edge.parameter[1] - edge.parameter[0]) * dtheta +
+                        edge.shift[1] - edge.shift[0];
+              }
+          }
+
+        Point<3>                S;
+        DerivativeForm<1, 2, 3> dS;
+        DerivativeForm<2, 2, 3> d2S;
+        DerivativeForm<1, 2, 3> D;
+        if (!data.degenerate)
+          {
+            // The transfinite interpolation in the parameters, mapped by S.
+            std::array<Tensor<1, 2>, 4> V;
+            for (unsigned int v = 0; v < 4; ++v)
+              V[v] = data.vertex_theta[v];
+            const Tensor<1, 2> theta =
+              (1 - s) * c[0] + s * c[1] + (1 - t) * c[2] + t * c[3] -
+              ((1 - s) * (1 - t) * V[0] + s * (1 - t) * V[1] +
+               (1 - s) * t * V[2] + s * t * V[3]);
+            const Tensor<1, 2> theta_s =
+              c[1] - c[0] + (1 - t) * dc[2] + t * dc[3] -
+              ((1 - t) * (V[1] - V[0]) + t * (V[3] - V[2]));
+            const Tensor<1, 2> theta_t =
+              (1 - s) * dc[0] + s * dc[1] + c[3] - c[2] -
+              ((1 - s) * (V[2] - V[0]) + s * (V[3] - V[1]));
+            face.evaluate(Point<2>(theta), S, dS, d2S);
+            for (unsigned int i = 0; i < 3; ++i)
+              {
+                D[i][0] = dS[i][0] * theta_s[0] + dS[i][1] * theta_s[1];
+                D[i][1] = dS[i][0] * theta_t[0] + dS[i][1] * theta_t[1];
+              }
+            result.point  = S;
+            result.normal = unit_normal(dS);
+            if (face.reversed)
+              result.normal = -result.normal;
+            for (unsigned int a = 0; a < 2; ++a)
+              if (!face.periodic[a] &&
+                  (theta[a] < face.lower[a] - 1e-9 * (face.upper[a] - face.lower[a]) ||
+                   theta[a] > face.upper[a] + 1e-9 * (face.upper[a] - face.lower[a])))
+                result.regular = false;
+          }
+        else
+          {
+            // The closest point of the transfinite interpolation of the
+            // images of the edges.
+            std::array<Point<3>, 4>     image;
+            std::array<Tensor<1, 3>, 4> d_image;
+            for (unsigned int e = 0; e < 4; ++e)
+              {
+                const auto &edge = data.edges[e];
+                if (edge.projected)
+                  {
+                    const double r = (e < 2) ? t : s;
+                    const auto [p, dp] =
+                      interpolate(edge.nodes, *data.basis, r);
+                    MeshPoint<2, 3> y;
+                    y.point        = p;
+                    Point<2> theta = data.start(edge_point(e, r));
+                    const ProjectionResult<3> projection = project_onto_patch(
+                      face, data, direction, tolerance, y, theta, true);
+                    image[e]   = projection.point;
+                    d_image[e] = projection.jacobian * dp;
+                    continue;
+                  }
+                face.evaluate(Point<2>(c[e]), S, dS, d2S);
+                image[e] = S;
+                for (unsigned int i = 0; i < 3; ++i)
+                  d_image[e][i] = dS[i][0] * dc[e][0] + dS[i][1] * dc[e][1];
+              }
+            const auto &V = data.corners;
+            Point<3>    X;
+            X += (1 - s) * image[0] + s * image[1] + (1 - t) * image[2] +
+                 t * image[3];
+            X -= (1 - s) * (1 - t) * V[0] + s * (1 - t) * V[1] +
+                 (1 - s) * t * V[2] + s * t * V[3];
+            const Tensor<1, 3> X_s =
+              image[1] - image[0] + (1 - t) * d_image[2] + t * d_image[3] -
+              ((1 - t) * (V[1] - V[0]) + t * (V[3] - V[2]));
+            const Tensor<1, 3> X_t =
+              (1 - s) * d_image[0] + s * d_image[1] + image[3] - image[2] -
+              ((1 - s) * (V[2] - V[0]) + s * (V[3] - V[1]));
+            MeshPoint<2, 3> y;
+            y.point        = X;
+            Point<2> theta = data.start(x.unit_point);
+            result         = project_onto_patch(
+              face, data, direction, tolerance, y, theta, true);
+            for (unsigned int i = 0; i < 3; ++i)
+              for (unsigned int j = 0; j < 3; ++j)
+                {
+                  D[i][0] += result.jacobian[i][j] * X_s[j];
+                  D[i][1] += result.jacobian[i][j] * X_t[j];
+                }
+          }
+        result.jacobian = jacobian_of(D, x.jacobian);
+      }
+    else
+      {
+        (void)x;
+        (void)cache;
+      }
+    return result;
   }
 
 
