@@ -196,7 +196,7 @@ public:
   conditional_refine_and_resize(const unsigned int refinement_level);
 
   void
-  update_triangulation();
+  update_triangulation(const bool isotropic_conformity = false);
   /// Here are the members of the class:
   /// they are all public, as the upper level
   /// classes (bem_problem, bem_fma,
@@ -351,6 +351,10 @@ public:
   /// surface (a boundary face, where two CAD surfaces meet), after the global
   /// refinement.
   unsigned int edge_refinement_cycles = 0;
+  /// Curvature refinement cycles and the turning angle (degrees) of the
+  /// surface across a cell above which it is cut in that direction.
+  unsigned int curvature_refinement_cycles = 0;
+  double       curvature_refinement_angle  = 20.;
 
   /// Optimize interior vertices on selected planar patches after refinement.
   std::set<types::material_id> planar_smoothing_material_ids;

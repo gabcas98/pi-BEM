@@ -1,6 +1,7 @@
 
 
 #include "../include/computational_domain.h"
+#include "../include/cached_normal_projection_manifold.h"
 
 #include <atomic>
 #include "planar_mesh_quality.h"
@@ -147,6 +148,16 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
   // edges, one ring of cells per size, that leaves the rest of the mesh as
   // it is.
   prm.declare_entry("Edge refinement cycles", "0", Patterns::Integer(0));
+  // After the global and the edge refinement, the cells across which the
+  // surface turns by more than the angle (degrees) in a direction are cut
+  // in that direction, this many times: as the leading edge of a wing,
+  // where the trace of the flux follows the normal round the nose. The
+  // turning along a direction is that of the edges of the cell along it,
+  // from the distance of their midpoints on the geometry to their chords.
+  prm.declare_entry("Curvature refinement cycles", "0", Patterns::Integer(0));
+  prm.declare_entry("Curvature refinement angle",
+                    "20",
+                    Patterns::Double(0., 180.));
   prm.declare_entry("Planar mesh smoothing material ids", "",
                     Patterns::List(Patterns::Integer(0)));
   prm.declare_entry("Planar mesh smoothing iterations", "0", Patterns::Integer(0));
@@ -329,6 +340,9 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
     prm.get_bool("Aspect ratio reduction after curvature refinement");
   remove_hanging_nodes = prm.get_bool("Remove hanging nodes");
   edge_refinement_cycles = prm.get_integer("Edge refinement cycles");
+  curvature_refinement_cycles =
+    prm.get_integer("Curvature refinement cycles");
+  curvature_refinement_angle = prm.get_double("Curvature refinement angle");
   planar_smoothing_iterations = prm.get_integer("Planar mesh smoothing iterations");
   planar_smoothing_material_ids.clear();
   for (const auto &id : Utilities::split_string_list(
@@ -921,7 +935,7 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
       for (unsigned int i = 0; i < cad_surfaces.size(); ++i)
         {
           normal_to_mesh_projectors.push_back(
-            std::make_shared<OpenCASCADE::NormalToMeshProjectionManifold<2, 3>>(
+            std::make_shared<CachedNormalToMeshProjectionManifold>(
               cad_surfaces[i], tolerance));
         }
       // static OpenCASCADE::DirectionalProjectionBoundary<2,3>
@@ -1486,6 +1500,49 @@ ComputationalDomain<dim>::refine_and_resize(const unsigned int refinement_level)
       make_edges_conformal();
     }
   
+  if constexpr (dim == 3)
+  for (unsigned int cycle = 0; cycle < curvature_refinement_cycles; ++cycle)
+    {
+      // The turning of an edge from the midpoint on its manifold: an arc of
+      // chord L and sagitta s turns by 4 atan(2 s / L).
+      const auto turning = [](const auto &line) {
+        const Point<dim> a = line->vertex(0), b = line->vertex(1);
+        const double     L = a.distance(b);
+        if (L == 0.)
+          return 0.;
+        const double sagitta = line->center(true).distance(Point<dim>(0.5 * (a + b)));
+        return 4. * std::atan(2. * sagitta / L);
+      };
+      const double limit    = curvature_refinement_angle * M_PI / 180.;
+      unsigned int flagged  = 0;
+      for (const auto &cell : tria.active_cell_iterators())
+        {
+          // Faces 2 and 3 run along the first reference direction, 0 and 1
+          // along the second.
+          const double along_x = std::max(turning(cell->face(2)),
+                                          turning(cell->face(3)));
+          const double along_y = std::max(turning(cell->face(0)),
+                                          turning(cell->face(1)));
+          const bool cut_x = along_x > limit, cut_y = along_y > limit;
+          if (cut_x || cut_y)
+            {
+              cell->set_refine_flag(
+                cut_x && cut_y ?
+                  RefinementCase<2>(RefinementCase<2>::isotropic_refinement) :
+                  RefinementCase<2>::cut_axis(cut_x ? 0 : 1));
+              ++flagged;
+            }
+        }
+      pcout << "Refinement by the curvature of the surface, cycle " << cycle
+            << " (" << flagged << " of " << tria.n_active_cells()
+            << " cells)" << std::endl;
+      if (flagged == 0)
+        break;
+      tria.prepare_coarsening_and_refinement();
+      tria.execute_coarsening_and_refinement();
+      make_edges_conformal();
+    }
+
   //else just do the global refinement
   //tria.refine_global(refinement_level);
 
@@ -1751,10 +1808,14 @@ ComputationalDomain<dim>::conditional_refine_and_resize(
 
 template <int dim>
 void
-ComputationalDomain<dim>::update_triangulation()
+ComputationalDomain<dim>::update_triangulation(const bool isotropic_conformity)
 {
   // compute_double_vertex_cache();
-  make_edges_conformal();
+  // After adaptive refinement (isotropic_conformity) the cell across a
+  // double-node edge from a refined cell is refined isotropically, not only
+  // across the edge: at a thin trailing edge the two cells of a folded pair
+  // then keep the same depth.
+  make_edges_conformal(true, isotropic_conformity);
   // tria.execute_coarsening_and_refinement ();
 
   pcout << "We have a tria of " << tria.n_active_cells() << " cells."
