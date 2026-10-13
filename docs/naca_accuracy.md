@@ -394,3 +394,397 @@ and skewed pairs) now share a budget of 128 MB, the least recently used
 evicted first; rules of the base order are cached as before. No leaf holds a
 rule across lookups, and a rebuilt rule is identical. On p = 2, level 1 the
 memory falls to 0.72 GB with the same errors; the regression suite passes.
+
+## Adaptive refinement and hanging nodes across the interface (2026-10-10)
+
+`Mixed Galerkin error indicator = jumps | exact` computes, after each mixed
+solve, an indicator per cell: the jumps of the conormal derivative of the
+flux (Dirichlet cells) and of the potential (Neumann cells) across the edges
+to cells of the same part and material, with the extent a_F = |T|/|F| of the
+cell across each edge, a_F/2 for H^1 and a_F^3/(2 pi^2) for L^2 (Poincare
+constant a/pi), weighted by a = min a_F for the energy norm or normalised by
+the norms of the two parts for `Mixed Galerkin indicator norm = L2`. `exact`
+uses the exact errors of the manufactured solution (oracle). With `Set Global
+Refinement = false`, `Initial refinement level` (Driver) and `Number of
+cycles`, `adaptive_refinement()` marks the cells carrying `Mixed Galerkin
+refinement fraction` of the sum (Doerfler). On hanging edges the coarse side
+is evaluated at the points of the fine edge pulled back onto the mapped
+coarse edge (the hanging vertex of the exact geometry is not at the midpoint
+of the reference edge). The indicator is written as column 13 of the error
+dump. On the uniform meshes it correlates with the exact error cell by cell
+(log-correlation 0.95-0.98) and marks nearly the same cells as the oracle.
+
+The first adaptive runs exposed a defect of the mixed problem: hanging
+nodes across the interface of the two parts, which uniform meshes do not
+have. The standard constraints of the whole surface tie a node of the finer
+side to the degrees of freedom of the coarse cell of the other part: the
+flux was constrained to potentials, or a potential to fluxes, and the node
+in the middle of a coarse Neumann edge (p = 2) next to finer Dirichlet cells
+became a free potential unknown on the interface. On such meshes the
+residual of the exact solution jumped from 1e-3 to 7e-2 and the flux error
+from 0.5% to 6-10%. Now the constraints are built per part: a hanging node
+whose coarse cell lies on the other part is free on the Dirichlet side (the
+flux is continuous on that part only) and fixed by the datum on the Neumann
+side (the trace of the coarse Dirichlet cell, by the weights of the
+constraint), and every Neumann degree of freedom on an edge to Dirichlet
+cells has its potential fixed by the datum. The regression suite is
+unchanged.
+
+## Folded pairs at refined trailing edges (2026-10-11)
+
+When adaptive refinement reached the trailing edge, a refined upper cell faced
+a lower cell that `make_edges_conformal` had cut only across the double-node
+edge: a folded pair (16.5 degrees) whose cells reach to depths 2:1 from the
+edge. The rule of ten points per variable then loses accuracy (at p = 2 the
+flux error rose from 0.10 to 0.57%, 80% of it in these cells, local best
+1e-5). A reproducer (level 1, graded refinement of the upper side at the
+trailing edge) showed that fourteen points remove it and the near-singular
+subdivision does not matter. Two fixes, each sufficient:
+
+- the integrator halves the deeper patch of a folded pair parallel to the
+  common edge until the depths are within 1.25 (`folded_balance_ratio`);
+- after adaptive refinement (`update_triangulation(true)` from the driver)
+  the cell across a double-node edge is refined isotropically. The meshes of
+  `refine_and_resize()` keep the anisotropic cut (the exponential sphere-box
+  mesh of the regression changed otherwise).
+
+On finely refined trailing edges the rule of ten points still limits the
+flux error near 5e-4 (largest error 5.3e-3 of the largest flux with ten
+points, 4.0e-4 with fourteen, 7.3e-5 with eighteen; local best 6e-6). The
+rules of raised orders now keep only points and weights in the cache and
+evaluate the shapes per pair, so fourteen points for the folded pairs cost a
+near field 46% longer on the uniform level 2 (72 s against 49 s; before the
+change 271 s from cache churn); results at ten points are bitwise unchanged.
+The adaptive runs at p = 2 use fourteen points (`run_adapt7.sh`).
+
+## Performance of the mixed solver (2026-10-11)
+
+Measured on the wing, exact parametric geometry, p = 2, eight processes.
+
+Near field (PIBEM_NEAR_PROFILE prints its time by pair type and the parts
+of the direct path): 82% of it was in coincident and common-edge pairs, and
+in these the sums over the pair points of the joint kernel loop read some
+600 arrays of all points per pair, from memory. Now the points go in blocks
+of 128 that stay in cache, the sums are small matrix products in register
+blocks of 3 x 3 (`add_row_products`), W is formed from the reference
+derivatives with four tangent weights instead of the surface curls, and the
+work arrays of the direct path are kept from pair to pair (allocated anew,
+arrays of megabytes cost a page fault per page) and released after the
+assembly. Common-edge pair 4.1 -> 1.5 ms, coincident 3.0 -> 1.7 ms; near
+field at level 3 234 -> 122 s.
+
+Products: `LaplaceFMM::evaluate_mixed()` computes V t, K^T t, K u and the
+three curl sums of W u in one pass (shared tree passes, one direct kernel,
+one sum over the processes), when charges and dipoles have the same order
+and the multipoles of five sets take less than 256 MB per process: -10% per
+product. The M2L translations, half of a product, are the same five sets
+either way. Order 7 instead of 8 costs 0.6% in the flux at level 3 (order 6:
+11%) and saves 20% of a product.
+
+`Mixed Galerkin solver reduction` (default 1e-12): 1e-9 takes 43 GMRES steps
+instead of 54 at level 3 and changes the flux error in the sixth digit.
+
+Adaptive refinement: the exact near-field blocks of pairs of cells that are
+not refined are kept from one solve to the next (`NearFieldCache`, pairs
+dealt out to the processes by a hash of the levels and indices of their
+cells), 90-97% of the pairs per cycle; GMRES starts from the traces of the
+previous mesh (each new cell evaluates the polynomial of its ancestor), with
+the stopping criterion relative to the preconditioned right-hand side.
+
+| run | before | now |
+|---|---:|---:|
+| uniform level 3, near field | 234 s | 122 s |
+| uniform level 3, total | 417 s | 276 s (252 s with reduction 1e-9) |
+| adaptive, 14 cycles (p = 2, folded order 14) | 767 s | 223 s (179 s with 1e-9) |
+
+Errors are unchanged to all printed digits (adaptive) and bitwise in the
+near-field blocks up to the order of the sums. The regression suite has an
+adaptive case (`naca_mixed_adaptive_p1_fmm`).
+
+## Performance, second round (2026-10-11)
+
+Same setting (wing, exact parametric geometry, p = 2, eight processes,
+reduction 1e-9).
+
+M2L (62% of a product at level 3). The batched rotation applied the
+reflection D(P) entry by entry with the sums in memory, so that every
+product waited for the previous one; now the rotation of a group,
+D(Q) = R(theta) Z(-phi), uses dense blocks per degree of the rotation about
+y, R(theta) = D(P) Z(theta) D(P), which depends only on the polar angle of
+the offset (1793 distinct angles on 10^5 points, kept from `reinit`), in a
+register-blocked product (`translate_blocks`, 16 lanes); pairs and sets of
+a group fill the lanes together, multipoles and locals are converted once
+per box to the scaled real coefficients, and the lanes are gathered and
+scattered by 4 x 4 transposes. Kernel 230 -> 111 ns per expansion, M2L of
+the five sets 0.93 -> 0.55 s on one core (benchmark `RUN_NACA/m2l`), level
+3: 1.27 -> 0.63 s per product.
+
+Near field:
+- a cell with itself on half of the eight Sauter-Schwab regions (the other
+  four are their images under the exchange of the two points), completed by
+  V = A + A^T, K = C + D^T, W = B + B^T; the pair of the two halves of a
+  split coincident cell gives its mirror image the same way;
+- leaves on patches smaller than the cell use the shapes and derivatives
+  kept with the rule and take the result to the shapes of the cell by the
+  transform of Q_p under the affine map of the patch, T_x B T_y^T
+  (`LightLeaf::transformed`, 98% of the singular leaves);
+- the geometry of a rule is evaluated at its distinct points only (n^2 and
+  n^3 of the n^4 pair points of a common vertex, n^3 of a common edge) and
+  gathered: 7.6e8 -> 3.0e8 points at level 2;
+- without a cache the pairs are taken by the processes as they get free,
+  from a counter on process 0 (`MPI_Fetch_and_op`), in the order of
+  decreasing cost, and assembled afterwards: imbalance 1.31 -> 1.00 on the
+  hybrid cores (P and E).
+
+Calderon preconditioner: the rank-one term of the constant of the Dirichlet
+part is scaled to V^{-1} instead of 4 V^{-1}, which puts the constant at 1,
+inside the spectrum, instead of the isolated value 3.7: one step less.
+
+Krylov recycling was evaluated and not adopted. GMRES converges linearly,
+by 0.55-0.65 per step in every adaptive cycle, with only three small
+isolated harmonic Ritz values (0.054, 0.10, 0.15); deflating the exact
+harmonic Ritz vectors of the same system (`PIBEM_DEFLATION_TEST`,
+`include/deflated_gmres.h`) saves 4-6 of about 26 steps, and in two cycles
+of six costs steps, an upper bound for vectors transferred between meshes.
+
+| run | morning | now |
+|---|---:|---:|
+| level 2, near field | 27.3 s | 11.1 s |
+| level 2, total | 59.0 s | 34.0 s |
+| level 3, near field | 115 s | 42.8 s |
+| level 3, product (both rows) | 2.15 s | 1.40 s |
+| level 3, total | 252 s | 143 s |
+| adaptive, 10 cycles | 90.0 s | 68.4 s |
+
+Errors identical to all printed digits; memory +60 MB per process at level 3
+(the blocks kept until the assembly).
+
+## Kinked pairs: the edges of the tips (2026-10-12)
+
+With the plane wave u = x + y + z (level 3, p = 2, exact parametric
+geometry) the potential is exact to 2.7e-7 and the flux to 2.7e-4, 75% of
+it in the cells along the leading edge, where it is the approximation of
+n . (1, 1, 1) around the nose (3.65e-5 per cell against 2.81e-5 for the
+best approximation; 1.6e-4 in total). Pointwise, the flux error peaked at
+the two corners of the leading edge with the tips, 2.6e-2 against 1.9e-3
+for the best approximation in those cells (4% of the squared L2 error):
+the singular rules of the pairs across the edge of the tip, at 90 degrees
+where the nose bends most.
+
+Under `BEMProblem<3>/Quadrature rules`:
+
+```text
+set Galerkin singular quadrature order for kinked pairs = 10
+set Galerkin kinked pair angle = 60
+```
+
+promote the touching pairs whose vertex normals make more than the given
+angle. On the wing at level 3 the angles of touching cells are 0-45 degrees
+within the smooth surfaces (the nose included), 75-105 across the edges of
+the tips (760 pairs) and 150-165 at the trailing edge (folded pairs), so 60
+degrees takes the edges only. Corner cells, maximum flux error: 2.6e-2
+(order 7), 1.2e-2 (8), 6.3e-3 (9), 3.5e-3 (10, best approximation 1.9e-3);
+the same as order 10 on all pairs touching the tips (materials 1, 2, 11,
+12), which also takes the planar pairs within the tips and costs 54 s of
+near field more, while the kinked pairs cost nothing measurable. The
+largest pointwise error left is at the corners of the trailing edge with
+the tips, 3.8e-3, unchanged. Off by default; the regression case
+`naca_mixed_exact_p2_fmm` uses order 10.
+
+## Thin regions, trailing edge and tip edges with the plane wave (2026-10-12)
+
+Plane wave u = x + y + z, level 3, p = 2, exact parametric geometry, kinked
+order 10. The flux error behind x = 0.6 (best approximation about 3e-8 per
+cell) had three sources, told apart one knob at a time (runs in
+`RUN_NACA/plane/`):
+
+- far pairs across the thin aft section: upper and lower cells a diameter
+  apart get the tensor rule of the multipole sums (order 6), too coarse for
+  the double layer of one surface across the other, whose weight is of
+  order one within their separation; on one smooth surface it nearly
+  vanishes. The new parameter `Galerkin near singular distance ratio for
+  kinked pairs` (normals beyond the kinked pair angle) makes those pairs
+  near-singular up to the given ratio of the larger diameter: 1.0 takes
+  59 000 more pairs at level 3, where the same ratio on all pairs takes
+  350 000 for the same accuracy. Peaks of 1e-3 next to the spanwise lines of
+  hanging nodes at x = 0.8 and 0.91 came from these pairs, not from the
+  non-conforming contacts (order 12 on those changes nothing);
+- folded pairs at the trailing edge: order 10 leaves 2e-3 at x > 0.97, order
+  14 1e-4 (order 20 the same). On an isolated folded pair (16 degrees,
+  `RUN_NACA/diag_tip/folded.cc`) the double layer is accurate to 1.3e-5 at
+  order 10 and 1.1e-7 at order 14;
+- not the multipole truncation (order 12 and dense matrices give the same at
+  level 2), nor GMRES (reduction 1e-12), nor the datum (interpolated), nor
+  the close regular pairs (order 10 for their exact blocks, or depth and
+  ratio raised, change nothing).
+
+| level 3 | flux L2 | aft max, mid-span | aft max, tip rows | near field |
+|---|---:|---:|---:|---:|
+| kinked 10 | 2.68e-4 | 2.75e-3 | 3.8e-3 | 40 s |
+| + folded 14 | 2.50e-4 | 1.62e-3 | 3.8e-3 | 60 s |
+| + kinked ratio 1.0 | 2.41e-4 | 4.5e-4 (1e-4 for abs(y) < 1) | 4.4e-3 | 65 s |
+
+The best approximation on this mesh is 1.6e-4. Left: the rows of the lower
+surface along the edges of the tips behind x = 0.6, 2e-3 to 6e-3 at the
+nodes on the edge itself (the interior nodes of those cells 5e-4), larger on
+the +y tip, where the tip cells are smaller. Insensitive to every rule above
+(kinked and tip-material orders 7-12, regular, near-singular, folded); at
+level 2 all rules raised together leave 5.8e-4 there against 6.9e-5 at
+mid-span. The residual of the exact solution (`PIBEM_RESIDUAL_DUMP`) is not
+larger on those rows. Open.
+
+The rules of raised orders now keep the shapes and their derivatives at
+their distinct points (n^2 or n^3 of the n^4 pair points of common vertex
+and edge rules) and gather them per leaf, on patches through the affine
+transform, instead of evaluating them at every pair point.
+
+## Speed with the new rules, inexact GMRES, Dirichlet parts in pieces (2026-10-12)
+
+Kinked pairs near only by the kinked ratio (between the near-singular ratio
+and the kinked one) take one tensor rule of the order that matches, at
+their separation, the accuracy of the base order at the kinked ratio (the
+Gauss convergence factor rho(r) = 2r + sqrt(4r^2 + 1) at r diameters: order
+10 at half a diameter, 8 at three quarters, at most 12), instead of the
+subdivision that made every subpair a diameter apart: level 3 near field
+65 -> 53 s, errors identical.
+
+`Mixed Galerkin relaxed products below` (default 0): inexact GMRES. Once the
+preconditioned residual is below the given fraction of the preconditioned
+right-hand side, the products of the mixed rows use the expansions of the
+preconditioner (order 4, opening 0.6) with the exact near field; the solver
+prints their relative error (1.3e-4 at level 2, 1.7e-4 at level 3), and the
+fraction should be about the reduction over it (1e-5 for 1e-9). Level 3: 18
+of 41 steps relaxed, the relaxed product 0.43 s against 1.44 s, GMRES 85 ->
+70 s, total 149 -> 137 s; the flux error changes in the fourth digit
+(2.41329e-4 -> 2.41396e-4). The GMRES of `include/inexact_gmres.h` runs it.
+
+Bug: with the tips in the Dirichlet part (Dirichlet ids 1,2,4), the flux was
+52% wrong at level 2 (24% with every surface Dirichlet). W vanishes on the
+constant of each piece of the Dirichlet part whose flux unknowns no cell
+joins (the cells on the two sides of a sharp edge have separate unknowns),
+and the Calderon preconditioner restored one constant only: singular on the
+others, it let GMRES stop on its residual with the true residual of the flux
+rows at 2e-3. Now one rank-one term per piece (0.22% at level 2, true
+residual 6e-8). Regression case `naca_mixed_tips_dirichlet_p1_fmm`.
+
+Tip edges (continued). With the tips Dirichlet, the lower surface along their
+edges keeps the same error as in the mixed problem: not the Dirichlet-Neumann
+interface. Refining towards the edges (`Edge refinement cycles` 1 and 2 at
+level 2) raises the error there (2.1e-3 -> 3.9e-3 -> 1.1e-2) while the best
+approximation falls tenfold; on that mesh the residual of the exact solution
+is 3000 times its median at the hanging nodes of the nose next to the tips
+(the D-N interface on the most curved part), and stays so with all rules
+raised: the constraints there, not the quadrature. Along the aft tip edges
+the residual stays small on every mesh: their error is pollution from such
+defects and from the approximation, not a local rule. Open.
+
+## The leading-edge band and refinement by curvature (2026-10-13)
+
+With the plane wave the flux error lay in a band along the leading edge: 98%
+of its square in the cells with x < 0.03, at the level of the best
+approximation, since the flux n . (1, 1, 1) turns by 180 degrees round a
+nose of radius 1.6% of the chord and a cell of level 3 there spans 40-70
+degrees of it. New options of `ComputationalDomain`:
+
+```text
+set Curvature refinement cycles = 1
+set Curvature refinement angle = 10
+```
+
+cut, after the global and the edge refinement, the cells across which the
+surface turns by more than the angle in a reference direction, in that
+direction only (the turning of an edge from the sagitta of its midpoint on
+the manifold, 4 atan(2s/L)); at the nose the new lines run along the span,
+so no hanging node lands on the Dirichlet-Neumann interface, and the tips
+are made conforming along their edges (`make_edges_conformal()`).
+
+| level 3, plane wave | cells | flux L2 | best approximation | LE band share | max |
+|---|---:|---:|---:|---:|---:|
+| none | 11520 | 2.41e-4 | 1.6e-4 | 98% | 4.4e-3 |
+| 20 degrees, 1 cycle | 11782 | 1.27e-4 | 8.1e-5 | 95% | 2.3e-2 |
+| 20 degrees, 2 cycles | 12044 | 1.26e-4 | 7.7e-5 | 90% | 8.8e-3 |
+| 10 degrees, 1 cycle | 12042 | 6.6e-5 | 3.7e-5 | 84% | 2.4e-2 |
+
+At 20 degrees only the first row of the nose is cut (a second cycle cuts it
+again); 10 degrees takes the second row as well. The maximum moves to the
+two cells of the lower surface at the corners of the nose with the tips,
+2.4e-2 against 5e-4 for their best approximation, 30% of the squared error
+(5.5e-5 without them). There the residuals of both the computed solution
+(6e-8) and the exact one are small: a nearly singular mode of the discrete
+system at that corner, which appears with the hanging nodes the conformity
+leaves on the tips next to it (14 cells, none without the refinement), as
+with `Edge refinement cycles`. Open. Regression case
+`naca_mixed_curvature_p2_fmm`.
+
+## Speed of the whole run (2026-10-13)
+
+Level 3 with the settings of `RUN_NACA/parameters_bem_3.prm` (kinked pairs,
+folded 14, relaxed products, curvature refinement), timeline from the
+output: 162 s, of which 32 s before the mixed solve, all of it repeated on
+every process. Now:
+
+- the global refinement on the CAD surfaces (18.8 s) went to
+  `OpenCASCADE::NormalToMeshProjectionManifold`, which loads the intersector
+  of the shape (its face classifiers) for every new point and projects both
+  ends of every line anew: `CachedNormalToMeshProjectionManifold`, the same
+  algorithm and the same points, loads it once and keeps the normals of the
+  vertices: 3.5 s;
+- the estimate of the degree of the interpolated exact geometry (9 s) took
+  every 64th cell, scattered, so that every projection started cold: now
+  every 8th cell of a contiguous part per process: 1 s, the same degree;
+- the right-hand side takes one product of the rows of the mixed problem
+  instead of seven separate ones; |W 1|, the residual of the exact solution
+  and the error of the relaxed products only with
+  `PIBEM_MIXED_DIAGNOSTICS` (or `PIBEM_RESIDUAL_DUMP`);
+- the Calderon preconditioner applies V and W in one evaluation of four
+  sets (`vmult_preconditioner_pair`): one direct kernel and two sums over
+  the processes instead of four;
+- near pairs whose quadrature points are translates of those of a pair
+  integrated before (rounded to 1e-9 of the size of the cell, with their
+  normals and materials) take its block: 31% of the pairs at level 3 (the
+  parametrization of the CAD surfaces is not linear along the span, so
+  most translated cells differ inside); `PIBEM_NO_CONGRUENCE` integrates
+  all.
+
+| level 3 | before | now |
+|---|---:|---:|
+| before the mixed solve | 31.8 s | 8.3 s |
+| near field | 57 s | 37 s |
+| right-hand side and checks | 5.9 s | 3.2 s |
+| GMRES (42 steps) | 59 s | 60 s |
+| total | 162 s | 115 s |
+
+Same flux and potential errors to all digits. Measured on a cool machine:
+after a few runs in a row the laptop throttles by up to 30%.
+
+## A cheaper Calderon preconditioner (2026-10-13)
+
+An application of the preconditioner at level 2 took 66 ms: 88% the
+products with V and W through the expansions of the preconditioner, 12% the
+four solves with the consistent masses. The preconditioner needs only to be
+the same operator at every step, not an accurate one; but the relaxed
+products of GMRES used the same expansions, so that a coarser preconditioner
+changed the solution. They now have their own (`Galerkin relaxed truncation
+order` and `Galerkin relaxed opening criterion`, zero for those of the
+preconditioner), and `Galerkin preconditioner maximum points per leaf`
+gives the preconditioner its own leaves. Level 2, relaxed products at order
+4 and opening 0.6:
+
+| preconditioner (order, opening, points per leaf) | GMRES steps | 43 applications | V or W |
+|---|---:|---:|---:|
+| 4, 0.6, 64 | 40 | 2.89 s | 29.9 ms |
+| 2, 0.8, 64 | 40 | 2.02 s | 19.0 ms |
+| 2, 0.8, 16 | 40 | 2.63 s | 25.6 ms |
+| 3, 0.8, 32 | 40 | 2.43 s | 23.3 ms |
+| 2, 0.9, 32 | 40 | 1.98 s | 18.0 ms |
+| 2, 0.95, 32 | 40 | 1.62 s | 14.9 ms |
+| 1, 0.9, 32 | 41 | 1.68 s | 14.8 ms |
+
+The flux error stays 2.40665e-4 throughout. Level 3 with order 2, opening
+0.95 and 32 points per leaf (now in `RUN_NACA/parameters_bem_3.prm`): V or
+W 0.154 -> 0.065 s, GMRES 60 -> 47 s, total 115 -> 90 s, 42 steps as before;
+the mass solves are now 28% of the preconditioner. What remains of its
+products is mostly the two sums over the processes.
+
+The recommended settings and the environment switches are collected in
+`docs/settings.md`.
