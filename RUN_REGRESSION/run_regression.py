@@ -152,11 +152,48 @@ CASES = {
     'naca_mixed_flat_p1_fmm': ('naca_mixed.prm',
                                {'Finite element order': '1'}, MIXED),
     # The exact parametric geometry, p = 2, level 1: folded pairs (order
-    # 10) at the trailing edge, skewed cells (order 12) on the tips, the
-    # Dirichlet datum by its L2 projection.
+    # 10) at the trailing edge, skewed cells (order 12) on the tips, kinked
+    # pairs (order 10) along the edges of the tips and near-singular up to
+    # a diameter apart, the Dirichlet datum by its L2 projection.
     'naca_mixed_exact_p2_fmm': ('naca_mixed.prm',
                                 {'Exact geometry': 'true',
-                                 'Exact geometry map': 'parametric'}, MIXED),
+                                 'Exact geometry map': 'parametric',
+                                 'Galerkin singular quadrature order for '
+                                 'kinked pairs': '10',
+                                 'Galerkin near singular distance ratio '
+                                 'for kinked pairs': '1.0'}, MIXED),
+    # One cycle of refinement by the curvature of the surface at 10
+    # degrees on the exact geometry: the cells of the nose cut along the
+    # chord, the tips made conforming along their edges.
+    'naca_mixed_curvature_p2_fmm': ('naca_mixed.prm',
+                                    {'Exact geometry': 'true',
+                                     'Exact geometry map': 'parametric',
+                                     'Curvature refinement cycles': '1',
+                                     'Curvature refinement angle': '10'},
+                                    MIXED),
+    # The tips in the Dirichlet part as well: three pieces whose flux
+    # unknowns no cell joins (the sharp edges have double nodes), each with
+    # its rank-one term in the Calderon preconditioner; inexact GMRES with
+    # its own expansions, and a cheap preconditioner (order 2, opening
+    # 0.95, 32 points per leaf).
+    'naca_mixed_tips_dirichlet_p1_fmm': ('naca_mixed.prm',
+                                         {'Finite element order': '1',
+                                          'Dirichlet boundary ids':
+                                          '1,2,4,110,110',
+                                          'Neumann boundary ids':
+                                          '3,110,110',
+                                          'Mixed Galerkin relaxed products '
+                                          'below': '1e-5',
+                                          'Galerkin preconditioner truncation '
+                                          'order': '2',
+                                          'Galerkin preconditioner opening '
+                                          'criterion': '0.95',
+                                          'Galerkin preconditioner maximum '
+                                          'points per leaf': '32',
+                                          'Galerkin relaxed truncation '
+                                          'order': '4',
+                                          'Galerkin relaxed opening '
+                                          'criterion': '0.6'}, MIXED),
     # One cycle of graded refinement around the source on the exact
     # geometry, dense matrices: hanging nodes on curved edges, with the
     # constraints at the physical points and the contacts found on the
@@ -172,6 +209,19 @@ CASES = {
                                     'Graded refinement minimum size': '0.10',
                                     'Graded refinement growth exponent': '1',
                                     'Graded refinement maximum cycles': '1'},
+                                   MIXED),
+    # Adaptive refinement from level 1, two cycles with the jump indicator,
+    # the multipole method: the near-field blocks of the cells that are not
+    # refined and the traces of the previous mesh as the start of GMRES.
+    'naca_mixed_adaptive_p1_fmm': ('naca_mixed.prm',
+                                   {'Finite element order': '1',
+                                    'Exact geometry': 'true',
+                                    'Exact geometry map': 'parametric',
+                                    'Set Global Refinement': 'false',
+                                    'Initial refinement level': '1',
+                                    'Number of cycles': '2',
+                                    'Mixed Galerkin error indicator': 'jumps',
+                                    'Mixed Galerkin refinement fraction': '0.5'},
                                    MIXED),
 }
 

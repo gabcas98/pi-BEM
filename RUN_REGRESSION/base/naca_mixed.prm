@@ -4,6 +4,9 @@ subsection BEMFMA<3>
   subsection FMA Params
     set FMA Truncation Order                  = 8
     set Galerkin preconditioner opening criterion = 0.6
+    set Galerkin preconditioner maximum points per leaf = 0
+    set Galerkin relaxed truncation order = 0
+    set Galerkin relaxed opening criterion = 0
     set Galerkin preconditioner truncation order = 4
     set Galerkin dipole order increase = 0
     set Galerkin maximum points per leaf = 64
@@ -105,10 +108,13 @@ subsection BEMProblem<3>
     set Galerkin singular quadrature           = sauter_schwab
     set Galerkin singular quadrature order     = 7
     set Galerkin skewed cell angle = 30
+    set Galerkin singular quadrature order for kinked pairs = 0
+    set Galerkin kinked pair angle = 60
     set Galerkin singular quadrature order for skewed cells = 12
     set Galerkin singular quadrature order for folded pairs = 10
     set Galerkin Duffy outer subdivisions      = 4
     set Galerkin near singular distance ratio  = 0.5
+    set Galerkin near singular distance ratio for kinked pairs = 0
     set Galerkin near singular maximum depth   = 6
     set Galerkin near singular quadrature order = 4
     set Quadrature order                       = 10
@@ -351,6 +357,8 @@ subsection ComputationalDomain<3>
   # (p+4)/(p+2), that is 1.667 for p=1 and 1.5 for p=2.
   set Extra refinement material ids                                            = 
   set Extra refinement cycles                                                  = 0
+  set Curvature refinement cycles = 0
+  set Curvature refinement angle = 20
   set Graded refinement material ids                                           = 
   set Graded refinement focus                                                  = 0,0,0
   set Graded refinement size ratio                                             = 0.8
@@ -377,6 +385,7 @@ subsection Driver<3>
   # large run: the dense operator costs about 18 bytes per entry, so memory
   # grows as the square of the unknowns and overruns arrive without warning.
   set Mesh only             = false
+  set Initial refinement level = 0
 end
 
 subsection BEMProblem<3>

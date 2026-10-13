@@ -81,11 +81,25 @@
   "gradient": "0.0141885",
   "rhs_norm": "0.8854049111248109"
  },
+ "naca_mixed_adaptive_p1_fmm": {
+  "iterations": "36",
+  "memory_kb": "561676",
+  "mixed_flux": "0.0413621",
+  "mixed_gauss": "2.79151e-06",
+  "mixed_potential": "0.00982656"
+ },
+ "naca_mixed_curvature_p2_fmm": {
+  "iterations": "49",
+  "memory_kb": "713488",
+  "mixed_flux": "0.0146279",
+  "mixed_gauss": "6.33687e-07",
+  "mixed_potential": "0.00548058"
+ },
  "naca_mixed_exact_p2_fmm": {
   "iterations": "49",
-  "memory_kb": "717820",
-  "mixed_flux": "0.0152178",
-  "mixed_gauss": "8.08971e-07",
+  "memory_kb": "669128",
+  "mixed_flux": "0.0152186",
+  "mixed_gauss": "7.76333e-07",
   "mixed_potential": "0.00548079"
  },
  "naca_mixed_flat_p1_fmm": {
@@ -101,6 +115,13 @@
   "mixed_flux": "0.0169983",
   "mixed_gauss": "3.03939e-06",
   "mixed_potential": "0.00618302"
+ },
+ "naca_mixed_tips_dirichlet_p1_fmm": {
+  "iterations": "94",
+  "memory_kb": "537520",
+  "mixed_flux": "0.043829",
+  "mixed_gauss": "3.10594e-05",
+  "mixed_potential": "0.0157188"
  },
  "representation_p2": {
   "flux": "0.00242896",
