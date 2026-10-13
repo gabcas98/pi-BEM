@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 #include <cmath>
 #include <iomanip>
 #include <map>
@@ -540,6 +542,33 @@ LaplaceFMM::distribute_work() const
       group.end = m2l_order.size();
       m2l_groups.push_back(group);
     }
+
+  // The rotations about y of the polar angles of the groups, which the
+  // offset determines by its component along z and its distance from the
+  // axis.
+  m2l_rotations.clear();
+  if (data.kappa == 0.)
+    {
+      const std::size_t size = rotations->rotation_size();
+      std::map<std::array<long, 2>, std::size_t> start_of;
+      YE::Operators::Angles                      angles;
+      for (auto &group : m2l_groups)
+        {
+          const long z = std::lround(group.tau[2]);
+          const long r = std::lround(group.tau[0] * group.tau[0] +
+                                     group.tau[1] * group.tau[1]);
+          const auto [entry, inserted] =
+            start_of.try_emplace({{z, r}}, m2l_rotations.size());
+          if (inserted)
+            {
+              m2l_rotations.resize(m2l_rotations.size() + size);
+              rotations->angles(-group.tau, angles);
+              rotations->rotation_blocks(angles,
+                                         &m2l_rotations[entry->second]);
+            }
+          group.rotation = entry->second;
+        }
+    }
 }
 
 
@@ -947,30 +976,287 @@ LaplaceFMM::particle_to_particle_multiple(const unsigned int a,
 
 
 
+namespace
+{
+  /**
+   * X[a * B + j] = source[j][a], a < n, for the B lanes of a batch: the
+   * coefficients of each expansion, contiguous, become the rows of the
+   * batch, by transposes of 4 x 4 blocks where AVX2 is available.
+   */
+  template <unsigned int B>
+  void
+  gather_lanes(const double *const *source, const unsigned int n, double *X)
+  {
+    unsigned int a = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+    for (; a + 4 <= n; a += 4)
+      for (unsigned int j = 0; j < B; j += 4)
+        {
+          const __m256d r0 = _mm256_loadu_pd(source[j] + a);
+          const __m256d r1 = _mm256_loadu_pd(source[j + 1] + a);
+          const __m256d r2 = _mm256_loadu_pd(source[j + 2] + a);
+          const __m256d r3 = _mm256_loadu_pd(source[j + 3] + a);
+          const __m256d t0 = _mm256_unpacklo_pd(r0, r1);
+          const __m256d t1 = _mm256_unpackhi_pd(r0, r1);
+          const __m256d t2 = _mm256_unpacklo_pd(r2, r3);
+          const __m256d t3 = _mm256_unpackhi_pd(r2, r3);
+          _mm256_storeu_pd(X + a * B + j, _mm256_permute2f128_pd(t0, t2, 0x20));
+          _mm256_storeu_pd(X + (a + 1) * B + j,
+                           _mm256_permute2f128_pd(t1, t3, 0x20));
+          _mm256_storeu_pd(X + (a + 2) * B + j,
+                           _mm256_permute2f128_pd(t0, t2, 0x31));
+          _mm256_storeu_pd(X + (a + 3) * B + j,
+                           _mm256_permute2f128_pd(t1, t3, 0x31));
+        }
+#endif
+    for (; a < n; ++a)
+      for (unsigned int j = 0; j < B; ++j)
+        X[a * B + j] = source[j][a];
+  }
+
+  /**
+   * target[j][a] += Y[a * B + j], a < n, for the first count lanes, one
+   * lane after the other, so that lanes may share a target.
+   */
+  template <unsigned int B>
+  void
+  scatter_lanes(const double      *Y,
+                const unsigned int n,
+                const unsigned int count,
+                double *const     *target)
+  {
+    unsigned int a = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+    for (; a + 4 <= n; a += 4)
+      for (unsigned int j = 0; j < count; j += 4)
+        {
+          const __m256d r0 = _mm256_loadu_pd(Y + a * B + j);
+          const __m256d r1 = _mm256_loadu_pd(Y + (a + 1) * B + j);
+          const __m256d r2 = _mm256_loadu_pd(Y + (a + 2) * B + j);
+          const __m256d r3 = _mm256_loadu_pd(Y + (a + 3) * B + j);
+          const __m256d t0 = _mm256_unpacklo_pd(r0, r1);
+          const __m256d t1 = _mm256_unpackhi_pd(r0, r1);
+          const __m256d t2 = _mm256_unpacklo_pd(r2, r3);
+          const __m256d t3 = _mm256_unpackhi_pd(r2, r3);
+          const __m256d lane[4] = {_mm256_permute2f128_pd(t0, t2, 0x20),
+                                   _mm256_permute2f128_pd(t1, t3, 0x20),
+                                   _mm256_permute2f128_pd(t0, t2, 0x31),
+                                   _mm256_permute2f128_pd(t1, t3, 0x31)};
+          for (unsigned int l = 0; l < 4 && j + l < count; ++l)
+            {
+              double *t = target[j + l] + a;
+              _mm256_storeu_pd(t, _mm256_add_pd(_mm256_loadu_pd(t), lane[l]));
+            }
+        }
+#endif
+    for (; a < n; ++a)
+      for (unsigned int j = 0; j < count; ++j)
+        target[j][a] += Y[a * B + j];
+  }
+} // namespace
+
+
+
 void
-LaplaceFMM::far_field_laplace_multiple(const unsigned int         k,
-                                       const std::vector<double> &q,
-                                       std::vector<double>       &u) const
+LaplaceFMM::real_multipoles(LE::complex *M, const unsigned int k) const
+{
+  const unsigned int  p       = data.order;
+  const unsigned int  nc      = LE::n_coefficients(p);
+  const unsigned int  nr      = YE::n_coefficients(p);
+  const std::size_t   n_boxes = boxes.size();
+  std::vector<double> real(nr);
+  for (unsigned int s = 0; s < k; ++s)
+    for (std::size_t b = 0; b < n_boxes; ++b)
+      {
+        LE::complex *const Mb      = M + (s * n_boxes + b) * nc;
+        const double       inverse = 1. / boxes[b].half_side;
+        double             scale   = 1.;
+        for (unsigned int n = 0; n <= p; ++n, scale *= inverse)
+          {
+            const unsigned int c   = LE::index(n, 0);
+            real[YE::index(n, 0)] = scale * real_outgoing[c] * Mb[c].real();
+            for (unsigned int m = 1; m <= n; ++m)
+              {
+                const double f             = scale * real_outgoing[c + m];
+                real[YE::index(n, m)]       = f * Mb[c + m].real();
+                real[YE::index(n, -int(m))] = -f * Mb[c + m].imag();
+              }
+          }
+        std::copy(real.begin(), real.end(), reinterpret_cast<double *>(Mb));
+      }
+}
+
+
+
+void
+LaplaceFMM::complex_locals(LE::complex *L, const unsigned int k) const
+{
+  const unsigned int  p       = data.order;
+  const unsigned int  nc      = LE::n_coefficients(p);
+  const unsigned int  nr      = YE::n_coefficients(p);
+  const std::size_t   n_boxes = boxes.size();
+  std::vector<double> real(nr);
+  for (unsigned int s = 0; s < k; ++s)
+    for (const unsigned int b : my_boxes)
+      {
+        LE::complex *const Lb = L + (s * n_boxes + b) * nc;
+        const double      *Lr = reinterpret_cast<const double *>(Lb);
+        std::copy(Lr, Lr + nr, real.begin());
+        const double inverse = 1. / boxes[b].half_side;
+        double       scale   = inverse;
+        for (unsigned int n = 0; n <= p; ++n, scale *= inverse)
+          {
+            const unsigned int c = LE::index(n, 0);
+            Lb[c] = scale * real_local[c] * real[YE::index(n, 0)];
+            for (unsigned int m = 1; m <= n; ++m)
+              Lb[c + m] = scale * real_local[c + m] *
+                          LE::complex(real[YE::index(n, m)],
+                                      real[YE::index(n, -int(m))]);
+          }
+      }
+}
+
+
+
+void
+LaplaceFMM::multipole_to_local(const double      *M,
+                               double            *L,
+                               const unsigned int k) const
+{
+  // The pairs of a group convert from the unit u of the group, the half
+  // side of the smaller box, to those of their boxes: the coefficients of
+  // degree n of the source are scaled by (h_B / u)^n on the way in, those
+  // of degree n of the target by (h_A / u)^(n + 1) on the way out; a power
+  // of two, one for boxes of the same size.
+  constexpr unsigned int B       = 16;
+  const unsigned int     p       = data.order;
+  const std::size_t      stride  = 2 * LE::n_coefficients(p);
+  const unsigned int     nr      = YE::n_coefficients(p);
+  const std::size_t      n_boxes = boxes.size();
+  std::vector<double>    X(nr * B), Y(nr * B), zeros(nr, 0.);
+  alignas(32) double     ratio[B], power[B];
+  const double          *source[B];
+  double                *target[B];
+  YE::Operators::Angles  angles;
+  for (const auto &group : m2l_groups)
+    {
+      rotations->angles(-group.tau, angles);
+      const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
+      const double *R  = &m2l_rotations[group.rotation];
+      const unsigned int total = (group.end - group.begin) * k;
+      for (unsigned int first = 0; first < total; first += B)
+        {
+          const unsigned int count  = std::min(B, total - first);
+          bool               scaled = false;
+          for (unsigned int j = 0; j < count; ++j)
+            {
+              const unsigned int pair = m2l_order[group.begin + (first + j) / k];
+              const unsigned int s    = (first + j) % k;
+              const unsigned int b    = my_m2l_pairs[pair].second;
+              source[j] = M + (s * n_boxes + b) * stride;
+              target[j] = L + (s * n_boxes + my_m2l_pairs[pair].first) * stride;
+              ratio[j]  = boxes[b].half_side / m2l_unit[pair];
+              scaled    = scaled || ratio[j] != 1.;
+            }
+          for (unsigned int j = count; j < B; ++j)
+            {
+              source[j] = zeros.data();
+              ratio[j]  = 1.;
+            }
+          gather_lanes<B>(source, nr, X.data());
+          if (scaled)
+            {
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                power[j] = 1.;
+              for (unsigned int n = 1; n <= p; ++n)
+                {
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    power[j] *= ratio[j];
+                  for (unsigned int a = n * n; a < (n + 1) * (n + 1); ++a)
+#pragma omp simd
+                    for (unsigned int j = 0; j < B; ++j)
+                      X[a * B + j] *= power[j];
+                }
+            }
+          rotations->translate_blocks<B>(angles, R, Tz, X.data(), Y.data());
+          scaled = false;
+          for (unsigned int j = 0; j < count; ++j)
+            {
+              const unsigned int pair = m2l_order[group.begin + (first + j) / k];
+              ratio[j] =
+                boxes[my_m2l_pairs[pair].first].half_side / m2l_unit[pair];
+              scaled = scaled || ratio[j] != 1.;
+            }
+          for (unsigned int j = count; j < B; ++j)
+            ratio[j] = 1.;
+          if (scaled)
+            {
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                power[j] = 1.;
+              for (unsigned int n = 0; n <= p; ++n)
+                {
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    power[j] *= ratio[j];
+                  for (unsigned int a = n * n; a < (n + 1) * (n + 1); ++a)
+#pragma omp simd
+                    for (unsigned int j = 0; j < B; ++j)
+                      Y[a * B + j] *= power[j];
+                }
+            }
+          scatter_lanes<B>(Y.data(), nr, count, target);
+        }
+    }
+}
+
+
+
+void
+LaplaceFMM::far_field_laplace_multiple(
+  const unsigned int                       k,
+  const std::vector<double>               &q,
+  std::vector<double>                     &u,
+  const std::vector<dealii::Tensor<1, 3>> *dipoles,
+  std::vector<double>                     *gradient) const
 {
   const unsigned int p        = data.order;
   const unsigned int nc       = LE::n_coefficients(p);
   const unsigned int n        = points.size();
   const unsigned int n_boxes  = boxes.size();
-  std::vector<LE::complex> M(k * n_boxes * nc, 0.), L(k * n_boxes * nc, 0.);
-  LE::Workspace            w(p);
+  std::vector<LE::complex> M(k * n_boxes * nc, 0.);
+  // The local expansions only on the boxes of this process: zero pages
+  // from calloc, which the boxes of the other processes never touch, so
+  // that k sets cost the memory of about one.
+  const std::unique_ptr<LE::complex[], void (*)(void *)> L_buffer(
+    static_cast<LE::complex *>(
+      std::calloc(std::size_t(k) * n_boxes * nc, sizeof(LE::complex))),
+    std::free);
+  AssertThrow(L_buffer != nullptr, ExcMessage("Out of memory."));
+  LE::complex *const L = L_buffer.get();
+  LE::Workspace      w(p);
 
   auto start = std::chrono::steady_clock::now();
   for (unsigned int s = 0; s < k; ++s)
     {
       LE::complex *const Ms = &M[s * n_boxes * nc];
+      const bool         dipole_set = dipoles != nullptr && s == 1;
       for (const unsigned int leaf : my_leaves)
         {
           const Box &box = boxes[leaf];
           for (unsigned int i = box.begin; i < box.end; ++i)
-            LE::add_charge(w,
-                           q[s * n + i],
-                           sorted_points[i] - box.center,
-                           &Ms[leaf * nc]);
+            if (dipole_set)
+              LE::add_dipole(w,
+                             (*dipoles)[i],
+                             sorted_points[i] - box.center,
+                             &Ms[leaf * nc]);
+            else
+              LE::add_charge(w,
+                             q[s * n + i],
+                             sorted_points[i] - box.center,
+                             &Ms[leaf * nc]);
         }
       for (auto b = my_boxes.rbegin(); b != my_boxes.rend(); ++b)
         if (boxes[*b].parent != invalid)
@@ -989,77 +1275,13 @@ LaplaceFMM::far_field_laplace_multiple(const unsigned int         k,
     sum_over_processes(M, mpi_communicator);
   phase_time[1] += seconds_since(start);
 
-  // M2L as in far_field_laplace(), the rotation of a group shared by all
-  // sets.
+  // M2L in the real coefficients, all sets together.
   start = std::chrono::steady_clock::now();
-  {
-    constexpr unsigned int B  = 8;
-    const unsigned int     nr = YE::n_coefficients(p);
-    std::vector<double>    X(nr * B), Y(nr * B), work(nr * B);
-    YE::Operators::Angles  angles;
-    for (const auto &group : m2l_groups)
-      {
-        rotations->angles(-group.tau, angles);
-        const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
-        for (unsigned int s = 0; s < k; ++s)
-          {
-            const LE::complex *Ms = &M[s * n_boxes * nc];
-            LE::complex       *Ls = &L[s * n_boxes * nc];
-            for (unsigned int first = group.begin; first < group.end;
-                 first += B)
-              {
-                const unsigned int count = std::min(B, group.end - first);
-                for (unsigned int j = 0; j < count; ++j)
-                  {
-                    const unsigned int pair = m2l_order[first + j];
-                    const LE::complex *Mp =
-                      &Ms[my_m2l_pairs[pair].second * nc];
-                    const double inverse_unit = 1. / m2l_unit[pair];
-                    double       scale        = 1.;
-                    for (unsigned int nn = 0; nn <= p;
-                         ++nn, scale *= inverse_unit)
-                      {
-                        const unsigned int c = LE::index(nn, 0);
-                        X[YE::index(nn, 0) * B + j] =
-                          scale * real_outgoing[c] * Mp[c].real();
-                        for (unsigned int m = 1; m <= nn; ++m)
-                          {
-                            const double f = scale * real_outgoing[c + m];
-                            X[YE::index(nn, m) * B + j] = f * Mp[c + m].real();
-                            X[YE::index(nn, -int(m)) * B + j] =
-                              -f * Mp[c + m].imag();
-                          }
-                      }
-                  }
-                for (unsigned int j = count; j < B; ++j)
-                  for (unsigned int a = 0; a < nr; ++a)
-                    X[a * B + j] = 0.;
-                std::fill(Y.begin(), Y.end(), 0.);
-                rotations->translate<B>(
-                  angles, Tz, X.data(), Y.data(), work.data());
-                for (unsigned int j = 0; j < count; ++j)
-                  {
-                    const unsigned int pair = m2l_order[first + j];
-                    LE::complex *Lp = &Ls[my_m2l_pairs[pair].first * nc];
-                    const double inverse_unit = 1. / m2l_unit[pair];
-                    double       scale        = inverse_unit;
-                    for (unsigned int kk = 0; kk <= p;
-                         ++kk, scale *= inverse_unit)
-                      {
-                        const unsigned int c = LE::index(kk, 0);
-                        Lp[c] +=
-                          scale * real_local[c] * Y[YE::index(kk, 0) * B + j];
-                        for (unsigned int l = 1; l <= kk; ++l)
-                          Lp[c + l] +=
-                            scale * real_local[c + l] *
-                            LE::complex(Y[YE::index(kk, l) * B + j],
-                                        Y[YE::index(kk, -int(l)) * B + j]);
-                      }
-                  }
-              }
-          }
-      }
-  }
+  real_multipoles(M.data(), k);
+  multipole_to_local(reinterpret_cast<const double *>(M.data()),
+                     reinterpret_cast<double *>(L),
+                     k);
+  complex_locals(L, k);
   phase_time[2] += seconds_since(start);
 
   start = std::chrono::steady_clock::now();
@@ -1079,9 +1301,21 @@ LaplaceFMM::far_field_laplace_multiple(const unsigned int         k,
         {
           const Box &box = boxes[leaf];
           for (unsigned int i = box.begin; i < box.end; ++i)
-            u[s * n + i] += LE::evaluate_local(w,
-                                               &Ls[leaf * nc],
-                                               sorted_points[i] - box.center);
+            {
+              u[s * n + i] += LE::evaluate_local(w,
+                                                 &Ls[leaf * nc],
+                                                 sorted_points[i] -
+                                                   box.center);
+              if (gradient != nullptr && s == 0)
+                {
+                  const Tensor<1, 3> g =
+                    LE::evaluate_local_gradient(w,
+                                                &Ls[leaf * nc],
+                                                sorted_points[i] - box.center);
+                  for (unsigned int c = 0; c < 3; ++c)
+                    (*gradient)[c * n + i] += g[c];
+                }
+            }
         }
     }
   phase_time[3] += seconds_since(start);
@@ -1141,6 +1375,218 @@ LaplaceFMM::evaluate_multiple(
   potentials.resize(k);
   for (unsigned int s = 0; s < k; ++s)
     potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+  phase_time[5] += seconds_since(start);
+  ++n_evaluations;
+  if (n_evaluations == 1 && n_mpi_processes > 1)
+    {
+      std::array<double, 6> times;
+      for (unsigned int i = 0; i < times.size(); ++i)
+        times[i] = phase_time[i] - times_before[i];
+      rebalance(times);
+    }
+}
+
+
+
+void
+LaplaceFMM::particle_to_particle_mixed(const unsigned int a,
+                                       const unsigned int b,
+                                       const double      *q,
+                                       const double      *d,
+                                       double            *u,
+                                       double            *g) const
+{
+  const Box         &A = boxes[a];
+  const Box         &B = boxes[b];
+  const double      *x = sorted_coordinates[0].data();
+  const double      *y = sorted_coordinates[1].data();
+  const double      *z = sorted_coordinates[2].data();
+  const unsigned int n = points.size();
+  const double *q0 = q, *c1 = q + 2 * n, *c2 = q + 3 * n, *c3 = q + 4 * n;
+  const double *dx = d, *dy = d + n, *dz = d + 2 * n;
+  for (unsigned int i = A.begin; i < A.end; ++i)
+    {
+      const double xi = x[i], yi = y[i], zi = z[i];
+      double       s0 = 0, sx = 0, sy = 0, sz = 0, sd = 0, s1 = 0, s2 = 0,
+             s3 = 0;
+      unsigned int j = B.begin;
+#if defined(__AVX2__) && defined(__FMA__)
+      const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
+                    vz = _mm256_set1_pd(zi);
+      __m256d acc0 = _mm256_setzero_pd(), acc_x = _mm256_setzero_pd(),
+              acc_y = _mm256_setzero_pd(), acc_z = _mm256_setzero_pd(),
+              acc_d = _mm256_setzero_pd(), acc1 = _mm256_setzero_pd(),
+              acc2 = _mm256_setzero_pd(), acc3 = _mm256_setzero_pd();
+      // 1 / r and (x - y) / r^3 once for all: the potential and the
+      // gradient of q, the potential of the dipoles, those of c.
+      const auto interact = [&](const __m256d px,
+                                const __m256d py,
+                                const __m256d pz,
+                                const __m256d qj,
+                                const __m256d dxj,
+                                const __m256d dyj,
+                                const __m256d dzj,
+                                const __m256d cj1,
+                                const __m256d cj2,
+                                const __m256d cj3) {
+        const __m256d rx = _mm256_sub_pd(vx, px);
+        const __m256d ry = _mm256_sub_pd(vy, py);
+        const __m256d rz = _mm256_sub_pd(vz, pz);
+        const __m256d r2 = _mm256_fmadd_pd(
+          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d inverse  = inverse_sqrt(r2);
+        const __m256d inverse3 =
+          _mm256_mul_pd(inverse, _mm256_mul_pd(inverse, inverse));
+        acc0 = _mm256_fmadd_pd(qj, inverse, acc0);
+        const __m256d f = _mm256_mul_pd(qj, inverse3);
+        acc_x = _mm256_fnmadd_pd(f, rx, acc_x);
+        acc_y = _mm256_fnmadd_pd(f, ry, acc_y);
+        acc_z = _mm256_fnmadd_pd(f, rz, acc_z);
+        const __m256d dot = _mm256_fmadd_pd(
+          dxj, rx, _mm256_fmadd_pd(dyj, ry, _mm256_mul_pd(dzj, rz)));
+        acc_d = _mm256_fmadd_pd(dot, inverse3, acc_d);
+        acc1  = _mm256_fmadd_pd(cj1, inverse, acc1);
+        acc2  = _mm256_fmadd_pd(cj2, inverse, acc2);
+        acc3  = _mm256_fmadd_pd(cj3, inverse, acc3);
+      };
+      for (; j + 4 <= B.end; j += 4)
+        interact(_mm256_loadu_pd(x + j),
+                 _mm256_loadu_pd(y + j),
+                 _mm256_loadu_pd(z + j),
+                 _mm256_loadu_pd(q0 + j),
+                 _mm256_loadu_pd(dx + j),
+                 _mm256_loadu_pd(dy + j),
+                 _mm256_loadu_pd(dz + j),
+                 _mm256_loadu_pd(c1 + j),
+                 _mm256_loadu_pd(c2 + j),
+                 _mm256_loadu_pd(c3 + j));
+      if (j < B.end)
+        {
+          const __m256i mask =
+            _mm256_cmpgt_epi64(_mm256_set1_epi64x(B.end - j),
+                               _mm256_set_epi64x(3, 2, 1, 0));
+          interact(_mm256_maskload_pd(x + j, mask),
+                   _mm256_maskload_pd(y + j, mask),
+                   _mm256_maskload_pd(z + j, mask),
+                   _mm256_maskload_pd(q0 + j, mask),
+                   _mm256_maskload_pd(dx + j, mask),
+                   _mm256_maskload_pd(dy + j, mask),
+                   _mm256_maskload_pd(dz + j, mask),
+                   _mm256_maskload_pd(c1 + j, mask),
+                   _mm256_maskload_pd(c2 + j, mask),
+                   _mm256_maskload_pd(c3 + j, mask));
+          j = B.end;
+        }
+      s0 = horizontal_sum(acc0);
+      sx = horizontal_sum(acc_x);
+      sy = horizontal_sum(acc_y);
+      sz = horizontal_sum(acc_z);
+      sd = horizontal_sum(acc_d);
+      s1 = horizontal_sum(acc1);
+      s2 = horizontal_sum(acc2);
+      s3 = horizontal_sum(acc3);
+#endif
+      for (; j < B.end; ++j)
+        {
+          const double rx = xi - x[j], ry = yi - y[j], rz = zi - z[j];
+          const double r2       = rx * rx + ry * ry + rz * rz;
+          const bool   distinct = r2 > 0.;
+          const double inverse =
+            (distinct ? 1. : 0.) / std::sqrt(distinct ? r2 : 1.);
+          const double inverse3 = inverse * inverse * inverse;
+          s0 += q0[j] * inverse;
+          sx -= q0[j] * inverse3 * rx;
+          sy -= q0[j] * inverse3 * ry;
+          sz -= q0[j] * inverse3 * rz;
+          sd += (dx[j] * rx + dy[j] * ry + dz[j] * rz) * inverse3;
+          s1 += c1[j] * inverse;
+          s2 += c2[j] * inverse;
+          s3 += c3[j] * inverse;
+        }
+      u[i] += s0;
+      u[n + i] += sd;
+      u[2 * n + i] += s1;
+      u[3 * n + i] += s2;
+      u[4 * n + i] += s3;
+      g[i] += sx;
+      g[n + i] += sy;
+      g[2 * n + i] += sz;
+    }
+}
+
+
+
+std::size_t
+LaplaceFMM::expansion_bytes(const unsigned int sets) const
+{
+  return std::size_t(sets) * boxes.size() * LE::n_coefficients(data.order) *
+         sizeof(LE::complex);
+}
+
+
+
+void
+LaplaceFMM::evaluate_mixed(const std::vector<double>                &q,
+                           const std::vector<Tensor<1, 3>>          &d,
+                           const std::array<std::vector<double>, 3> &c,
+                           std::vector<double>                      &potentials_q,
+                           std::vector<Tensor<1, 3>>                &gradients_q,
+                           std::vector<double>                      &potentials_d,
+                           std::array<std::vector<double>, 3> &potentials_c) const
+{
+  AssertThrow(data.kappa == 0.,
+              ExcMessage("The mixed sums are implemented for the Laplace "
+                         "kernel."));
+  const unsigned int n = points.size();
+  AssertThrow(q.size() == n && d.size() == n && c[0].size() == n &&
+                c[1].size() == n && c[2].size() == n,
+              ExcMessage("Sources of the wrong size."));
+  // Five sets in the sorted numbering: q, the dipole set (charges unused),
+  // and c; the dipoles as tensors and by component.
+  std::vector<double>       sources(5 * n, 0.), d_components(3 * n);
+  std::vector<Tensor<1, 3>> d_sorted(n);
+  for (unsigned int i = 0; i < n; ++i)
+    {
+      const unsigned int k = permutation[i];
+      sources[i]           = q[k];
+      for (unsigned int s = 0; s < 3; ++s)
+        sources[(2 + s) * n + i] = c[s][k];
+      d_sorted[i] = d[k];
+      for (unsigned int s = 0; s < 3; ++s)
+        d_components[s * n + i] = d[k][s];
+    }
+  const std::array<double, 6> times_before = phase_time;
+  std::vector<double>         u(5 * n, 0.), g(3 * n, 0.);
+  far_field_laplace_multiple(5, sources, u, &d_sorted, &g);
+
+  auto start = std::chrono::steady_clock::now();
+  for (const auto &[a, b] : my_p2p_pairs)
+    particle_to_particle_mixed(
+      a, b, sources.data(), d_components.data(), u.data(), g.data());
+  phase_time[4] += seconds_since(start);
+
+  // One sum over the processes: the five potentials and the gradient.
+  start = std::chrono::steady_clock::now();
+  std::vector<double> all(8 * n, 0.);
+  for (unsigned int i = 0; i < n; ++i)
+    {
+      const unsigned int k = permutation[i];
+      for (unsigned int s = 0; s < 5; ++s)
+        all[s * n + k] = u[s * n + i];
+      for (unsigned int s = 0; s < 3; ++s)
+        all[(5 + s) * n + k] = g[s * n + i];
+    }
+  if (n_mpi_processes > 1)
+    sum_over_processes(all, mpi_communicator);
+  potentials_q.assign(all.begin(), all.begin() + n);
+  potentials_d.assign(all.begin() + n, all.begin() + 2 * n);
+  for (unsigned int s = 0; s < 3; ++s)
+    potentials_c[s].assign(all.begin() + (2 + s) * n,
+                           all.begin() + (3 + s) * n);
+  gradients_q.resize(n);
+  for (unsigned int k = 0; k < n; ++k)
+    for (unsigned int s = 0; s < 3; ++s)
+      gradients_q[k][s] = all[(5 + s) * n + k];
   phase_time[5] += seconds_since(start);
   ++n_evaluations;
   if (n_evaluations == 1 && n_mpi_processes > 1)
@@ -1325,72 +1771,14 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
   phase_time[1] += seconds_since(start);
 
   // M2L by groups of pairs with the same scaled offset, by rotation onto the
-  // z-axis in the real harmonics (see YukawaExpansions::Operators): the
-  // rotation of the group and the translation along z of its |tau|, shared
-  // by all pairs of the group whatever the size of their boxes, applied to
-  // batches of B pairs. A pair converts its multipole to real coefficients
-  // scaled by u^{-n} on the way in, and the result back, scaled by
-  // u^{-(k+1)}, on the way out.
+  // z-axis in the real harmonics (see YukawaExpansions::Operators), on the
+  // real coefficients scaled by the sizes of the boxes.
   start = std::chrono::steady_clock::now();
-  {
-    constexpr unsigned int B  = 8;
-    const unsigned int     nr = YE::n_coefficients(p);
-    std::vector<double>    X(nr * B), Y(nr * B), work(nr * B);
-    YE::Operators::Angles  angles;
-    for (const auto &group : m2l_groups)
-      {
-        // v = c_B - c_A = -tau u
-        rotations->angles(-group.tau, angles);
-        const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
-        for (unsigned int first = group.begin; first < group.end; first += B)
-          {
-            const unsigned int count = std::min(B, group.end - first);
-            for (unsigned int j = 0; j < count; ++j)
-              {
-                const unsigned int pair = m2l_order[first + j];
-                const LE::complex *M =
-                  &multipoles[my_m2l_pairs[pair].second * nc];
-                const double inverse_unit = 1. / m2l_unit[pair];
-                double       scale        = 1.;
-                for (unsigned int n = 0; n <= p; ++n, scale *= inverse_unit)
-                  {
-                    const unsigned int c = LE::index(n, 0);
-                    X[YE::index(n, 0) * B + j] =
-                      scale * real_outgoing[c] * M[c].real();
-                    for (unsigned int m = 1; m <= n; ++m)
-                      {
-                        const double f = scale * real_outgoing[c + m];
-                        X[YE::index(n, m) * B + j]       = f * M[c + m].real();
-                        X[YE::index(n, -int(m)) * B + j] = -f * M[c + m].imag();
-                      }
-                  }
-              }
-            for (unsigned int j = count; j < B; ++j)
-              for (unsigned int a = 0; a < nr; ++a)
-                X[a * B + j] = 0.;
-            std::fill(Y.begin(), Y.end(), 0.);
-            rotations->translate<B>(
-              angles, Tz, X.data(), Y.data(), work.data());
-            for (unsigned int j = 0; j < count; ++j)
-              {
-                const unsigned int pair = m2l_order[first + j];
-                LE::complex       *L = &locals[my_m2l_pairs[pair].first * nc];
-                const double       inverse_unit = 1. / m2l_unit[pair];
-                double             scale        = inverse_unit;
-                for (unsigned int k = 0; k <= p; ++k, scale *= inverse_unit)
-                  {
-                    const unsigned int c = LE::index(k, 0);
-                    L[c] += scale * real_local[c] * Y[YE::index(k, 0) * B + j];
-                    for (unsigned int l = 1; l <= k; ++l)
-                      L[c + l] +=
-                        scale * real_local[c + l] *
-                        LE::complex(Y[YE::index(k, l) * B + j],
-                                    Y[YE::index(k, -int(l)) * B + j]);
-                  }
-              }
-          }
-      }
-  }
+  real_multipoles(multipoles.data(), 1);
+  multipole_to_local(reinterpret_cast<const double *>(multipoles.data()),
+                     reinterpret_cast<double *>(locals.data()),
+                     1);
+  complex_locals(locals.data(), 1);
   phase_time[2] += seconds_since(start);
 
   // Downward pass and evaluation at the own points.
@@ -1665,7 +2053,10 @@ LaplaceFMM::print_statistics(std::ostream &out) const
           << 100. * same_level / std::max<std::size_t>(1, m2l_pairs.size())
           << "% within a level, " << offsets.size()
           << " distinct offsets, at most " << largest_groups
-          << " groups on a process), "
+          << " groups on a process, "
+          << m2l_rotations.size() /
+               std::max<std::size_t>(1, rotations->rotation_size())
+          << " rotations), "
           << p2p_pairs.size() << " P2P pairs with " << n_direct
           << " direct interactions ("
           << double(n_direct) / std::max<std::size_t>(1, points.size())

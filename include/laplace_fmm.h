@@ -125,6 +125,24 @@ public:
   evaluate_multiple(const std::vector<std::vector<double>> &charges,
                     std::vector<std::vector<double>>       &potentials) const;
 
+  /**
+   * In one pass, the sums of the mixed Galerkin problem, Laplace kernel:
+   * the potentials and their gradients of the charges q, the potentials of
+   * the dipoles d, and the potentials of three more sets of charges c, all
+   * indexed like the points; the same as evaluate_with_gradient(q),
+   * evaluate({}, d) and evaluate_multiple(c) with the expansions of this
+   * object. The tree passes, the rotations of the translations, the kernel
+   * of the direct interactions and the sums over the processes are shared.
+   */
+  void
+  evaluate_mixed(const std::vector<double>               &q,
+                 const std::vector<dealii::Tensor<1, 3>> &d,
+                 const std::array<std::vector<double>, 3> &c,
+                 std::vector<double>                     &potentials_q,
+                 std::vector<dealii::Tensor<1, 3>>       &gradients_q,
+                 std::vector<double>                     &potentials_d,
+                 std::array<std::vector<double>, 3>      &potentials_c) const;
+
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
   evaluate_directly(const std::vector<double>               &charges,
@@ -140,6 +158,11 @@ public:
   {
     return points.size();
   }
+
+  /// The memory of the multipole expansions of all boxes for the given
+  /// number of sets of sources, in bytes.
+  std::size_t
+  expansion_bytes(const unsigned int sets) const;
 
 private:
   static constexpr unsigned int invalid = static_cast<unsigned int>(-1);
@@ -213,11 +236,29 @@ private:
                                 double            *u) const;
 
   /// The far field of k sets of charges (k arrays of the points), Laplace
-  /// kernel, potentials added to u (k arrays).
+  /// kernel, potentials added to u (k arrays); with dipoles, the set 1 is
+  /// that of these dipoles (its charges are not used), and with gradient
+  /// the gradient of the potential of the set 0 is added to it (three
+  /// arrays).
   void
-  far_field_laplace_multiple(const unsigned int         k,
-                             const std::vector<double> &q,
-                             std::vector<double>       &u) const;
+  far_field_laplace_multiple(
+    const unsigned int                       k,
+    const std::vector<double>               &q,
+    std::vector<double>                     &u,
+    const std::vector<dealii::Tensor<1, 3>> *dipoles  = nullptr,
+    std::vector<double>                     *gradient = nullptr) const;
+
+  /// The direct interactions of evaluate_mixed(): q holds five arrays of
+  /// the points, the charges with the gradient, the dipole set (unused),
+  /// and three more sets of charges; d the three components of the dipoles;
+  /// u five arrays of potentials and g three of the gradient of the first.
+  void
+  particle_to_particle_mixed(const unsigned int a,
+                             const unsigned int b,
+                             const double      *q,
+                             const double      *d,
+                             double            *u,
+                             double            *g) const;
 
   /// Direct interaction of the charges of the source leaf b with the points
   /// of the target leaf a, potentials u and gradients g (three arrays, one
@@ -231,6 +272,29 @@ private:
 
   /// The far field through the expansions, from the multipoles of the own
   /// leaves to the potentials u at the own points, for each kernel, and for
+  /// The multipoles of all boxes, k sets of n_boxes, converted in place
+  /// to the real coefficients of the M2L translations, YukawaExpansions'
+  /// (n + 1)^2 doubles at the start of each expansion, coefficient (n, m)
+  /// scaled by h^{-n} with h the half side of the box.
+  void
+  real_multipoles(LaplaceExpansions::complex *M, const unsigned int k) const;
+
+  /// The local expansions of the own boxes, k sets of n_boxes, accumulated
+  /// by the M2L translations in the real coefficients, converted in place
+  /// back to the complex ones, coefficient (n, m) scaled by h^{-(n+1)}.
+  void
+  complex_locals(LaplaceExpansions::complex *L, const unsigned int k) const;
+
+  /// The M2L translations of the own pairs, by groups of the same scaled
+  /// offset: the rotation and the translation along z of a group are shared
+  /// by its pairs and by the k sets of expansions, which fill the batches
+  /// together. On the expansions of real_multipoles(), adding to the real
+  /// coefficients of complex_locals() (Laplace kernel).
+  void
+  multipole_to_local(const double      *M,
+                     double            *L,
+                     const unsigned int k) const;
+
   /// the Laplace kernel optionally their gradients g (three arrays of the
   /// size of u, one per component); the times of the phases are added to
   /// phase_time[0..3].
@@ -298,6 +362,9 @@ private:
   {
     dealii::Tensor<1, 3> tau;
     unsigned int         begin, end; // range in m2l_order
+    /// Start in m2l_rotations of the blocks of the rotation about y of the
+    /// polar angle of -tau (Laplace kernel).
+    std::size_t          rotation = 0;
   };
   mutable std::vector<M2LGroup>     m2l_groups;
   mutable std::vector<unsigned int> m2l_order;
@@ -333,6 +400,10 @@ private:
    * different ones.
    */
   mutable std::vector<double>       yukawa_tz;
+  /// The rotations about y of the polar angles of the groups
+  /// (YukawaExpansions::Operators::rotation_blocks()), shared by the
+  /// groups of the same polar angle (Laplace kernel).
+  mutable std::vector<double>       m2l_rotations;
   mutable std::vector<unsigned int> m2l_tz;
   /// Pairs of boxes dropped because the screening makes them negligible.
   unsigned long n_screened_out = 0;

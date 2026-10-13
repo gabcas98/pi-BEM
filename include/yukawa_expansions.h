@@ -654,10 +654,17 @@ namespace YukawaExpansions
               for (unsigned int a = n * n; a < (n + 1) * (n + 1); ++a)
                 D[b * nc + a] += rule.weights[q] * Y[b] * Yp[a];
         }
+      swap_start.assign(1, 0);
       for (unsigned int b = 0; b < nc; ++b)
-        for (unsigned int a = 0; a < nc; ++a)
-          if (std::abs(D[b * nc + a]) > 1e-13)
-            swap.push_back({b, a, D[b * nc + a]});
+        {
+          for (unsigned int a = 0; a < nc; ++a)
+            if (std::abs(D[b * nc + a]) > 1e-13)
+              {
+                swap_column.push_back(a);
+                swap_value.push_back(D[b * nc + a]);
+              }
+          swap_start.push_back(swap_column.size());
+        }
 
       axis_factor.resize(2 * p + 1);
       for (unsigned int l = 0; l <= 2 * p; ++l)
@@ -670,6 +677,18 @@ namespace YukawaExpansions
       block_start[0] = 0;
       for (unsigned int m = 0; m <= p; ++m)
         block_start[m + 1] = block_start[m] + (p + 1 - m) * (p + 1 - m);
+
+      rotation_start.resize(p + 2);
+      rotation_start[0] = 0;
+      for (unsigned int n = 0; n <= p; ++n)
+        rotation_start[n + 1] =
+          rotation_start[n] + (2 * n + 1) * (2 * n + 1);
+      swap_blocks.resize(rotation_start[p + 1]);
+      for (unsigned int n = 0; n <= p; ++n)
+        for (unsigned int b = 0; b < 2 * n + 1; ++b)
+          for (unsigned int a = 0; a < 2 * n + 1; ++a)
+            swap_blocks[rotation_start[n] + b * (2 * n + 1) + a] =
+              D[(n * n + b) * nc + n * n + a];
     }
 
     unsigned int
@@ -905,6 +924,100 @@ namespace YukawaExpansions
         Y[i] += work[i];
     }
 
+    /// The number of entries of the blocks of a rotation, the sum of
+    /// (2n + 1)^2 over the degrees.
+    unsigned int
+    rotation_size() const
+    {
+      return rotation_start[p + 1];
+    }
+
+    /**
+     * The blocks on the degrees of D(P) Z(theta) D(P), the rotation by theta
+     * about the y-axis, for the angle theta of v (the angle phi is not
+     * used), row by row (block n at the sum of (2k + 1)^2 over k < n), of
+     * rotation_size() entries. With Z(-phi), cheap, they give the rotation D(Q) of
+     * translate(), and translate_blocks() applies them as dense products;
+     * the blocks depend on the polar angle of the offset only, so that the
+     * groups of offsets of a tree share them.
+     */
+    void
+    rotation_blocks(const Angles &a, double *R) const
+    {
+      double C[(2 * maximum_rotation_order + 1) *
+               (2 * maximum_rotation_order + 1)];
+      AssertThrow(p <= maximum_rotation_order,
+                  dealii::ExcMessage("Order too high for the rotation blocks."));
+      for (unsigned int n = 0; n <= p; ++n)
+        {
+          const unsigned int s     = 2 * n + 1;
+          const unsigned int first = n * n;
+          const double      *P     = swap_blocks.data() + rotation_start[n];
+          // C = Z(theta) D(P): the rows of the orders m and -m of D(P),
+          // n + m and n - m, rotated.
+          for (unsigned int k = 0; k < s * s; ++k)
+            C[k] = P[k];
+          for (unsigned int m = 1; m <= n; ++m)
+            {
+              double      *u  = C + (n + m) * s;
+              double      *w  = C + (n - m) * s;
+              const double cm = a.cos_theta[m], sm = a.sin_theta[m];
+              for (unsigned int k = 0; k < s; ++k)
+                {
+                  const double x = u[k], y = w[k];
+                  u[k]           = cm * x - sm * y;
+                  w[k]           = sm * x + cm * y;
+                }
+            }
+          // R = D(P) C, by the rows of D(P).
+          double *block = R + rotation_start[n];
+          for (unsigned int b = 0; b < s; ++b)
+            {
+              double *row = block + b * s;
+              for (unsigned int k = 0; k < s; ++k)
+                row[k] = 0.;
+              for (unsigned int e = swap_start[first + b];
+                   e < swap_start[first + b + 1];
+                   ++e)
+                {
+                  const double  v = swap_value[e];
+                  const double *c = C + (swap_column[e] - first) * s;
+                  for (unsigned int k = 0; k < s; ++k)
+                    row[k] += v * c[k];
+                }
+            }
+        }
+    }
+
+    /**
+     * Y = D(Q)^T T_z D(Q) X for B expansions, the translation of
+     * translate() without the sum, with D(Q) = R Z(-phi): the blocks R of
+     * rotation_blocks() for theta and the angle phi of a; dense products,
+     * whose sums stay in registers. X is overwritten.
+     */
+    template <unsigned int B>
+    void
+    translate_blocks(const Angles &a,
+                     const double *R,
+                     const double *Tz,
+                     double       *X,
+                     double       *Y) const
+    {
+      rotate_z<B>(a.cos_phi.data(), a.sin_phi.data(), -1., X);
+      for (unsigned int n = 0; n <= p; ++n)
+        block_product<B, false>(R + rotation_start[n],
+                                2 * n + 1,
+                                X + n * n * B,
+                                Y + n * n * B);
+      apply_z_translation<B>(Tz, Y, X);
+      for (unsigned int n = 0; n <= p; ++n)
+        block_product<B, true>(R + rotation_start[n],
+                               2 * n + 1,
+                               X + n * n * B,
+                               Y + n * n * B);
+      rotate_z<B>(a.cos_phi.data(), a.sin_phi.data(), 1., Y);
+    }
+
     /// The dense matrix of a translation, row by row, for the translations
     /// between the levels of a tree and for tests.
     void
@@ -942,6 +1055,68 @@ namespace YukawaExpansions
       return ((m * (p + 1) + n) * (p + 1) + n2) * (2 * p + 1) + l;
     }
 
+    /// Y = A X, or with transpose Y = A^T X, for the s x s matrix A, row by
+    /// row, and B expansions: rows of Y in groups whose sums fill the
+    /// vector registers.
+    template <unsigned int B, bool transpose>
+    static void
+    block_product(const double      *A,
+                  const unsigned int s,
+                  const double      *X,
+                  double            *Y)
+    {
+      constexpr unsigned int G = B >= 16 ? 2 : 4;
+      const unsigned int     row_stride    = transpose ? 1 : s;
+      const unsigned int     column_stride = transpose ? s : 1;
+      unsigned int           r             = 0;
+      for (; r + G <= s; r += G)
+        {
+          double sums[G][B];
+          for (unsigned int g = 0; g < G; ++g)
+#pragma omp simd
+            for (unsigned int j = 0; j < B; ++j)
+              sums[g][j] = 0.;
+          for (unsigned int c = 0; c < s; ++c)
+            {
+              const double *x = X + c * B;
+              for (unsigned int g = 0; g < G; ++g)
+                {
+                  const double a =
+                    A[(r + g) * row_stride + c * column_stride];
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    sums[g][j] += a * x[j];
+                }
+            }
+          for (unsigned int g = 0; g < G; ++g)
+            {
+              double *y = Y + (r + g) * B;
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                y[j] = sums[g][j];
+            }
+        }
+      for (; r < s; ++r)
+        {
+          double sums[B];
+#pragma omp simd
+          for (unsigned int j = 0; j < B; ++j)
+            sums[j] = 0.;
+          for (unsigned int c = 0; c < s; ++c)
+            {
+              const double  a = A[r * row_stride + c * column_stride];
+              const double *x = X + c * B;
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                sums[j] += a * x[j];
+            }
+          double *y = Y + r * B;
+#pragma omp simd
+          for (unsigned int j = 0; j < B; ++j)
+            y[j] = sums[j];
+        }
+    }
+
     /// X <- Z(sign alpha) X, a rotation by sign alpha about the z-axis.
     template <unsigned int B>
     void
@@ -964,46 +1139,53 @@ namespace YukawaExpansions
           }
     }
 
-    /// Y = D(P) X
+    /// Y = D(P) X, row by row with the sums in registers, two per lane:
+    /// accumulated in Y, each product would wait for the previous one.
     template <unsigned int B>
     void
     apply_swap(const double *X, double *Y) const
     {
-      std::fill(Y, Y + nc * B, 0.);
-      for (const auto &e : swap)
+      for (unsigned int b = 0; b < nc; ++b)
         {
-          double       *y = Y + e.row * B;
-          const double *x = X + e.column * B;
+          double s0[B], s1[B];
 #pragma omp simd
           for (unsigned int j = 0; j < B; ++j)
-            y[j] += e.value * x[j];
+            s0[j] = s1[j] = 0.;
+          unsigned int       e   = swap_start[b];
+          const unsigned int end = swap_start[b + 1];
+          for (; e + 1 < end; e += 2)
+            {
+              const double  v0 = swap_value[e], v1 = swap_value[e + 1];
+              const double *x0 = X + swap_column[e] * B;
+              const double *x1 = X + swap_column[e + 1] * B;
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                {
+                  s0[j] += v0 * x0[j];
+                  s1[j] += v1 * x1[j];
+                }
+            }
+          if (e < end)
+            {
+              const double  v0 = swap_value[e];
+              const double *x0 = X + swap_column[e] * B;
+#pragma omp simd
+              for (unsigned int j = 0; j < B; ++j)
+                s0[j] += v0 * x0[j];
+            }
+          double *y = Y + b * B;
+#pragma omp simd
+          for (unsigned int j = 0; j < B; ++j)
+            y[j] = s0[j] + s1[j];
         }
     }
 
-    /// Y = T_z X
+    /// Y = T_z X, two rows at a time with their sums in registers.
     template <unsigned int B>
     void
     apply_z_translation(const double *Tz, const double *X, double *Y) const
     {
-      std::fill(Y, Y + nc * B, 0.);
-      for (unsigned int m = 0; m <= p; ++m)
-        {
-          const double      *block = Tz + block_start[m];
-          const unsigned int size  = p + 1 - m;
-          for (int sign = (m == 0 ? 1 : -1); sign <= 1; sign += 2)
-            for (unsigned int n2 = m; n2 <= p; ++n2)
-              {
-                double *y = Y + index(n2, sign * int(m)) * B;
-                for (unsigned int n = m; n <= p; ++n)
-                  {
-                    const double  t = block[(n2 - m) * size + (n - m)];
-                    const double *x = X + index(n, sign * int(m)) * B;
-#pragma omp simd
-                    for (unsigned int j = 0; j < B; ++j)
-                      y[j] += t * x[j];
-                  }
-              }
-        }
+      apply_z_blocks<B, false>(Tz, X, Y);
     }
 
     /// Y = T_z X with a translation for each expansion, entry e of
@@ -1013,40 +1195,91 @@ namespace YukawaExpansions
     apply_z_translation_lanes(const double *Tz, const double *X, double *Y)
       const
     {
-      std::fill(Y, Y + nc * B, 0.);
-      for (unsigned int m = 0; m <= p; ++m)
-        {
-          const double      *block = Tz + block_start[m] * B;
-          const unsigned int size  = p + 1 - m;
-          for (int sign = (m == 0 ? 1 : -1); sign <= 1; sign += 2)
-            for (unsigned int n2 = m; n2 <= p; ++n2)
-              {
-                double *y = Y + index(n2, sign * int(m)) * B;
-                for (unsigned int n = m; n <= p; ++n)
-                  {
-                    const double *t =
-                      block + ((n2 - m) * size + (n - m)) * B;
-                    const double *x = X + index(n, sign * int(m)) * B;
-#pragma omp simd
-                    for (unsigned int j = 0; j < B; ++j)
-                      y[j] += t[j] * x[j];
-                  }
-              }
-        }
+      apply_z_blocks<B, true>(Tz, X, Y);
     }
 
-    struct Entry
+    /// The blocks of T_z, of order m, on the coefficients of orders m and
+    /// -m; with lanes, an entry for each expansion.
+    template <unsigned int B, bool lanes>
+    void
+    apply_z_blocks(const double *Tz, const double *X, double *Y) const
     {
-      unsigned int row, column;
-      double       value;
-    };
+      constexpr unsigned int L = lanes ? B : 1;
+      for (unsigned int m = 0; m <= p; ++m)
+        {
+          const double      *block = Tz + block_start[m] * L;
+          const unsigned int size  = p + 1 - m;
+          for (int sign = (m == 0 ? 1 : -1); sign <= 1; sign += 2)
+            {
+              const int    order = sign * int(m);
+              unsigned int n2    = m;
+              for (; n2 + 1 <= p; n2 += 2)
+                {
+                  double s0[B], s1[B];
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    s0[j] = s1[j] = 0.;
+                  const double *t0 = block + (n2 - m) * size * L;
+                  const double *t1 = t0 + size * L;
+                  for (unsigned int n = m; n <= p; ++n)
+                    {
+                      const double *x  = X + index(n, order) * B;
+                      const double *a0 = t0 + (n - m) * L;
+                      const double *a1 = t1 + (n - m) * L;
+#pragma omp simd
+                      for (unsigned int j = 0; j < B; ++j)
+                        {
+                          s0[j] += a0[lanes ? j : 0] * x[j];
+                          s1[j] += a1[lanes ? j : 0] * x[j];
+                        }
+                    }
+                  double *y0 = Y + index(n2, order) * B;
+                  double *y1 = Y + index(n2 + 1, order) * B;
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    {
+                      y0[j] = s0[j];
+                      y1[j] = s1[j];
+                    }
+                }
+              if (n2 <= p)
+                {
+                  double s0[B];
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    s0[j] = 0.;
+                  const double *t0 = block + (n2 - m) * size * L;
+                  for (unsigned int n = m; n <= p; ++n)
+                    {
+                      const double *x  = X + index(n, order) * B;
+                      const double *a0 = t0 + (n - m) * L;
+#pragma omp simd
+                      for (unsigned int j = 0; j < B; ++j)
+                        s0[j] += a0[lanes ? j : 0] * x[j];
+                    }
+                  double *y0 = Y + index(n2, order) * B;
+#pragma omp simd
+                  for (unsigned int j = 0; j < B; ++j)
+                    y0[j] = s0[j];
+                }
+            }
+        }
+    }
 
     unsigned int              p, nc;
     std::vector<double>       norms;
     std::vector<double>       gaunt;
     std::vector<double>       axis_factor;
-    std::vector<Entry>        swap;
+    /// D(P) by rows: the columns and values of row b from swap_start[b].
+    std::vector<unsigned int> swap_start, swap_column;
+    std::vector<double>       swap_value;
     std::vector<unsigned int> block_start;
+    /// Start of the block of degree n of a rotation.
+    std::vector<unsigned int> rotation_start;
+    /// D(P) by blocks on the degrees, like a rotation.
+    std::vector<double> swap_blocks;
+    /// The highest order of rotation_blocks().
+    static constexpr unsigned int maximum_rotation_order = 30;
     /// Radial functions of z_translation(), kept to avoid allocations; an
     /// object is used by one thread.
     mutable std::vector<double> scratch_f, scratch_from, scratch_to;
