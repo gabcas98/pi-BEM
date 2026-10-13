@@ -57,6 +57,14 @@ namespace Operator
 
 using namespace dealii;
 
+#if !DEAL_II_VERSION_GTE(9, 7, 0)
+// SmartPointer before its renaming in deal.II 9.7.
+DEAL_II_NAMESPACE_OPEN
+template <typename T, typename P = void>
+using ObserverPointer = SmartPointer<T, P>;
+DEAL_II_NAMESPACE_CLOSE
+#endif
+
 /**
 * A class for the handling of the Fast Multiple Method coupled with the Bundary
 Element Method.
@@ -255,11 +263,31 @@ public:
     return galerkin_preconditioner_theta;
   }
 
+  /// Points per leaf of the preconditioner, and the expansions of the
+  /// relaxed products, zero for the defaults.
+  unsigned int
+  preconditioner_points_per_leaf() const
+  {
+    return galerkin_preconditioner_points_per_leaf;
+  }
+
+  unsigned int
+  relaxed_order() const
+  {
+    return galerkin_relaxed_order;
+  }
+
+  double
+  relaxed_theta() const
+  {
+    return galerkin_relaxed_theta;
+  }
+
 protected:
   /// Three pointers to the problem parameters to be set equal to
   /// the ones in the calling problem through the init function
-  SmartPointer<const DoFHandler<dim - 1, dim>> fma_dh;
-  SmartPointer<const Mapping<dim - 1, dim>>    fma_mapping;
+  ObserverPointer<const DoFHandler<dim - 1, dim>> fma_dh;
+  ObserverPointer<const Mapping<dim - 1, dim>>    fma_mapping;
 
 
   /// Truncation order for the multipole
@@ -274,6 +302,9 @@ protected:
   unsigned int galerkin_dipole_order_increase = 2;
   unsigned int galerkin_preconditioner_order  = 0;
   double       galerkin_preconditioner_theta  = 0.;
+  unsigned int galerkin_preconditioner_points_per_leaf = 0;
+  unsigned int galerkin_relaxed_order                  = 0;
+  double       galerkin_relaxed_theta                  = 0.;
 
   /// Sparsity pattern for the
   /// initial preconditioning matrix
@@ -499,7 +530,7 @@ protected:
 
   /// TODO parsed quadrature?
   std::shared_ptr<Quadrature<dim - 1>> quadrature;
-  SmartPointer<const Vector<double>>   dirichlet_nodes;
+  ObserverPointer<const Vector<double>> dirichlet_nodes;
   /// This should be erased by the usage of the constraint matrix.
   const std::vector<std::set<types::global_dof_index>> *double_nodes_set;
 

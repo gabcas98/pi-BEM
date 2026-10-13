@@ -124,6 +124,26 @@ BEMFMA<dim>::declare_parameters(ParameterHandler &prm)
       "Mixed Galerkin problem through the FMM only: the opening criterion "
       "of the products of the Calderon preconditioner; zero for that of the "
       "operator.");
+    prm.declare_entry(
+      "Galerkin preconditioner maximum points per leaf",
+      "0",
+      Patterns::Integer(0),
+      "Mixed Galerkin problem through the FMM only: the largest number of "
+      "points in a leaf of the octree of the preconditioner, whose low order "
+      "favours small leaves; zero for that of the operator.");
+    prm.declare_entry(
+      "Galerkin relaxed truncation order",
+      "0",
+      Patterns::Integer(0),
+      "Mixed Galerkin problem through the FMM only: the order of the "
+      "expansions of the relaxed products of GMRES (Mixed Galerkin relaxed "
+      "products below); zero for those of the preconditioner.");
+    prm.declare_entry(
+      "Galerkin relaxed opening criterion",
+      "0",
+      Patterns::Double(0.0, 1.0),
+      "Mixed Galerkin problem through the FMM only: the opening criterion of "
+      "the relaxed products; zero for that of the preconditioner.");
   }
   prm.leave_subsection();
 
@@ -160,6 +180,11 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
       prm.get_integer("Galerkin preconditioner truncation order");
     galerkin_preconditioner_theta =
       prm.get_double("Galerkin preconditioner opening criterion");
+    galerkin_preconditioner_points_per_leaf =
+      prm.get_integer("Galerkin preconditioner maximum points per leaf");
+    galerkin_relaxed_order =
+      prm.get_integer("Galerkin relaxed truncation order");
+    galerkin_relaxed_theta = prm.get_double("Galerkin relaxed opening criterion");
   }
   prm.leave_subsection();
 

@@ -129,6 +129,7 @@ protected:
 
   /// build the mesh, report its cost and stop before allocating the matrix
   bool mesh_only;
+  unsigned int initial_level = 0;
 
   const unsigned int n_mpi_processes;
   const unsigned int this_mpi_process;

@@ -72,6 +72,11 @@ Driver<dim>::declare_parameters(ParameterHandler &prm)
   // refinement setting be checked without paying for, or running out of memory
   // on, a full solve.
   prm.declare_entry("Mesh only", "false", Patterns::Bool());
+
+  // Without global refinement, the levels of global refinement of the mesh
+  // before the first solve; the Number of cycles then counts the adaptive
+  // cycles that follow.
+  prm.declare_entry("Initial refinement level", "0", Patterns::Integer(0));
 }
 
 template <int dim>
@@ -80,6 +85,7 @@ Driver<dim>::parse_parameters(ParameterHandler &prm)
 {
   global_refinement = prm.get_bool("Set Global Refinement");
   mesh_only         = prm.get_bool("Mesh only");
+  initial_level     = prm.get_integer("Initial refinement level");
 }
 
 
@@ -105,7 +111,7 @@ Driver<dim>::run()
           //local_refinement_cycles = 0;
           // refine_and_resize() applies pre_global_refinements itself.  The
           // following cycles are driven by the adaptive estimator below.
-          computational_domain.refine_and_resize(0);
+          computational_domain.refine_and_resize(initial_level);
           local_refinement_cycles = computational_domain.n_cycles;
         }
       // computational_domain.generate_octree_blocking();
@@ -132,6 +138,9 @@ Driver<dim>::run()
         return;
       }
 
+    // Adaptive refinement keeps the near-field blocks of the pairs of cells
+    // it does not refine.
+    bem_problem.reuse_near_field = !global_refinement;
     for (unsigned int i = 0; i <= local_refinement_cycles; ++i)
       {
         {
@@ -143,7 +152,16 @@ Driver<dim>::run()
           {
             // Compute error estimator and local refinement strategy
             bem_problem.adaptive_refinement(boundary_conditions.get_phi());
-            computational_domain.update_triangulation();
+            computational_domain.update_triangulation(true);
+            // PIBEM_KEEP_MESHES: the mesh of every adaptive cycle, as
+            // mesh_cycle_<i>.inp.
+            if (std::getenv("PIBEM_KEEP_MESHES") != nullptr &&
+                Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+              {
+                std::ofstream out("mesh_cycle_" + std::to_string(i + 1) +
+                                  ".inp");
+                GridOut().write_ucd(computational_domain.tria, out);
+              }
           }
       }
 

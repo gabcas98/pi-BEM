@@ -281,10 +281,13 @@ namespace ExactGeometry
   /**
    * The largest deviation of the interpolant of degree n of the exact map
    * from the exact map, as in interpolate_exact_geometry(), estimated on
-   * the active cells of index offset modulo stride, without building a
-   * MappingQCache: the
+   * every stride-th active cell of the given one of n_parts contiguous
+   * parts of the active cells, without building a MappingQCache: the
    * interpolant is evaluated from the shape functions of FE_Q(n) at the
-   * images of its support points. Cheap enough to choose the degree.
+   * images of its support points. Cheap enough to choose the degree. The
+   * cells of a part follow one another, so that the projections of a cell
+   * start from those of a close one (scattered cells cost the projector
+   * thirty times as much).
    */
   template <int dim, int spacedim>
   std::pair<double, double>
@@ -293,7 +296,8 @@ namespace ExactGeometry
     const Triangulation<dim, spacedim>    &triangulation,
     const unsigned int                     degree,
     const unsigned int                     stride,
-    const unsigned int                     offset = 0);
+    const unsigned int                     part    = 0,
+    const unsigned int                     n_parts = 1);
 } // namespace ExactGeometry
 
 DEAL_II_NAMESPACE_CLOSE

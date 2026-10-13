@@ -26,6 +26,7 @@
 
 #include <array>
 #include <iosfwd>
+#include <map>
 #include <vector>
 
 #include "galerkin_panel_pair_integrator.h"
@@ -101,6 +102,30 @@ public:
     /// order and opening criterion, zero for those of the operator.
     unsigned int preconditioner_order = 0;
     double       preconditioner_theta = 0.;
+    /// Points per leaf of the octree of the preconditioner, zero for those
+    /// of the operator: its low order favours smaller leaves.
+    unsigned int preconditioner_points_per_leaf = 0;
+    /// The expansions of the relaxed rows (vmult_rows()), zero for those of
+    /// the preconditioner: kept apart, the preconditioner may be cheaper
+    /// than the accuracy the relaxed products need.
+    unsigned int relaxed_order = 0;
+    double       relaxed_theta = 0.;
+  };
+
+  /**
+   * The exact blocks of the near pairs that a process integrated, kept from
+   * one reinit() to the next of a mesh refined in between: a pair of cells
+   * that were not refined keeps its block. A pair is keyed by the levels
+   * and indices of its cells, in lexicographic order, which refinement
+   * leaves unchanged, and with a cache the pairs are dealt out to the
+   * processes by this key, so that a pair stays on its process. Valid for
+   * the same element, mapping and rules: the caller clears it when these
+   * change. The blocks of pairs not met in a reinit() are dropped.
+   */
+  struct NearFieldCache
+  {
+    std::map<std::array<int, 4>, FullMatrix<double>> blocks;
+    unsigned long                                    hits = 0, misses = 0;
   };
 
   explicit GalerkinCalderonFMMOperator(const MPI_Comm comm);
@@ -119,7 +144,8 @@ public:
          const types::global_dof_index                            n_indices,
          const AffineConstraints<double>                         &constraints,
          const GalerkinPanelPairIntegrator<3>                    &integrator,
-         const AdditionalData                                    &data);
+         const AdditionalData                                    &data,
+         NearFieldCache                                          *cache = nullptr);
 
   /// dst = A src, whole vectors on every process; collective.
   void
@@ -133,18 +159,31 @@ public:
                        Vector<double>       &dst,
                        const Vector<double> &src) const;
 
+  /// v = V v_src and w = W w_src through the expansions of the
+  /// preconditioner, as two vmult_preconditioner(), from one evaluation of
+  /// four sets (the charges of v_src and the three components of the curl
+  /// of w_src) and one sum over the processes; collective.
+  void
+  vmult_preconditioner_pair(const Vector<double> &v_src,
+                            const Vector<double> &w_src,
+                            Vector<double>       &v,
+                            Vector<double>       &w) const;
+
   /**
    * The two rows of the block operator of the mixed problem,
    * dirichlet = V t - k K u and neumann = W u + k K^T t, whole vectors on
    * every process: V t and K u from one evaluation, with charges and
-   * dipoles, and one sum over the processes for both; collective.
+   * dipoles, and one sum over the processes for both; collective. Relaxed,
+   * through the expansions of the preconditioner (if it has its own), with
+   * the exact near field: less accurate, as the last steps of GMRES allow.
    */
   void
   vmult_rows(const Vector<double> &t,
              const Vector<double> &u,
              const double          k,
              Vector<double>       &dirichlet,
-             Vector<double>       &neumann) const;
+             Vector<double>       &neumann,
+             const bool            relaxed = false) const;
 
   /// The diagonal of V or of W, from the exact blocks of the near field,
   /// whole on every process.
@@ -173,6 +212,13 @@ private:
   void
   add_transpose_double_layer(const std::vector<double> &values,
                              Vector<double>            &y) const;
+
+  /// Add the integrals of the potentials of the three components of a curl
+  /// at the points against the curls of the shape functions of the own
+  /// cells, condensed, to y.
+  void
+  test_curl_potentials(const std::array<std::vector<double>, 3> &potentials,
+                       Vector<double>                           &y) const;
 
   /// Add W x, without the near field, for the curls of x at the points, to
   /// y (tested on the own cells), with the given expansions.
@@ -208,8 +254,11 @@ private:
   /// Shape values at the reference quadrature points, shape(q, i).
   FullMatrix<double> shape;
 
-  LaplaceFMM charge_fmm, dipole_fmm, preconditioner_fmm;
-  bool       separate_preconditioner = false;
+  LaplaceFMM charge_fmm, dipole_fmm, preconditioner_fmm, relaxed_fmm;
+  bool       separate_preconditioner = false, separate_relaxed = false;
+  /// The dipole sums use the expansions of the charges: the rows of the
+  /// mixed problem then come from one pass, LaplaceFMM::evaluate_mixed().
+  bool       fused_rows = false;
 
   /// Corrections of the near pairs of this process, condensed.
   SparsityPattern      near_sparsity;
@@ -217,12 +266,22 @@ private:
   Vector<double>       single_diagonal, hypersingular_diagonal;
 
   unsigned long  n_near_pairs = 0;
+  /// Near pairs whose blocks came from the cache, and those integrated.
+  unsigned long  n_cached_pairs = 0, n_integrated_pairs = 0;
+  /// Near pairs whose blocks are those of a congruent pair (a translate).
+  unsigned long  n_congruent_pairs = 0;
+  /// With PIBEM_NEAR_PROFILE: the time of the exact blocks of the near
+  /// pairs by type, summed over the processes (coincident, common edge,
+  /// non-conforming edge, common vertex, close regular, other regular), the
+  /// time of the corrections of the point sums, and the numbers of pairs.
+  std::array<double, 7>        near_profile_seconds = {{0, 0, 0, 0, 0, 0, 0}};
+  std::array<unsigned long, 6> near_profile_count   = {{0, 0, 0, 0, 0, 0}};
   double         setup_geometry = 0, setup_tree = 0, setup_near = 0,
          setup_near_imbalance = 0;
-  /// Times and counts of the products by operator, of the rows, and of
-  /// the products of the preconditioner.
-  mutable std::array<double, 6>       time_product = {{0, 0, 0, 0, 0, 0}};
-  mutable std::array<unsigned int, 6> n_products   = {{0, 0, 0, 0, 0, 0}};
+  /// Times and counts of the products by operator, of the rows, of the
+  /// products of the preconditioner and of the relaxed rows.
+  mutable std::array<double, 7>       time_product = {{0, 0, 0, 0, 0, 0, 0}};
+  mutable std::array<unsigned int, 7> n_products   = {{0, 0, 0, 0, 0, 0, 0}};
 };
 
 #endif

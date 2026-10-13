@@ -101,6 +101,7 @@
 #include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
 #include "../include/galerkin_fmm_operator.h"
+#include "../include/galerkin_calderon_fmm_operator.h"
 #include "../include/cad_projectors.h"
 #include "../include/computational_domain.h"
 #include "../include/constrained_matrix.h"
@@ -450,11 +451,37 @@ public:
   std::string  exact_geometry_map = "projection";
   std::string  mixed_galerkin_preconditioner = "diagonal";
   std::string  mixed_galerkin_dirichlet_datum = "projection";
+  /// Error indicators of the mixed Galerkin problem for adaptive
+  /// refinement (none, jumps, exact), the fraction of their sum that the
+  /// marked cells carry, and their values on the active cells after a
+  /// solve, eta_T^2, which adaptive_refinement() uses and clears.
+  std::string    mixed_galerkin_error_indicator = "none";
+  double         mixed_galerkin_refinement_fraction = 0.5;
+  std::string    mixed_galerkin_indicator_norm      = "energy";
+  double         mixed_galerkin_solver_reduction    = 1e-12;
+  Vector<double> mixed_indicators;
+
+  /// Keep the exact near-field blocks of the multipole method of the mixed
+  /// problem from one solve to the next, for adaptive refinement: the pairs
+  /// of cells that were not refined keep their blocks (the Driver sets it
+  /// without global refinement).
+  bool reuse_near_field = false;
+  GalerkinCalderonFMMOperator::NearFieldCache near_field_cache;
+  /// With reuse_near_field, the discrete traces of the last solve on its
+  /// cells, the flux on the Dirichlet cells and the potential on the
+  /// Neumann cells, by level and index, and the degree of the element: the
+  /// next solve on a refined mesh starts GMRES from them.
+  std::map<std::array<int, 2>, std::vector<double>> transfer_values;
+  unsigned int                                     transfer_degree = 0;
+  /// The element, the mapping and the rules the cache was filled with.
+  std::vector<double> near_field_signature;
   /// Degree of the polynomial interpolation of the exact geometry, a
   /// MappingQCache filled by ExactGeometry::interpolate_exact_geometry, or
   /// zero for the lowest degree that meets the tolerance; zero degree and
   /// zero tolerance project every point.
   unsigned int exact_geometry_degree    = 0;
+  /// The degree of the interpolated exact geometry in use, as chosen.
+  unsigned int geometry_degree_in_use   = 0;
   double       exact_geometry_tolerance = 1e-10;
   /// Nodal normals of the collocation data and constraints: the L2
   /// projection of the normals of the mapping (projection), or the
@@ -513,6 +540,11 @@ public:
   unsigned int galerkin_material_singular_quadrature_order = 0;
   unsigned int galerkin_skewed_singular_quadrature_order = 0;
   double       galerkin_skewed_minimum_angle = 30.;
+  unsigned int galerkin_kinked_singular_quadrature_order = 0;
+  double       galerkin_kinked_minimum_angle = 60.;
+  double       galerkin_kinked_distance_ratio = 0.;
+  /// Mixed Galerkin relaxed products below.
+  double       mixed_galerkin_relaxation = 0.;
   std::set<types::material_id> galerkin_singular_quadrature_material_ids;
   unsigned int galerkin_duffy_outer_subdivisions;
   double       galerkin_near_singular_distance_ratio;

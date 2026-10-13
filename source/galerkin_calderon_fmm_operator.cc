@@ -14,6 +14,12 @@
 
 #include "../include/galerkin_calderon_fmm_operator.h"
 
+#include <fstream>
+#include <set>
+#include <cstdint>
+#include <iostream>
+#include <deque>
+#include <unordered_map>
 #include <deal.II/base/bounding_box.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
@@ -73,7 +79,8 @@ GalerkinCalderonFMMOperator::reinit(
   const types::global_dof_index                            n,
   const AffineConstraints<double>                         &constraints_in,
   const GalerkinPanelPairIntegrator<3>                    &integrator,
-  const AdditionalData                                    &data)
+  const AdditionalData                                    &data,
+  NearFieldCache                                          *cache)
 {
   AssertThrow(integrator.get_screening() == 0.,
               ExcMessage("The mixed problem through the FMM supports the "
@@ -135,19 +142,36 @@ GalerkinCalderonFMMOperator::reinit(
   LaplaceFMM::AdditionalData fmm_data = data.fmm;
   fmm_data.kappa                      = 0.;
   charge_fmm.reinit(points, fmm_data);
-  separate_preconditioner =
-    data.preconditioner_order > 0 || data.preconditioner_theta > 0;
+  separate_preconditioner = data.preconditioner_order > 0 ||
+                            data.preconditioner_theta > 0 ||
+                            data.preconditioner_points_per_leaf > 0;
+  LaplaceFMM::AdditionalData coarse = fmm_data;
   if (separate_preconditioner)
     {
-      LaplaceFMM::AdditionalData coarse = fmm_data;
       if (data.preconditioner_order > 0)
         coarse.order = data.preconditioner_order;
       if (data.preconditioner_theta > 0)
         coarse.theta = data.preconditioner_theta;
+      if (data.preconditioner_points_per_leaf > 0)
+        coarse.max_points_per_leaf = data.preconditioner_points_per_leaf;
       preconditioner_fmm.reinit(points, coarse);
+    }
+  separate_relaxed = data.relaxed_order > 0 || data.relaxed_theta > 0;
+  if (separate_relaxed)
+    {
+      LaplaceFMM::AdditionalData relaxed = fmm_data;
+      relaxed.order = data.relaxed_order > 0 ? data.relaxed_order : coarse.order;
+      relaxed.theta = data.relaxed_theta > 0 ? data.relaxed_theta : coarse.theta;
+      relaxed_fmm.reinit(points, relaxed);
     }
   fmm_data.order += data.dipole_order_increase;
   dipole_fmm.reinit(points, fmm_data);
+  // PIBEM_UNFUSED_ROWS: the three separate evaluations, for comparison.
+  // The fused pass holds the multipoles of five sets of all boxes at once:
+  // only while they take less than 256 MB per process.
+  fused_rows = data.dipole_order_increase == 0 &&
+               charge_fmm.expansion_bytes(5) < (std::size_t(256) << 20) &&
+               std::getenv("PIBEM_UNFUSED_ROWS") == nullptr;
   setup_tree = seconds_since(start);
 
   // The near pairs, found and dealt out by cost as in GalerkinFMMOperator:
@@ -164,6 +188,13 @@ GalerkinCalderonFMMOperator::reinit(
       boxes.emplace_back(box, c);
     }
   const auto tree = pack_rtree(boxes);
+  const auto cell_key = [&](const unsigned int c) {
+    return std::array<int, 2>{{cells[c]->level(), cells[c]->index()}};
+  };
+  const auto pair_key = [&](const unsigned int t, const unsigned int r) {
+    return std::array<int, 4>{
+      {cells[t]->level(), cells[t]->index(), cells[r]->level(), cells[r]->index()}};
+  };
   std::vector<std::array<unsigned int, 3>> found;
   for (unsigned int t = this_mpi_process; t < n_cells; t += n_mpi_processes)
     {
@@ -183,7 +214,12 @@ GalerkinCalderonFMMOperator::reinit(
                 type == GalerkinPanelPairType::nonconforming_edge ? 5 :
             type == GalerkinPanelPairType::common_vertex       ? 2 :
                                                                  1;
-          found.push_back({{t, r, cost}});
+          // With a cache, the cells of a pair in the order of their levels
+          // and indices, which refinement does not change.
+          if (cache != nullptr && cell_key(r) < cell_key(t))
+            found.push_back({{r, t, cost}});
+          else
+            found.push_back({{t, r, cost}});
         }
     }
   std::vector<std::array<unsigned int, 3>> all_pairs;
@@ -192,20 +228,224 @@ GalerkinCalderonFMMOperator::reinit(
   std::sort(all_pairs.begin(), all_pairs.end(), [](const auto &x, const auto &y) {
     return x[2] != y[2] ? x[2] > y[2] : x[0] != y[0] ? x[0] < y[0] : x[1] < y[1];
   });
-  std::vector<unsigned long>                           load(n_mpi_processes, 0);
   std::vector<std::pair<unsigned int, unsigned int>> my_pairs;
-  n_near_pairs = 0;
-  for (const auto &pair : all_pairs)
+  // With a cache, each pair goes to the process of a hash of its key, so
+  // that it stays there when the mesh is refined around it; there are many
+  // pairs of each kind, and the costs even out.
+  const auto hashed_process = [&](const unsigned int t, const unsigned int r) {
+    const auto key  = pair_key(t, r);
+    std::uint64_t h = 0x9e3779b97f4a7c15ull;
+    for (const int v : key)
+      {
+        h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(v)) +
+             0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= h >> 31;
+        h *= 0xbf58476d1ce4e5b9ull;
+      }
+    return static_cast<unsigned int>(h % n_mpi_processes);
+  };
+
+  // PIBEM_NEAR_MEMORY: the memory of the process and the rule cache of the
+  // integrator every 2000 pairs of the near field.
+  static const bool report_memory = std::getenv("PIBEM_NEAR_MEMORY") != nullptr;
+  static const bool report_profile =
+    std::getenv("PIBEM_NEAR_PROFILE") != nullptr;
+  std::set<std::array<int, 4>> used_keys;
+  n_cached_pairs     = 0;
+  n_integrated_pairs = 0;
+  std::array<double, 7>        profile_seconds = {{0, 0, 0, 0, 0, 0, 0}};
+  std::array<unsigned long, 6> profile_count   = {{0, 0, 0, 0, 0, 0}};
+  unsigned int                 pairs_done      = 0;
+  // The exact blocks of the pairs of this process: V, K and W of (t, r),
+  // and K of (r, t) from the same points, transposed in a fourth block;
+  // in the cache if there is one, which keeps them, here otherwise.
+  std::deque<FullMatrix<double>>          own_blocks;
+  std::vector<const FullMatrix<double> *> exact_blocks;
+  // Congruent pairs: on a surface swept along a straight line, as a wing of
+  // constant section meshed evenly along the span, most near pairs are
+  // translates of others, and their blocks are the same, the kernels being
+  // invariant under translations. A pair is keyed by the quadrature points
+  // of its two cells relative to the first one of the test cell, rounded to
+  // 1e-9 of the size of that cell (which fixes the configuration, the rules
+  // and the order of the shape functions), by its normals and by the
+  // materials of its cells, through two 64-bit hashes; a process integrates
+  // the first pair of each class it meets and uses its block for the
+  // others.
+  struct CongruenceHash
+  {
+    std::size_t
+    operator()(const std::pair<std::uint64_t, std::uint64_t> &key) const
     {
-      const unsigned int process =
-        std::min_element(load.begin(), load.end()) - load.begin();
-      load[process] += pair[2];
-      if (process == this_mpi_process)
+      return key.first ^ (key.second * 0x9e3779b97f4a7c15ull);
+    }
+  };
+  std::unordered_map<std::pair<std::uint64_t, std::uint64_t>,
+                     const FullMatrix<double> *,
+                     CongruenceHash>
+    congruent;
+  n_congruent_pairs = 0;
+  const auto congruence_key = [&](const unsigned int t, const unsigned int r) {
+    const Point<3> &origin = points[t * n_q_points];
+    const double    size =
+      origin.distance(points[t * n_q_points + n_q_points - 1]);
+    const double  quantum = 1e-9 * size;
+    std::uint64_t h1      = 0x9e3779b97f4a7c15ull, h2 = 0xc2b2ae3d27d4eb4full;
+    const auto    mix     = [&](const std::int64_t value) {
+      const std::uint64_t v = static_cast<std::uint64_t>(value);
+      h1 ^= v + 0x9e3779b97f4a7c15ull + (h1 << 6) + (h1 >> 2);
+      h1 *= 0xbf58476d1ce4e5b9ull;
+      h2 ^= v + 0x94d049bb133111ebull + (h2 << 7) + (h2 >> 3);
+      h2 *= 0x94d049bb133111ebull;
+    };
+    for (const unsigned int c : {t, r})
+      {
+        mix(cells[c]->material_id());
+        for (unsigned int q = 0; q < n_q_points; ++q)
+          for (unsigned int d = 0; d < 3; ++d)
+            mix(std::llround((points[c * n_q_points + q][d] - origin[d]) /
+                             quantum));
+        for (unsigned int d = 0; d < 3; ++d)
+          mix(std::llround(normals[c * n_q_points][d] * 1e9));
+      }
+    return std::make_pair(h1, h2);
+  };
+  const auto integrate_pair = [&](const unsigned int t, const unsigned int r) {
+    if (report_memory && pairs_done % 2000 == 0)
+      {
+        std::ifstream statm("/proc/self/statm");
+        unsigned long size = 0, resident = 0;
+        statm >> size >> resident;
+        std::cerr << "near field, process " << this_mpi_process << ", pair "
+                  << pairs_done << ": RSS " << resident * 4096 / 1048576
+                  << " MB, " << integrator.cache_statistics() << std::endl;
+      }
+    ++pairs_done;
+    const bool self = t == r;
+    // PIBEM_NEAR_PROFILE: the time of the exact blocks by type of pair,
+    // close regular pairs apart.
+    const auto   pair_start   = std::chrono::steady_clock::now();
+    unsigned int profile_kind = 0;
+    if (report_profile)
+      {
+        const auto type = integrator.classify(cells[t], cells[r]);
+        profile_kind =
+          type == GalerkinPanelPairType::same_panel         ? 0 :
+          type == GalerkinPanelPairType::common_edge        ? 1 :
+          type == GalerkinPanelPairType::nonconforming_edge ? 2 :
+          type == GalerkinPanelPairType::common_vertex      ? 3 :
+          integrator.is_near_singular_pair(cells[t], cells[r]) ? 4 :
+                                                                  5;
+      }
+    const FullMatrix<double> *exact = nullptr;
+    if (cache != nullptr)
+      {
+        const auto key = pair_key(t, r);
+        const auto hit = cache->blocks.find(key);
+        if (hit != cache->blocks.end())
+          {
+            exact = &hit->second;
+            ++n_cached_pairs;
+          }
+        used_keys.insert(key);
+      }
+    if (exact == nullptr)
+      {
+        // PIBEM_NO_CONGRUENCE: every pair integrated, for comparison.
+        static const bool use_congruence =
+          std::getenv("PIBEM_NO_CONGRUENCE") == nullptr;
+        const auto key   = congruence_key(t, r);
+        const auto found =
+          use_congruence ? congruent.find(key) : congruent.end();
+        if (found != congruent.end())
+          {
+            ++n_congruent_pairs;
+            if (cache != nullptr)
+              exact = &(cache->blocks[pair_key(t, r)] = *found->second);
+            else
+              exact = found->second;
+          }
+        else
+          {
+            FullMatrix<double> computed =
+              self ? integrator.integrate_single_double_hypersingular(
+                       cells[t], cells[r], data.quadrature_order) :
+                     integrator.integrate_single_double_hypersingular_both(
+                       cells[t], cells[r], data.quadrature_order);
+            ++n_integrated_pairs;
+            if (cache != nullptr)
+              exact = &(cache->blocks[pair_key(t, r)] = std::move(computed));
+            else
+              {
+                own_blocks.push_back(std::move(computed));
+                exact = &own_blocks.back();
+              }
+            congruent.emplace(key, exact);
+          }
+      }
+    exact_blocks.push_back(exact);
+    my_pairs.emplace_back(t, r);
+    if (report_profile)
+      {
+        profile_seconds[profile_kind] += seconds_since(pair_start);
+        ++profile_count[profile_kind];
+      }
+  };
+
+  if (cache == nullptr && n_mpi_processes > 1)
+    {
+      // Without a cache, the pairs are taken as the processes get free:
+      // each fetches the next few, in the order of decreasing cost, from a
+      // counter on process 0, so that the faster ones take more and the
+      // costs need not be known.
+      constexpr long chunk   = 4;
+      long          *counter = nullptr;
+      MPI_Win        window;
+      MPI_Win_allocate(this_mpi_process == 0 ? sizeof(long) : 0,
+                       sizeof(long),
+                       MPI_INFO_NULL,
+                       mpi_communicator,
+                       &counter,
+                       &window);
+      if (this_mpi_process == 0)
         {
-          my_pairs.emplace_back(pair[0], pair[1]);
-          n_near_pairs += pair[0] == pair[1] ? 1 : 2;
+          MPI_Win_lock(MPI_LOCK_EXCLUSIVE, 0, 0, window);
+          *counter = 0;
+          MPI_Win_unlock(0, window);
+        }
+      MPI_Barrier(mpi_communicator);
+      MPI_Win_lock_all(0, window);
+      const long n_pairs = all_pairs.size();
+      while (true)
+        {
+          long first = 0;
+          MPI_Fetch_and_op(&chunk, &first, MPI_LONG, 0, 0, MPI_SUM, window);
+          MPI_Win_flush(0, window);
+          if (first >= n_pairs)
+            break;
+          for (long k = first; k < std::min(first + chunk, n_pairs); ++k)
+            integrate_pair(all_pairs[k][0], all_pairs[k][1]);
+        }
+      MPI_Win_unlock_all(window);
+      MPI_Win_free(&window);
+    }
+  else
+    {
+      std::vector<unsigned long> load(n_mpi_processes, 0);
+      for (const auto &pair : all_pairs)
+        {
+          const unsigned int process =
+            cache != nullptr ?
+              hashed_process(pair[0], pair[1]) :
+              static_cast<unsigned int>(
+                std::min_element(load.begin(), load.end()) - load.begin());
+          load[process] += pair[2];
+          if (process == this_mpi_process)
+            integrate_pair(pair[0], pair[1]);
         }
     }
+  n_near_pairs = 0;
+  for (const auto &[t, r] : my_pairs)
+    n_near_pairs += t == r ? 1 : 2;
 
   // Both blocks of every pair, condensed.
   DynamicSparsityPattern dsp(n_indices, n_indices);
@@ -245,16 +485,12 @@ GalerkinCalderonFMMOperator::reinit(
           result(i, j) = sum;
         }
   };
-  for (const auto &[t, r] : my_pairs)
+  for (unsigned int k = 0; k < my_pairs.size(); ++k)
     {
-      const bool self = t == r;
-      // Exact blocks: V, K and W of (t, r), and K of (r, t) from the same
-      // points, transposed in a fourth block.
-      const FullMatrix<double> exact =
-        self ? integrator.integrate_single_double_hypersingular(
-                 cells[t], cells[r], data.quadrature_order) :
-               integrator.integrate_single_double_hypersingular_both(
-                 cells[t], cells[r], data.quadrature_order);
+      const auto [t, r]                = my_pairs[k];
+      const bool                self   = t == r;
+      const FullMatrix<double> &exact  = *exact_blocks[k];
+      const auto correction_start = std::chrono::steady_clock::now();
 
       // The part of the point sums: the kernels of the pairs of points,
       // without the coincident points of a cell with itself.
@@ -366,8 +602,78 @@ GalerkinCalderonFMMOperator::reinit(
               hypersingular_diagonal[indices[t][i]] +=
                 times * exact(i, 2 * dpc + j);
             }
+      if (report_profile)
+        profile_seconds[6] += seconds_since(correction_start);
     }
   const double own_near_time = seconds_since(start);
+  integrator.release_work_memory();
+  // The blocks of the pairs that are gone, refined, leave the cache.
+  if (cache != nullptr)
+    {
+      for (auto it = cache->blocks.begin(); it != cache->blocks.end();)
+        if (used_keys.count(it->first) == 0)
+          it = cache->blocks.erase(it);
+        else
+          ++it;
+      cache->hits += n_cached_pairs;
+      cache->misses += n_integrated_pairs;
+    }
+  if (report_profile)
+    {
+      // The parts of the direct path of the integrator over the near field,
+      // summed over the processes (it holds the totals since its creation;
+      // the integrator is created for this operator).
+      const auto  &ip = integrator.rhs_profile();
+      const double parts[9] = {ip.geometry_seconds,
+                               ip.shape_seconds,
+                               ip.kernel_seconds,
+                               ip.setup_seconds,
+                               ip.singular_seconds,
+                               ip.regular_seconds,
+                               ip.kernel_weight_seconds,
+                               ip.kernel_sum_seconds,
+                               ip.kernel_curl_seconds};
+      double       sums[9];
+      for (unsigned int k = 0; k < 9; ++k)
+        sums[k] = Utilities::MPI::sum(parts[k], mpi_communicator);
+      const double points = Utilities::MPI::sum(
+        static_cast<double>(ip.singular_points), mpi_communicator);
+      const double geometry_points = Utilities::MPI::sum(
+        static_cast<double>(ip.geometry_points), mpi_communicator);
+      const double leaves[4] = {
+        Utilities::MPI::sum(static_cast<double>(ip.singular_leaves),
+                            mpi_communicator),
+        Utilities::MPI::sum(static_cast<double>(ip.regular_leaves),
+                            mpi_communicator),
+        Utilities::MPI::sum(static_cast<double>(ip.transformed_leaves),
+                            mpi_communicator),
+        Utilities::MPI::sum(static_cast<double>(ip.half_leaves),
+                            mpi_communicator)};
+      if (this_mpi_process == 0)
+        std::cout << "Near field, direct path, seconds summed over the "
+                     "processes: geometry "
+                  << sums[0] << " (" << geometry_points << " points), shapes "
+                  << sums[1] << ", kernel loops " << sums[2] << " (weights "
+                  << sums[6] << ", sums " << sums[7] << ", curls " << sums[8]
+                  << ")"
+                  << ", rule setup " << sums[3] << "; singular leaves "
+                  << leaves[0] << " in " << sums[4] << " s (" << points
+                  << " pair points; " << leaves[2]
+                  << " on patches with the shapes of their rule, " << leaves[3]
+                  << " on half rules), tensor leaves " << leaves[1] << " in "
+                  << sums[5] << " s" << std::endl;
+    }
+  near_profile_seconds.fill(0.);
+  near_profile_count.fill(0);
+  if (report_profile)
+    {
+      for (unsigned int k = 0; k < 7; ++k)
+        near_profile_seconds[k] =
+          Utilities::MPI::sum(profile_seconds[k], mpi_communicator);
+      for (unsigned int k = 0; k < 6; ++k)
+        near_profile_count[k] =
+          Utilities::MPI::sum(profile_count[k], mpi_communicator);
+    }
   sum_over_processes(single_diagonal, mpi_communicator);
   sum_over_processes(hypersingular_diagonal, mpi_communicator);
   setup_near = seconds_since(start);
@@ -376,8 +682,8 @@ GalerkinCalderonFMMOperator::reinit(
     std::max(1e-300,
              Utilities::MPI::sum(own_near_time, mpi_communicator) /
                n_mpi_processes);
-  time_product = {{0, 0, 0, 0, 0, 0}};
-  n_products   = {{0, 0, 0, 0, 0, 0}};
+  time_product = {{0, 0, 0, 0, 0, 0, 0}};
+  n_products   = {{0, 0, 0, 0, 0, 0, 0}};
 }
 
 
@@ -549,8 +855,7 @@ GalerkinCalderonFMMOperator::add_hypersingular(
   Vector<double>                  &y,
   const LaplaceFMM                &fmm) const
 {
-  const unsigned int dpc = dofs_per_cell;
-  const unsigned int np  = points.size();
+  const unsigned int np = points.size();
   // The three components of the curl in one evaluation.
   std::vector<std::vector<double>> charges(3, std::vector<double>(np)),
     curl_potentials;
@@ -558,7 +863,21 @@ GalerkinCalderonFMMOperator::add_hypersingular(
     for (unsigned int p = 0; p < np; ++p)
       charges[d][p] = inverse_4pi * JxW[p] * curls[p][d];
   fmm.evaluate_multiple(charges, curl_potentials);
-  Vector<double> local(dpc);
+  test_curl_potentials({{std::move(curl_potentials[0]),
+                         std::move(curl_potentials[1]),
+                         std::move(curl_potentials[2])}},
+                       y);
+}
+
+
+
+void
+GalerkinCalderonFMMOperator::test_curl_potentials(
+  const std::array<std::vector<double>, 3> &curl_potentials,
+  Vector<double>                           &y) const
+{
+  const unsigned int dpc = dofs_per_cell;
+  Vector<double>     local(dpc);
   for (const unsigned int c : own_cells)
     {
       local = 0;
@@ -582,7 +901,8 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
                                         const Vector<double> &u,
                                         const double          k,
                                         Vector<double>       &dirichlet,
-                                        Vector<double>       &neumann) const
+                                        Vector<double>       &neumann,
+                                        const bool            relaxed) const
 {
   const auto         start = std::chrono::steady_clock::now();
   const unsigned int np    = points.size();
@@ -610,7 +930,36 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
       charges[p] = inverse_4pi * JxW[p] * values_t[p];
       dipoles[p] = inverse_4pi * JxW[p] * values_u[p] * normals[p];
     }
-  charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
+  // With the same expansions for charges and dipoles, all the sums from one
+  // pass: V t and K^T t, K u, and the three components of the curl of u;
+  // relaxed, always so, through the expansions of the preconditioner.
+  const bool         use_relaxed =
+    relaxed && (separate_relaxed || separate_preconditioner);
+  const LaplaceFMM &fmm = !use_relaxed    ? charge_fmm :
+                          separate_relaxed ? relaxed_fmm :
+                                             preconditioner_fmm;
+  const bool         fused = use_relaxed || fused_rows;
+  std::vector<double>                dipole_potentials;
+  std::array<std::vector<double>, 3> curl_potentials;
+  if (fused)
+    {
+      std::array<std::vector<double>, 3> curl_charges;
+      for (unsigned int c = 0; c < 3; ++c)
+        {
+          curl_charges[c].resize(np);
+          for (unsigned int p = 0; p < np; ++p)
+            curl_charges[c][p] = inverse_4pi * JxW[p] * curls_u[p][c];
+        }
+      fmm.evaluate_mixed(charges,
+                                dipoles,
+                                curl_charges,
+                                potentials,
+                                gradients,
+                                dipole_potentials,
+                                curl_potentials);
+    }
+  else
+    charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
   for (unsigned int p = 0; p < np; ++p)
     values[p] = JxW[p] * potentials[p];
   test_values(values, d_rows);
@@ -620,7 +969,10 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
     values[p] = JxW[p] * (normals[p] * gradients[p]);
   test_values(values, transpose);
   near_double.Tvmult_add(transpose, t);
-  dipole_fmm.evaluate({}, dipoles, potentials);
+  if (fused)
+    potentials = std::move(dipole_potentials);
+  else
+    dipole_fmm.evaluate({}, dipoles, potentials);
   Vector<double> k_u(n_indices);
   for (unsigned int p = 0; p < np; ++p)
     values[p] = JxW[p] * potentials[p];
@@ -629,7 +981,10 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
   d_rows.add(-k, k_u);
 
   // W u + k K^T t.
-  add_hypersingular(curls_u, n_rows, charge_fmm);
+  if (fused)
+    test_curl_potentials(curl_potentials, n_rows);
+  else
+    add_hypersingular(curls_u, n_rows, charge_fmm);
   near_hypersingular.vmult_add(n_rows, u);
   n_rows.add(k, transpose);
 
@@ -646,8 +1001,9 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
       dirichlet[i] = rows[i];
       neumann[i]   = rows[n_indices + i];
     }
-  time_product[4] += seconds_since(start);
-  ++n_products[4];
+  const unsigned int kind = use_relaxed ? 6 : 4;
+  time_product[kind] += seconds_since(start);
+  ++n_products[kind];
 }
 
 
@@ -705,6 +1061,65 @@ GalerkinCalderonFMMOperator::vmult_preconditioner(
 
 
 
+void
+GalerkinCalderonFMMOperator::vmult_preconditioner_pair(
+  const Vector<double> &v_src,
+  const Vector<double> &w_src,
+  Vector<double>       &v,
+  Vector<double>       &w) const
+{
+  const auto         start = std::chrono::steady_clock::now();
+  const LaplaceFMM  &fmm   = separate_preconditioner ? preconditioner_fmm :
+                                                       charge_fmm;
+  const unsigned int np    = points.size();
+  Vector<double>     x_v(v_src), x_w(w_src);
+  if (constraints.n_constraints() > 0)
+    {
+      constraints.distribute(x_v);
+      constraints.distribute(x_w);
+    }
+  std::vector<double>       values_v, values_w;
+  std::vector<Tensor<1, 3>> curls_w;
+  evaluate_field(x_v, values_v, nullptr);
+  evaluate_field(x_w, values_w, &curls_w);
+  std::vector<std::vector<double>> charges(4, std::vector<double>(np)),
+    potentials;
+  for (unsigned int p = 0; p < np; ++p)
+    {
+      charges[0][p] = inverse_4pi * JxW[p] * values_v[p];
+      for (unsigned int d = 0; d < 3; ++d)
+        charges[1 + d][p] = inverse_4pi * JxW[p] * curls_w[p][d];
+    }
+  fmm.evaluate_multiple(charges, potentials);
+  Vector<double> rows(2 * n_indices), v_rows(n_indices), w_rows(n_indices);
+  for (unsigned int p = 0; p < np; ++p)
+    potentials[0][p] *= JxW[p];
+  test_values(potentials[0], v_rows);
+  near_single.vmult_add(v_rows, v_src);
+  test_curl_potentials({{std::move(potentials[1]),
+                         std::move(potentials[2]),
+                         std::move(potentials[3])}},
+                       w_rows);
+  near_hypersingular.vmult_add(w_rows, w_src);
+  for (types::global_dof_index i = 0; i < n_indices; ++i)
+    {
+      rows[i]             = v_rows[i];
+      rows[n_indices + i] = w_rows[i];
+    }
+  sum_over_processes(rows, mpi_communicator);
+  v.reinit(n_indices);
+  w.reinit(n_indices);
+  for (types::global_dof_index i = 0; i < n_indices; ++i)
+    {
+      v[i] = rows[i];
+      w[i] = rows[n_indices + i];
+    }
+  time_product[5] += seconds_since(start);
+  n_products[5] += 2;
+}
+
+
+
 const Vector<double> &
 GalerkinCalderonFMMOperator::diagonal(const Operator op) const
 {
@@ -721,11 +1136,17 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
 {
   const unsigned long pairs =
     Utilities::MPI::sum(n_near_pairs, mpi_communicator);
+  const unsigned long cached =
+    Utilities::MPI::sum(n_cached_pairs, mpi_communicator);
+  const unsigned long integrated =
+    Utilities::MPI::sum(n_integrated_pairs, mpi_communicator);
+  const unsigned long congruent_pairs =
+    Utilities::MPI::sum(n_congruent_pairs, mpi_communicator);
   const unsigned long entries = Utilities::MPI::sum(
     static_cast<unsigned long>(near_sparsity.n_nonzero_elements()),
     mpi_communicator);
-  std::array<double, 6> mean;
-  for (unsigned int k = 0; k < 6; ++k)
+  std::array<double, 7> mean;
+  for (unsigned int k = 0; k < 7; ++k)
     mean[k] = Utilities::MPI::max(time_product[k] /
                                     std::max(1u, n_products[k]),
                                   mpi_communicator);
@@ -736,21 +1157,45 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
   dipole_fmm.print_statistics(out);
   if (separate_preconditioner)
     preconditioner_fmm.print_statistics(out);
+  if (separate_relaxed)
+    relaxed_fmm.print_statistics(out);
   const auto   precision = out.precision();
   if (this_mpi_process == 0)
     out << std::setprecision(3) << "Galerkin Calderon FMM: " << n_cells
         << " cells, " << n_q_points << " points each; " << pairs
         << " near pairs corrected, " << entries
-        << " near-field entries per operator\n"
+        << " near-field entries per operator"
+        << ", " << congruent_pairs << " pair blocks from congruent pairs"
+        << (cached > 0 ? ", " + std::to_string(cached) +
+                           " pair blocks from the previous mesh, " +
+                           std::to_string(integrated) + " integrated" :
+                         std::string())
+        << "\n"
         << "  setup: geometry " << sg << " s, trees " << st
         << " s, near field " << sn << " s (slowest process "
-        << setup_near_imbalance << " times the mean)\n"
-        << "  seconds per product, slowest process: V " << mean[0] << " ("
+        << setup_near_imbalance << " times the mean)\n";
+  if (this_mpi_process == 0 &&
+      near_profile_count[0] + near_profile_count[1] > 0)
+    {
+      static const char *names[6] = {"coincident",
+                                     "common edge",
+                                     "non-conforming edge",
+                                     "common vertex",
+                                     "close regular",
+                                     "other regular"};
+      out << "  near field by pair, seconds summed over the processes:";
+      for (unsigned int k = 0; k < 6; ++k)
+        out << " " << names[k] << " " << near_profile_seconds[k] << " ("
+            << near_profile_count[k] << ")";
+      out << ", point-sum corrections " << near_profile_seconds[6] << "\n";
+    }
+  if (this_mpi_process == 0)
+    out << "  seconds per product, slowest process: V " << mean[0] << " ("
         << n_products[0] << "), K " << mean[1] << " (" << n_products[1]
         << "), K^T " << mean[2] << " (" << n_products[2] << "), W "
         << mean[3] << " (" << n_products[3] << "), both rows of the mixed "
         << "problem " << mean[4] << " (" << n_products[4]
         << "), preconditioner V or W " << mean[5] << " (" << n_products[5]
-        << ")\n"
+        << "), relaxed rows " << mean[6] << " (" << n_products[6] << ")\n"
         << std::setprecision(precision);
 }

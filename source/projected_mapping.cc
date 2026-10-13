@@ -761,7 +761,8 @@ namespace ExactGeometry
     const Triangulation<dim, spacedim>    &triangulation,
     const unsigned int                     degree,
     const unsigned int                     stride,
-    const unsigned int                     offset)
+    const unsigned int                     part,
+    const unsigned int                     n_parts)
   {
     const FE_Q<dim, spacedim>       element(degree);
     const Quadrature<dim>           support(element.get_unit_support_points());
@@ -786,11 +787,15 @@ namespace ExactGeometry
           values(q, k)    = element.shape_value(k, check.point(q));
           gradients(q, k) = element.shape_grad(k, check.point(q));
         }
-    double       point = 0, surface = 0;
-    unsigned int index = 0;
+    double             point = 0, surface = 0;
+    unsigned int       index = 0;
+    const unsigned long n_cells = triangulation.n_active_cells();
+    const unsigned int  begin   = part * n_cells / n_parts;
+    const unsigned int  end     = (part + 1) * n_cells / n_parts;
     for (const auto &cell : triangulation.active_cell_iterators())
       {
-        if (index++ % stride != offset % stride)
+        const unsigned int i = index++;
+        if (i < begin || i >= end || (i - begin) % stride != 0)
           continue;
         at_support.reinit(cell);
         at_check.reinit(cell);
@@ -829,10 +834,12 @@ namespace ExactGeometry
                                    const Triangulation<1, 2> &,
                                    const unsigned int,
                                    const unsigned int,
+                                   const unsigned int,
                                    const unsigned int);
   template std::pair<double, double>
   estimate_interpolation_deviation(const ProjectedMapping<2, 3> &,
                                    const Triangulation<2, 3> &,
+                                   const unsigned int,
                                    const unsigned int,
                                    const unsigned int,
                                    const unsigned int);
