@@ -128,6 +128,41 @@ public:
     skewed_minimum_angle  = minimum_angle_degrees * M_PI / 180.;
   }
 
+  /** Promote touching pairs whose normals make an angle above the given
+   * one, the cells on the two sides of a sharp edge of the surface, as the
+   * edge between the tip and the surface of a wing, at about 90 degrees:
+   * the singular rules of the pairs within a smooth surface lose accuracy
+   * on them, most where the surface also bends, as at the leading edge.
+   * The normals are those of the vertices of the cells. Folded pairs
+   * (set_folded_singular_order()) are kinked pairs too; the higher of the
+   * two orders applies. Order zero leaves the ordinary singular rule
+   * unchanged.
+   */
+  void
+  set_kinked_singular_order(const unsigned int order,
+                            const double       minimum_angle_degrees = 60.)
+  {
+    kinked_singular_order  = order;
+    kinked_singular_cosine = std::cos(minimum_angle_degrees * M_PI / 180.);
+  }
+
+  /** Widen the near-singular test for kinked pairs that do not touch
+   * (set_kinked_singular_order() gives their angle), as the upper and lower
+   * surfaces of a thin body, or the tip of a wing and the surfaces next to
+   * it: the double-layer kernel (x - y) . n / |x - y|^3 of one cell across
+   * the other carries a weight of order one within a distance of the order
+   * of their separation, which the tensor rule of the far field resolves
+   * only at separations of several cell sizes, while on one smooth surface
+   * it nearly vanishes. Kinked pairs closer than the given ratio times the
+   * larger diameter are near-singular; a ratio not above the near-singular
+   * distance ratio leaves the test unchanged.
+   */
+  void
+  set_kinked_distance_ratio(const double ratio)
+  {
+    kinked_distance_ratio = ratio;
+  }
+
   void
   set_far_field_tolerance(const double tolerance)
   {
@@ -147,6 +182,18 @@ public:
   {
     screening = kappa;
   }
+
+  /// Free the work arrays that the direct path keeps from pair to pair, at
+  /// the end of an assembly, so that they do not add to the memory of what
+  /// follows; they grow again when needed.
+  void
+  release_work_memory() const;
+
+  /// The cached singular rules of the direct path: their number and size,
+  /// split into the base order and the raised orders, and the size of the
+  /// point sets; for diagnosing memory.
+  std::string
+  cache_statistics() const;
 
   double
   get_screening() const
@@ -254,6 +301,16 @@ public:
     unsigned long long geometry_points   = 0;
     double             geometry_seconds  = 0.0;
     double             shape_seconds     = 0.0;
+    /// Parts of the kernel loops of the joint operators on paired rules:
+    /// the kernel weights, the surface curls and the sums.
+    double             kernel_weight_seconds = 0.0;
+    double             kernel_curl_seconds   = 0.0;
+    double             kernel_sum_seconds    = 0.0;
+    /// Singular leaves on patches with the shapes of their kept rule
+    /// (LightLeaf::transformed), and those of a panel with itself on half
+    /// the rule (LightLeaf::half).
+    unsigned long long transformed_leaves = 0;
+    unsigned long long half_leaves        = 0;
   };
 
   const RhsProfile &
@@ -281,6 +338,16 @@ public:
 
   unsigned int
   n_near_singular_leaves() const;
+
+  /// Whether two whole cells that do not touch are close enough for the
+  /// near-singular subdivision.
+  bool
+  is_near_singular_pair(const CellIterator &test_cell,
+                        const CellIterator &trial_cell) const
+  {
+    const ReferencePatch whole{Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)};
+    return is_near_singular(test_cell, whole, trial_cell, whole);
+  }
 
   GalerkinPanelPairType
   classify(const CellIterator &test_cell,
@@ -736,7 +803,14 @@ private:
                  const unsigned int               order,
                  std::vector<Point<2>>           &test_reference_points,
                  std::vector<Point<2>>           &trial_reference_points,
-                 std::vector<double>             &pair_weights) const;
+                 std::vector<double>             &pair_weights,
+                 const bool                       half = false) const;
+
+  /// The transform of a leaf on a patch (LightLeaf::transformed): row i,
+  /// the values of shape i of the cell at the support points of the patch.
+  void
+  patch_transform(const ReferencePatch &patch,
+                  std::vector<double>  &transform) const;
 
   std::vector<ReferencePatch>
   uniform_subpatches(const unsigned int refinement_levels) const;
@@ -822,6 +896,9 @@ private:
   // this many times the other; the depth cap bounds the recursion for
   // pathological size ratios.
   static constexpr double       singular_balance_ratio = 2.0;
+  /// The largest ratio of the depths of the two patches of a folded pair
+  /// from their common edge.
+  static constexpr double       folded_balance_ratio = 1.25;
   static constexpr unsigned int singular_balance_maximum_depth = 10;
 
   FullMatrix<double>
@@ -919,6 +996,19 @@ private:
   {
     std::vector<Point<2>> test_points;
     std::vector<Point<2>> trial_points;
+    /// The distinct points of each side and, for every pair of points, the
+    /// index of its own among them, where they are fewer: on one side of a
+    /// pair with a common vertex there are n^2 of the n^4 pairs of a
+    /// region, on each side of one with a common edge n^3. Empty where
+    /// the points are (nearly) all distinct.
+    std::vector<Point<2>>     test_unique, trial_unique;
+    std::vector<unsigned int> test_index, trial_index;
+    /// For the rules of raised orders, which do not keep the shapes at all
+    /// their points: the shapes and their derivatives at the distinct
+    /// points, laid out as the values, gathered for each leaf.
+    std::vector<double> test_unique_shapes, trial_unique_shapes;
+    std::vector<double> test_unique_derivatives0, test_unique_derivatives1,
+      trial_unique_derivatives0, trial_unique_derivatives1;
     std::vector<double>   weights;
     std::vector<double>   test_shapes;
     std::vector<double>   trial_shapes;
@@ -958,10 +1048,27 @@ private:
   /// curls: evaluate_geometry() then keeps the tangents and
   /// prepare_light_leaf() the derivatives of the shape functions.
   mutable bool light_derivatives = false;
+  /// Set by integrate_light() for the operators that it takes to the shapes
+  /// of the cells itself: prepare_light_leaf() may then use the shapes of a
+  /// kept rule on a patch (LightLeaf::transformed) and, with light_half, the
+  /// half rule of a panel with itself (LightLeaf::half).
+  mutable bool light_affine = false, light_half = false;
 
   void
   evaluate_shapes(const std::vector<Point<2>> &reference_points,
                   std::vector<double>         &shapes) const;
+
+  /// The geometry of one side of a kept rule, placed on the patch, at all
+  /// its points: evaluated at its distinct points (unique, with the index
+  /// of every point among them) and gathered, or at all of them if unique
+  /// is empty.
+  void
+  evaluate_rule_geometry(const CellIterator              &cell,
+                         const ReferencePatch            &patch,
+                         const std::vector<Point<2>>     &points,
+                         const std::vector<Point<2>>     &unique,
+                         const std::vector<unsigned int> &index,
+                         PointSet                        &set) const;
 
   bool
   takes_light_path(const OperatorType        operator_type,
@@ -988,13 +1095,61 @@ private:
     const std::vector<double> *trial_derivatives0 = nullptr;
     const std::vector<double> *trial_derivatives1 = nullptr;
     std::vector<double>        own_derivatives[4];
+    /// On patches smaller than the cells, with a rule kept with its shapes:
+    /// the shapes and derivatives are those of the rule, in the coordinates
+    /// of the patches, and the result goes over to the shapes of the cells
+    /// by the transforms, row i the values of shape i of the cell at the
+    /// support points of the patch (Q_p is invariant under the affine map
+    /// of a patch); the derivative in direction d is scaled by the inverse
+    /// extent of the patch in d and the weights by weight_scale, the
+    /// product of the areas of the patches.
+    bool                  transformed = false;
+    std::vector<double>   test_transform, trial_transform;
+    std::array<double, 2> test_derivative_scale  = {{1., 1.}};
+    std::array<double, 2> trial_derivative_scale = {{1., 1.}};
+    double                weight_scale           = 1.;
+    /// A panel with itself on half the regions of its rule, the others being
+    /// their images under the exchange of the two points: the result is
+    /// completed by symmetry (joint operators in both directions).
+    bool half = false;
+
+    /// Forget the rule and the pointers, keep the capacity of the arrays.
+    void
+    reset()
+    {
+      tensor             = false;
+      test_shapes        = nullptr;
+      trial_shapes       = nullptr;
+      weights            = nullptr;
+      test_derivatives0  = nullptr;
+      test_derivatives1  = nullptr;
+      trial_derivatives0 = nullptr;
+      trial_derivatives1 = nullptr;
+      transformed        = false;
+      half               = false;
+      test_derivative_scale  = {{1., 1.}};
+      trial_derivative_scale = {{1., 1.}};
+      weight_scale           = 1.;
+    }
   };
+  /// The leaf of the direct path, kept from pair to pair so that its arrays
+  /// keep their memory; one leaf is in use at a time.
+  mutable LightLeaf light_leaf;
 
   /// W, or V, K and W, of a leaf of the direct path, whose point sets carry
   /// tangents and whose leaf carries the derivatives of the shape functions.
   FullMatrix<double>
   integrate_light_hypersingular(const LightLeaf   &leaf,
                                 const OperatorType operator_type) const;
+
+  /// The result of integrate_light_hypersingular() for the shapes of the
+  /// cells (LightLeaf::transformed) and the whole rule (LightLeaf::half,
+  /// from the four blocks of the joint operators in both directions to the
+  /// first n_columns of them).
+  FullMatrix<double>
+  complete_light_leaf(const LightLeaf    &leaf,
+                      FullMatrix<double> &&result,
+                      const unsigned int   n_columns) const;
 
   void
   prepare_light_leaf(const CellIterator   &test_cell,
@@ -1072,10 +1227,22 @@ private:
   // that checks the reconstructed geometry, and the tensor Gauss rules.
   mutable PointSet                                test_set;
   mutable PointSet                                trial_set;
+  /// The geometry at the distinct points of a side of a rule, before it is
+  /// gathered to all its points (evaluate_rule_geometry()).
+  mutable PointSet                                unique_set;
+  mutable std::vector<Point<2>>                   unique_points;
   /// Work arrays of evaluate_geometry(): basis values and derivatives in
   /// the two directions, node by node, and the coordinates and tangents,
   /// component by component, each over all points.
   mutable std::vector<double> geometry_work;
+  /// Work arrays of the kernel loops of the joint operators, kept from pair
+  /// to pair: allocated anew, arrays of megabytes cost a page fault per
+  /// page on every pair. The surface curls of both sides, the kernel weights
+  /// and the weighted test shapes of a block of points.
+  mutable std::vector<double> kernel_curls_x, kernel_curls_y,
+    kernel_weights, kernel_block;
+  /// The points of the subpatches of a leaf, kept for the same reason.
+  mutable std::vector<Point<2>> leaf_test_points, leaf_trial_points;
   mutable std::unique_ptr<FEValues<2, spacedim>>  light_check_values;
   /// On a mapping onto the exact geometry (ExactGeometry::ProjectedMapping),
   /// the direct path reconstructs the cells of the mesh mapping and projects
@@ -1099,12 +1266,42 @@ private:
   /// cell is skewed (set_skewed_singular_order()).
   unsigned int skewed_singular_order = 0;
   double       skewed_minimum_angle  = 0.;
+  /// The order for kinked pairs, and the cosine of the angle of their
+  /// normals above which a pair is kinked (set_kinked_singular_order()).
+  unsigned int kinked_singular_order  = 0;
+  double       kinked_singular_cosine = 0.5;
+  /// The near-singular distance ratio of kinked pairs
+  /// (set_kinked_distance_ratio()).
+  double kinked_distance_ratio = 0.;
+  /// The highest order of the tensor rule of a kinked pair near only by its
+  /// own ratio (integrate_adaptive_regular()).
+  static constexpr unsigned int maximum_kinked_regular_order = 12;
 
   /// The order of the singular rule for a pair (set_folded_singular_order()).
   unsigned int
   singular_order_for(const CellIterator &test_cell,
                      const CellIterator &trial_cell,
                      const unsigned int  order) const;
+
+  /// Whether two cells meet with nearly opposite normals, the cosine of
+  /// their normals below folded_singular_cosine.
+  bool
+  is_folded_pair(const CellIterator &test_cell,
+                 const CellIterator &trial_cell) const;
+
+  /// The cosine of the angle of the normals of two cells, from their
+  /// vertices and oriented as the cells.
+  double
+  normal_cosine(const CellIterator &test_cell,
+                const CellIterator &trial_cell) const;
+
+  /// The smallest distance of the sample points of two patches over the
+  /// larger of their diameters.
+  double
+  separation_ratio(const CellIterator   &test_cell,
+                   const ReferencePatch &test_patch,
+                   const CellIterator   &trial_cell,
+                   const ReferencePatch &trial_patch) const;
   const unsigned int                           duffy_outer_subdivisions;
   const double                                 near_singular_distance_ratio;
   const unsigned int                           near_singular_maximum_depth;

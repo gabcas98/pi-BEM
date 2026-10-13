@@ -1,6 +1,7 @@
 #include "../include/galerkin_panel_pair_integrator.h"
 #include "../include/tensor_map_kernel.h"
 
+#include <sstream>
 #include <chrono>
 
 #include <deal.II/base/geometry_info.h>
@@ -83,7 +84,84 @@ namespace
   // on this, as it detects the corners shared by two touching cells by
   // mapping them from either side.
   // Normal trace of a vector-valued function at a point.
-  template <int spacedim>
+  namespace
+{
+  /**
+   * C[r * ldc + j] += sum_k A[r * lda + k] B[j * ldb + k] for r < R, j < J,
+   * k < m: a small product of matrices with rows of points, in register
+   * blocks of three rows of A by three of B, which read six values for nine
+   * products.
+   */
+  void
+  add_row_products(const double      *A,
+                   const unsigned int lda,
+                   const unsigned int R,
+                   const double      *B,
+                   const unsigned int ldb,
+                   const unsigned int J,
+                   const unsigned int m,
+                   double            *C,
+                   const unsigned int ldc)
+  {
+    unsigned int r = 0;
+    for (; r + 3 <= R; r += 3)
+      {
+        const double *a0 = A + r * lda, *a1 = a0 + lda, *a2 = a1 + lda;
+        unsigned int  j = 0;
+        for (; j + 3 <= J; j += 3)
+          {
+            const double *b0 = B + j * ldb, *b1 = b0 + ldb, *b2 = b1 + ldb;
+            double        c00 = 0, c01 = 0, c02 = 0, c10 = 0, c11 = 0, c12 = 0,
+                   c20 = 0, c21 = 0, c22 = 0;
+#pragma omp simd reduction(+ : c00, c01, c02, c10, c11, c12, c20, c21, c22)
+            for (unsigned int k = 0; k < m; ++k)
+              {
+                c00 += a0[k] * b0[k];
+                c01 += a0[k] * b1[k];
+                c02 += a0[k] * b2[k];
+                c10 += a1[k] * b0[k];
+                c11 += a1[k] * b1[k];
+                c12 += a1[k] * b2[k];
+                c20 += a2[k] * b0[k];
+                c21 += a2[k] * b1[k];
+                c22 += a2[k] * b2[k];
+              }
+            double *c = C + r * ldc + j;
+            c[0] += c00, c[1] += c01, c[2] += c02;
+            c[ldc] += c10, c[ldc + 1] += c11, c[ldc + 2] += c12;
+            c[2 * ldc] += c20, c[2 * ldc + 1] += c21, c[2 * ldc + 2] += c22;
+          }
+        for (; j < J; ++j)
+          {
+            const double *b0 = B + j * ldb;
+            double        c0 = 0, c1 = 0, c2 = 0;
+#pragma omp simd reduction(+ : c0, c1, c2)
+            for (unsigned int k = 0; k < m; ++k)
+              {
+                c0 += a0[k] * b0[k];
+                c1 += a1[k] * b0[k];
+                c2 += a2[k] * b0[k];
+              }
+            C[r * ldc + j] += c0;
+            C[(r + 1) * ldc + j] += c1;
+            C[(r + 2) * ldc + j] += c2;
+          }
+      }
+    for (; r < R; ++r)
+      for (unsigned int j = 0; j < J; ++j)
+        {
+          const double *a0 = A + r * lda, *b0 = B + j * ldb;
+          double        c0 = 0;
+#pragma omp simd reduction(+ : c0)
+          for (unsigned int k = 0; k < m; ++k)
+            c0 += a0[k] * b0[k];
+          C[r * ldc + j] += c0;
+        }
+  }
+} // namespace
+
+
+template <int spacedim>
   double
   normal_trace(const Function<spacedim>  &gradient,
                const Point<spacedim>     &point,
@@ -401,8 +479,21 @@ GalerkinPanelPairIntegrator<spacedim>::singular_order_for(
           smallest_angle(trial_cell) < skewed_minimum_angle)
         base = skewed_singular_order;
     }
-  if (folded_singular_order <= base || test_cell == trial_cell)
+  if (kinked_singular_order > base && test_cell != trial_cell &&
+      normal_cosine(test_cell, trial_cell) < kinked_singular_cosine)
+    base = kinked_singular_order;
+  if (folded_singular_order <= base)
     return base;
+  return is_folded_pair(test_cell, trial_cell) ? folded_singular_order : base;
+}
+
+
+template <int spacedim>
+double
+GalerkinPanelPairIntegrator<spacedim>::normal_cosine(
+  const CellIterator &test_cell,
+  const CellIterator &trial_cell) const
+{
   // The normals of the cells from their vertices, oriented as the cells.
   const auto normal = [](const CellIterator &cell) {
     Tensor<1, spacedim> n =
@@ -411,9 +502,44 @@ GalerkinPanelPairIntegrator<spacedim>::singular_order_for(
     n /= n.norm();
     return cell->direction_flag() ? n : Tensor<1, spacedim>(-n);
   };
-  return normal(test_cell) * normal(trial_cell) < folded_singular_cosine ?
-           folded_singular_order :
-           base;
+  return normal(test_cell) * normal(trial_cell);
+}
+
+
+template <int spacedim>
+double
+GalerkinPanelPairIntegrator<spacedim>::separation_ratio(
+  const CellIterator   &test_cell,
+  const ReferencePatch &test_patch,
+  const CellIterator   &trial_cell,
+  const ReferencePatch &trial_patch) const
+{
+  const auto test_points  = patch_sample_points(test_cell, test_patch);
+  const auto trial_points = patch_sample_points(trial_cell, trial_patch);
+  double     test_diameter = 0.0, trial_diameter = 0.0;
+  double     distance      = std::numeric_limits<double>::max();
+  for (const auto &left : test_points)
+    for (const auto &right : test_points)
+      test_diameter = std::max(test_diameter, left.distance(right));
+  for (const auto &left : trial_points)
+    for (const auto &right : trial_points)
+      trial_diameter = std::max(trial_diameter, left.distance(right));
+  for (const auto &left : test_points)
+    for (const auto &right : trial_points)
+      distance = std::min(distance, left.distance(right));
+  return distance / std::max(test_diameter, trial_diameter);
+}
+
+
+template <int spacedim>
+bool
+GalerkinPanelPairIntegrator<spacedim>::is_folded_pair(
+  const CellIterator &test_cell,
+  const CellIterator &trial_cell) const
+{
+  if (test_cell == trial_cell)
+    return false;
+  return normal_cosine(test_cell, trial_cell) < folded_singular_cosine;
 }
 
 
@@ -635,6 +761,10 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
   if (near_singular_distance_ratio <= 0.0 ||
       near_singular_maximum_depth == 0)
     return false;
+  double ratio = near_singular_distance_ratio;
+  if (kinked_distance_ratio > ratio && test_cell != trial_cell &&
+      normal_cosine(test_cell, trial_cell) < kinked_singular_cosine)
+    ratio = kinked_distance_ratio;
 
   // Whole-cell patches are the overwhelmingly common case and are asked about
   // once per ordered pair, so they go through the cache and a bounding-sphere
@@ -644,8 +774,7 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
       const CellGeometry &test  = full_patch_geometry(test_cell);
       const CellGeometry &trial = full_patch_geometry(trial_cell);
       const double        threshold =
-        near_singular_distance_ratio *
-        std::max(test.diameter, trial.diameter);
+        ratio * std::max(test.diameter, trial.diameter);
       const double separation = test.centre.distance(trial.centre) -
                                 test.radius - trial.radius;
       if (separation >= threshold)
@@ -673,8 +802,7 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
     for (const auto &right : trial_points)
       distance = std::min(distance, left.distance(right));
 
-  return distance < near_singular_distance_ratio *
-                      std::max(test_diameter, trial_diameter);
+  return distance < ratio * std::max(test_diameter, trial_diameter);
 }
 
 
@@ -758,20 +886,111 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
         }
     }
 
+  FullMatrix<double> result(finite_element.dofs_per_cell,
+                            n_result_columns(operator_type, trial_function));
+  // A folded pair with a common edge, as at a thin trailing edge: the rule
+  // loses accuracy when the two patches reach to different depths from the
+  // edge (at depths 2:1 it needs fourteen points per variable instead of
+  // ten), so the deeper patch is halved parallel to the edge until the
+  // depths are within folded_balance_ratio; its far half no longer touches.
+  if (type == GalerkinPanelPairType::common_edge && folded_singular_order != 0 &&
+      depth < singular_balance_maximum_depth &&
+      is_folded_pair(test_cell, trial_cell))
+    {
+      const auto   along = common_edge_directions(test_cell,
+                                                test_patch,
+                                                trial_cell,
+                                                trial_patch);
+      const double test_depth  = test_size[1 - along[0]];
+      const double trial_depth = trial_size[1 - along[1]];
+      if (std::max(test_depth, trial_depth) >
+          folded_balance_ratio * std::min(test_depth, trial_depth))
+        {
+          if (test_depth > trial_depth)
+            for (const auto &child :
+                 split_patch_direction(test_patch, 1 - along[0]))
+              result.add(1.0,
+                         integrate_balanced_singular(test_cell,
+                                                     child,
+                                                     trial_cell,
+                                                     trial_patch,
+                                                     order,
+                                                     operator_type,
+                                                     trial_function,
+                                                     regularize_trial_function,
+                                                     depth + 1));
+          else
+            for (const auto &child :
+                 split_patch_direction(trial_patch, 1 - along[1]))
+              result.add(1.0,
+                         integrate_balanced_singular(test_cell,
+                                                     test_patch,
+                                                     trial_cell,
+                                                     child,
+                                                     order,
+                                                     operator_type,
+                                                     trial_function,
+                                                     regularize_trial_function,
+                                                     depth + 1));
+          return result;
+        }
+    }
+
   if (depth >= singular_balance_maximum_depth || target <= 0.0 ||
       worst_extent <= singular_balance_ratio * target)
     return integrate(test_cell, test_patch, trial_cell, trial_patch,
                      effective_order, operator_type, trial_function,
                      regularize_trial_function);
 
-  FullMatrix<double> result(finite_element.dofs_per_cell,
-                            n_result_columns(operator_type, trial_function));
   // An elongated panel with itself: both copies are halved across the long
   // direction, into two coincident pairs and two with a common edge. The
   // coincident rule loses accuracy on elongated panels as the edge rule
   // does, and much more on curved ones.
   if (type == GalerkinPanelPairType::same_panel)
     {
+      const auto children = split_patch_direction(test_patch, worst_direction);
+      if (is_joint(operator_type) && children.size() == 2)
+        {
+          // The pair of the two halves in the other order is its mirror
+          // image: V and W transposed, K and K the other way exchanged and
+          // transposed; the latter is computed for it in any case.
+          const unsigned int dpc  = finite_element.dofs_per_cell;
+          const bool         both =
+            operator_type == OperatorType::single_double_hypersingular_both;
+          for (unsigned int c = 0; c < 2; ++c)
+            result.add(1.0,
+                       integrate_balanced_singular(test_cell,
+                                                   children[c],
+                                                   trial_cell,
+                                                   children[c],
+                                                   order,
+                                                   operator_type,
+                                                   trial_function,
+                                                   regularize_trial_function,
+                                                   depth + 1));
+          const FullMatrix<double> cross = integrate_balanced_singular(
+            test_cell,
+            children[0],
+            trial_cell,
+            children[1],
+            order,
+            OperatorType::single_double_hypersingular_both,
+            trial_function,
+            regularize_trial_function,
+            depth + 1);
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              {
+                result(i, j) += cross(i, j) + cross(j, i);
+                result(i, dpc + j) += cross(i, dpc + j) + cross(j, 3 * dpc + i);
+                result(i, 2 * dpc + j) +=
+                  cross(i, 2 * dpc + j) + cross(j, 2 * dpc + i);
+                if (both)
+                  result(i, 3 * dpc + j) +=
+                    cross(i, 3 * dpc + j) + cross(j, dpc + i);
+              }
+          return result;
+        }
       for (const auto &test_child :
            split_patch_direction(test_patch, worst_direction))
         for (const auto &trial_child :
@@ -885,13 +1104,48 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
         }
     }
 
+  double total = 0.0;
+  // As integrate_balanced_singular(): the deeper patch of a folded pair is
+  // halved parallel to the common edge.
+  if (type == GalerkinPanelPairType::common_edge && folded_singular_order != 0 &&
+      depth < singular_balance_maximum_depth &&
+      is_folded_pair(test_cell, trial_cell))
+    {
+      const auto   along = common_edge_directions(test_cell,
+                                                test_patch,
+                                                trial_cell,
+                                                trial_patch);
+      const double test_depth  = test_size[1 - along[0]];
+      const double trial_depth = trial_size[1 - along[1]];
+      if (std::max(test_depth, trial_depth) >
+          folded_balance_ratio * std::min(test_depth, trial_depth))
+        {
+          if (test_depth > trial_depth)
+            for (const auto &child :
+                 split_patch_direction(test_patch, 1 - along[0]))
+              total += error_energy_balanced(test_cell, child, trial_cell,
+                                             trial_patch, order,
+                                             exact_gradient,
+                                             test_coefficients,
+                                             trial_coefficients, depth + 1);
+          else
+            for (const auto &child :
+                 split_patch_direction(trial_patch, 1 - along[1]))
+              total += error_energy_balanced(test_cell, test_patch,
+                                             trial_cell, child, order,
+                                             exact_gradient,
+                                             test_coefficients,
+                                             trial_coefficients, depth + 1);
+          return total;
+        }
+    }
+
   if (depth >= singular_balance_maximum_depth || target <= 0.0 ||
       worst_extent <= singular_balance_ratio * target)
     return error_energy_leaf(test_cell, test_patch, trial_cell, trial_patch,
                              effective_order, exact_gradient,
                              test_coefficients, trial_coefficients);
 
-  double total = 0.0;
   // As integrate_balanced_singular(): an elongated panel with itself is
   // halved across its long direction in both copies.
   if (type == GalerkinPanelPairType::same_panel)
@@ -986,6 +1240,41 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_regular(
                        operator_type,
                        trial_function,
                        regularize_trial_function);
+    }
+
+  // A kinked pair near only by its own ratio, between the near-singular
+  // ratio and the kinked one: one tensor rule of the order that matches
+  // the accuracy of the given order at the kinked ratio, from the
+  // convergence factor rho(r) = 2r + sqrt(4r^2 + 1) of the Gauss rule
+  // against a singularity at r diameters (the Bernstein ellipse of half a
+  // diameter), instead of the subdivision that would make every subpair
+  // as far apart.
+  if (kinked_distance_ratio > near_singular_distance_ratio &&
+      test_cell != trial_cell &&
+      normal_cosine(test_cell, trial_cell) < kinked_singular_cosine)
+    {
+      const double ratio =
+        separation_ratio(test_cell, test_patch, trial_cell, trial_patch);
+      if (ratio >= near_singular_distance_ratio)
+        {
+          const auto rho = [](const double r) {
+            return 2. * r + std::sqrt(4. * r * r + 1.);
+          };
+          const unsigned int raised = std::min<unsigned int>(
+            maximum_kinked_regular_order,
+            static_cast<unsigned int>(
+              std::ceil(order * std::log(rho(kinked_distance_ratio)) /
+                        std::log(rho(ratio)))));
+          ++near_singular_leaves;
+          return integrate(test_cell,
+                           test_patch,
+                           trial_cell,
+                           trial_patch,
+                           std::max(order, raised),
+                           operator_type,
+                           trial_function,
+                           regularize_trial_function);
+        }
     }
 
   const auto test_points = patch_sample_points(test_cell, test_patch);
@@ -1579,17 +1868,22 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
   const unsigned int               order,
   std::vector<Point<2>>           &test_reference_points,
   std::vector<Point<2>>           &trial_reference_points,
-  std::vector<double>             &pair_weights) const
+  std::vector<double>             &pair_weights,
+  const bool                       half) const
 {
   // The singular rules in the coordinates of the two patches, before these
   // are placed in their cells: they depend only on the configuration, the
-  // order and which corners of the patches are shared.
+  // order and which corners of the patches are shared. A panel with itself
+  // has eight regions, the last four the images of the first under the
+  // exchange of the two points (region 6 of 0, 7 of 1, 4 of 2, 5 of 3):
+  // the half rule keeps the first four.
   test_reference_points.clear();
   trial_reference_points.clear();
   pair_weights.clear();
   if (singular_quadrature ==
            GalerkinSingularQuadrature::iterated_duffy)
     {
+      AssertThrow(!half, ExcMessage("No half rule for iterated Duffy."));
       Quadrature<2> outer_quadrature;
       if (type == GalerkinPanelPairType::same_panel)
         outer_quadrature =
@@ -1655,7 +1949,7 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
                   one_dimensional_quadrature.weight(q3));
               }
       const unsigned int n_regions =
-        type == GalerkinPanelPairType::same_panel ? 8 :
+        type == GalerkinPanelPairType::same_panel ? (half ? 4 : 8) :
         type == GalerkinPanelPairType::common_edge ? 6 : 4;
       test_reference_points.reserve(n_regions * parametric_points.size());
       trial_reference_points.reserve(n_regions * parametric_points.size());
@@ -2864,11 +3158,58 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_shape_derivatives(
 
 
 template <int spacedim>
+void
+GalerkinPanelPairIntegrator<spacedim>::release_work_memory() const
+{
+  const auto release = [](auto &v) { std::decay_t<decltype(v)>().swap(v); };
+  release(kernel_curls_x);
+  release(kernel_curls_y);
+  release(kernel_weights);
+  release(kernel_block);
+  release(leaf_test_points);
+  release(leaf_trial_points);
+  light_leaf = LightLeaf();
+  test_set   = PointSet();
+  trial_set  = PointSet();
+}
+
+
+template <int spacedim>
+std::string
+GalerkinPanelPairIntegrator<spacedim>::cache_statistics() const
+{
+  std::size_t n[2] = {0, 0}, bytes[2] = {0, 0};
+  for (const auto &[key, rule] : light_rule_cache)
+    {
+      const unsigned int raised =
+        singular_order != 0 && key[1] > static_cast<int>(singular_order);
+      ++n[raised];
+      bytes[raised] += rule.memory_consumption();
+    }
+  std::ostringstream out;
+  out << "rules: base " << n[0] << " (" << bytes[0] / 1048576 << " MB), raised "
+      << n[1] << " (" << bytes[1] / 1048576 << " MB, counted "
+      << raised_rule_bytes / 1048576 << " MB); point sets " << test_set.n
+      << ", " << trial_set.n << " points, capacity "
+      << test_set.points.capacity() << ", " << trial_set.points.capacity();
+  return out.str();
+}
+
+template <int spacedim>
 std::size_t
 GalerkinPanelPairIntegrator<spacedim>::LightRule::memory_consumption() const
 {
-  return (test_points.capacity() + trial_points.capacity()) *
+  return (test_points.capacity() + trial_points.capacity() +
+          test_unique.capacity() + trial_unique.capacity()) *
            sizeof(Point<2>) +
+         (test_index.capacity() + trial_index.capacity()) *
+           sizeof(unsigned int) +
+         (test_unique_shapes.capacity() + trial_unique_shapes.capacity() +
+          test_unique_derivatives0.capacity() +
+          test_unique_derivatives1.capacity() +
+          trial_unique_derivatives0.capacity() +
+          trial_unique_derivatives1.capacity()) *
+           sizeof(double) +
          (weights.capacity() + test_shapes.capacity() +
           trial_shapes.capacity() + test_derivatives0.capacity() +
           test_derivatives1.capacity() + trial_derivatives0.capacity() +
@@ -2957,9 +3298,11 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
     type == GalerkinPanelPairType::same_panel ?
       std::vector<CommonVertex>() :
       common_vertices(test_cell, test_patch, trial_cell, trial_patch);
+  const bool half = light_half && type == GalerkinPanelPairType::same_panel &&
+                   singular_quadrature == GalerkinSingularQuadrature::sauter_schwab;
   std::array<int, 7> key{{static_cast<int>(type),
                           static_cast<int>(order),
-                          0, -1, -1, -1, -1}};
+                          half ? 1 : 0, -1, -1, -1, -1}};
   if (type == GalerkinPanelPairType::common_edge ||
       type == GalerkinPanelPairType::common_vertex)
     for (unsigned int k = 0; k < shared.size() && k < 2; ++k)
@@ -2967,7 +3310,12 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
         key[3 + 2 * k] = static_cast<int>(shared[k].test_index);
         key[4 + 2 * k] = static_cast<int>(shared[k].trial_index);
       }
-  auto hit = light_rule_cache.find(key);
+  // The rules of raised orders (folded, material and skewed pairs) serve
+  // few pairs but have many points, 6 n^4 for a common edge: they keep only
+  // their points and weights, about a sixth of the memory at degree two, and
+  // the shapes are evaluated for each pair as for a subpatch.
+  const bool raised = singular_order != 0 && order > singular_order;
+  auto       hit    = light_rule_cache.find(key);
   if (hit == light_rule_cache.end())
     {
       ++profile.uncached_pairs;
@@ -2977,16 +3325,57 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
                      order,
                      built.test_points,
                      built.trial_points,
-                     built.weights);
-      evaluate_shapes(built.test_points, built.test_shapes);
-      evaluate_shapes(built.trial_points, built.trial_shapes);
-      evaluate_shape_derivatives(built.test_points,
-                                 built.test_derivatives0,
-                                 built.test_derivatives1);
-      evaluate_shape_derivatives(built.trial_points,
-                                 built.trial_derivatives0,
-                                 built.trial_derivatives1);
-      if (singular_order != 0 && order > singular_order)
+                     built.weights,
+                     half);
+      // The distinct points of each side, bit for bit: the rules compute
+      // the coordinates that depend on the same variables in the same way.
+      const auto distinct = [](const std::vector<Point<2>> &points,
+                               std::vector<Point<2>>       &unique,
+                               std::vector<unsigned int>   &index) {
+        std::map<std::pair<double, double>, unsigned int> seen;
+        index.resize(points.size());
+        for (unsigned int q = 0; q < points.size(); ++q)
+          {
+            const auto [entry, inserted] =
+              seen.try_emplace({points[q][0], points[q][1]}, unique.size());
+            if (inserted)
+              unique.push_back(points[q]);
+            index[q] = entry->second;
+          }
+        if (4 * unique.size() > 3 * points.size())
+          {
+            unique.clear();
+            index.clear();
+          }
+        unique.shrink_to_fit();
+        index.shrink_to_fit();
+      };
+      distinct(built.test_points, built.test_unique, built.test_index);
+      distinct(built.trial_points, built.trial_unique, built.trial_index);
+      if (raised && !shape_nodes.empty() && !built.test_unique.empty() &&
+          !built.trial_unique.empty())
+        {
+          evaluate_shapes(built.test_unique, built.test_unique_shapes);
+          evaluate_shapes(built.trial_unique, built.trial_unique_shapes);
+          evaluate_shape_derivatives(built.test_unique,
+                                     built.test_unique_derivatives0,
+                                     built.test_unique_derivatives1);
+          evaluate_shape_derivatives(built.trial_unique,
+                                     built.trial_unique_derivatives0,
+                                     built.trial_unique_derivatives1);
+        }
+      if (!raised)
+        {
+          evaluate_shapes(built.test_points, built.test_shapes);
+          evaluate_shapes(built.trial_points, built.trial_shapes);
+          evaluate_shape_derivatives(built.test_points,
+                                     built.test_derivatives0,
+                                     built.test_derivatives1);
+          evaluate_shape_derivatives(built.trial_points,
+                                     built.trial_derivatives0,
+                                     built.trial_derivatives1);
+        }
+      if (raised)
         {
           // Evict the least recently used rules of raised orders until the
           // new one fits. No leaf holds a rule across lookups.
@@ -3013,10 +3402,13 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
   const LightRule &rule = hit->second;
 
   leaf.tensor = false;
-  if (is_full_patch(test_patch) && is_full_patch(trial_patch))
+  leaf.half   = half;
+  if (!raised && is_full_patch(test_patch) && is_full_patch(trial_patch))
     {
-      evaluate_geometry(test_cell, rule.test_points, test_set);
-      evaluate_geometry(trial_cell, rule.trial_points, trial_set);
+      evaluate_rule_geometry(test_cell, test_patch, rule.test_points,
+                             rule.test_unique, rule.test_index, test_set);
+      evaluate_rule_geometry(trial_cell, trial_patch, rule.trial_points,
+                             rule.trial_unique, rule.trial_index, trial_set);
       leaf.test_shapes        = &rule.test_shapes;
       leaf.trial_shapes       = &rule.trial_shapes;
       leaf.weights            = &rule.weights;
@@ -3026,8 +3418,89 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
       leaf.trial_derivatives1 = &rule.trial_derivatives1;
       return;
     }
-  std::vector<Point<2>> test_points(rule.test_points.size());
-  std::vector<Point<2>> trial_points(rule.trial_points.size());
+  evaluate_rule_geometry(test_cell, test_patch, rule.test_points,
+                         rule.test_unique, rule.test_index, test_set);
+  evaluate_rule_geometry(trial_cell, trial_patch, rule.trial_points,
+                         rule.trial_unique, rule.trial_index, trial_set);
+  const double patch_jacobians =
+    (test_patch.upper[0] - test_patch.lower[0]) *
+    (test_patch.upper[1] - test_patch.lower[1]) *
+    (trial_patch.upper[0] - trial_patch.lower[0]) *
+    (trial_patch.upper[1] - trial_patch.lower[1]);
+  const bool unique_shapes = !rule.test_unique_shapes.empty();
+  if ((!raised || unique_shapes) && light_affine && light_derivatives &&
+      !shape_nodes.empty())
+    {
+      // The shapes of the rule in the coordinates of the patches; the
+      // caller takes the result to the shapes of the cells. A rule of a
+      // raised order has them at its distinct points only.
+      if (raised)
+        {
+          const unsigned int dpc    = finite_element.dofs_per_cell;
+          const auto         gather = [dpc](const std::vector<double> &values,
+                                    const std::vector<unsigned int> &index,
+                                    std::vector<double>             &out) {
+            const unsigned int m = values.size() / dpc, n = index.size();
+            out.resize(dpc * n);
+            for (unsigned int k = 0; k < dpc; ++k)
+              {
+                const double *u = &values[k * m];
+                double       *o = &out[k * n];
+                for (unsigned int q = 0; q < n; ++q)
+                  o[q] = u[index[q]];
+              }
+          };
+          gather(rule.test_unique_shapes, rule.test_index, leaf.own_test_shapes);
+          gather(rule.trial_unique_shapes,
+                 rule.trial_index,
+                 leaf.own_trial_shapes);
+          gather(rule.test_unique_derivatives0,
+                 rule.test_index,
+                 leaf.own_derivatives[0]);
+          gather(rule.test_unique_derivatives1,
+                 rule.test_index,
+                 leaf.own_derivatives[1]);
+          gather(rule.trial_unique_derivatives0,
+                 rule.trial_index,
+                 leaf.own_derivatives[2]);
+          gather(rule.trial_unique_derivatives1,
+                 rule.trial_index,
+                 leaf.own_derivatives[3]);
+          leaf.test_shapes        = &leaf.own_test_shapes;
+          leaf.trial_shapes       = &leaf.own_trial_shapes;
+          leaf.test_derivatives0  = &leaf.own_derivatives[0];
+          leaf.test_derivatives1  = &leaf.own_derivatives[1];
+          leaf.trial_derivatives0 = &leaf.own_derivatives[2];
+          leaf.trial_derivatives1 = &leaf.own_derivatives[3];
+        }
+      else
+        {
+          leaf.test_shapes        = &rule.test_shapes;
+          leaf.trial_shapes       = &rule.trial_shapes;
+          leaf.test_derivatives0  = &rule.test_derivatives0;
+          leaf.test_derivatives1  = &rule.test_derivatives1;
+          leaf.trial_derivatives0 = &rule.trial_derivatives0;
+          leaf.trial_derivatives1 = &rule.trial_derivatives1;
+        }
+      leaf.weights     = &rule.weights;
+      leaf.transformed = true;
+      leaf.weight_scale       = patch_jacobians;
+      for (unsigned int d = 0; d < 2; ++d)
+        {
+          leaf.test_derivative_scale[d] =
+            1. / (test_patch.upper[d] - test_patch.lower[d]);
+          leaf.trial_derivative_scale[d] =
+            1. / (trial_patch.upper[d] - trial_patch.lower[d]);
+        }
+      patch_transform(test_patch, leaf.test_transform);
+      patch_transform(trial_patch, leaf.trial_transform);
+      return;
+    }
+  // The shapes at the points placed on the patches.
+  std::vector<Point<2>> &test_points  = leaf_test_points;
+  std::vector<Point<2>> &trial_points = leaf_trial_points;
+  test_points.resize(rule.test_points.size());
+  trial_points.resize(rule.trial_points.size());
   for (unsigned int p = 0; p < test_points.size(); ++p)
     {
       test_points[p]  = transform_patch_point(rule.test_points[p],
@@ -3037,8 +3510,6 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
                                               trial_patch.lower,
                                               trial_patch.upper);
     }
-  evaluate_geometry(test_cell, test_points, test_set);
-  evaluate_geometry(trial_cell, trial_points, trial_set);
   evaluate_shapes(test_points, leaf.own_test_shapes);
   evaluate_shapes(trial_points, leaf.own_trial_shapes);
   if (light_derivatives)
@@ -3054,17 +3525,82 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
       leaf.trial_derivatives0 = &leaf.own_derivatives[2];
       leaf.trial_derivatives1 = &leaf.own_derivatives[3];
     }
-  const double patch_jacobians =
-    (test_patch.upper[0] - test_patch.lower[0]) *
-    (test_patch.upper[1] - test_patch.lower[1]) *
-    (trial_patch.upper[0] - trial_patch.lower[0]) *
-    (trial_patch.upper[1] - trial_patch.lower[1]);
   leaf.own_weights = rule.weights;
   for (double &w : leaf.own_weights)
     w *= patch_jacobians;
   leaf.test_shapes  = &leaf.own_test_shapes;
   leaf.trial_shapes = &leaf.own_trial_shapes;
   leaf.weights      = &leaf.own_weights;
+}
+
+
+template <int spacedim>
+void
+GalerkinPanelPairIntegrator<spacedim>::evaluate_rule_geometry(
+  const CellIterator              &cell,
+  const ReferencePatch            &patch,
+  const std::vector<Point<2>>     &points,
+  const std::vector<Point<2>>     &unique,
+  const std::vector<unsigned int> &index,
+  PointSet                        &set) const
+{
+  const bool                   whole  = is_full_patch(patch);
+  const std::vector<Point<2>> &source = unique.empty() ? points : unique;
+  const std::vector<Point<2>> *placed = &source;
+  if (!whole)
+    {
+      unique_points.resize(source.size());
+      for (unsigned int q = 0; q < source.size(); ++q)
+        unique_points[q] =
+          transform_patch_point(source[q], patch.lower, patch.upper);
+      placed = &unique_points;
+    }
+  if (unique.empty())
+    {
+      evaluate_geometry(cell, *placed, set);
+      return;
+    }
+  evaluate_geometry(cell, *placed, unique_set);
+  const unsigned int n = index.size();
+  set.n                = n;
+  set.points.resize(n);
+  set.normals.resize(n);
+  set.jacobians.resize(n);
+  for (unsigned int q = 0; q < n; ++q)
+    {
+      const unsigned int k = index[q];
+      set.points[q]        = unique_set.points[k];
+      set.normals[q]       = unique_set.normals[k];
+      set.jacobians[q]     = unique_set.jacobians[k];
+    }
+  if (light_derivatives)
+    {
+      set.tangents0.resize(n);
+      set.tangents1.resize(n);
+      for (unsigned int q = 0; q < n; ++q)
+        {
+          set.tangents0[q] = unique_set.tangents0[index[q]];
+          set.tangents1[q] = unique_set.tangents1[index[q]];
+        }
+    }
+}
+
+
+template <int spacedim>
+void
+GalerkinPanelPairIntegrator<spacedim>::patch_transform(
+  const ReferencePatch &patch,
+  std::vector<double>  &transform) const
+{
+  // Shape k of the cell restricted to the patch, as a function of the
+  // coordinates of the patch, is in Q_p: its interpolant on the support
+  // points, sum over l of its values there times shape l.
+  const std::vector<Point<2>> &support = finite_element.get_unit_support_points();
+  std::vector<Point<2>>        points(support.size());
+  for (unsigned int l = 0; l < support.size(); ++l)
+    points[l] = transform_patch_point(support[l], patch.lower, patch.upper);
+  // evaluate_shapes() lays out shape k at point l at k * n + l.
+  evaluate_shapes(points, transform);
 }
 
 
@@ -3081,18 +3617,30 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
   const bool                regularize_trial_function) const
 {
   const auto setup_start = std::chrono::steady_clock::now();
-  LightLeaf  leaf;
+  LightLeaf &leaf = light_leaf;
+  leaf.reset();
   const bool curls = operator_type == OperatorType::weak_hypersingular ||
                      is_joint(operator_type);
   light_derivatives = curls;
+  light_affine      = curls;
+  light_half        = is_joint(operator_type);
   prepare_light_leaf(test_cell, test_patch, trial_cell, trial_patch, order,
                      leaf);
   light_derivatives = false;
+  light_affine      = false;
+  light_half        = false;
   profile.setup_seconds += std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - setup_start)
                              .count();
+  // On half a rule, the joint operators need K the other way for K.
   FullMatrix<double> result =
-    curls       ? integrate_light_hypersingular(leaf, operator_type) :
+    curls       ? complete_light_leaf(
+              leaf,
+              integrate_light_hypersingular(
+                leaf,
+                leaf.half ? OperatorType::single_double_hypersingular_both :
+                            operator_type),
+              n_result_columns(operator_type, nullptr)) :
     leaf.tensor ? integrate_tensor_sets(test_set,
                                         leaf.test_weights,
                                         trial_set,
@@ -3121,8 +3669,67 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
       ++profile.singular_leaves;
       profile.singular_points += leaf.weights->size();
       profile.singular_seconds += seconds;
+      profile.transformed_leaves += leaf.transformed;
+      profile.half_leaves += leaf.half;
     }
   return result;
+}
+
+
+template <int spacedim>
+FullMatrix<double>
+GalerkinPanelPairIntegrator<spacedim>::complete_light_leaf(
+  const LightLeaf    &leaf,
+  FullMatrix<double> &&result,
+  const unsigned int   n_columns) const
+{
+  const unsigned int dpc = finite_element.dofs_per_cell;
+  if (leaf.transformed)
+    {
+      // Each block B of the shapes of the patches becomes s T_x B T_y^T.
+      const double *tx = leaf.test_transform.data();
+      const double *ty = leaf.trial_transform.data();
+      std::vector<double> half_product(dpc * dpc);
+      for (unsigned int b = 0; b < result.n() / dpc; ++b)
+        {
+          // half_product = B T_y^T
+          for (unsigned int l = 0; l < dpc; ++l)
+            for (unsigned int j = 0; j < dpc; ++j)
+              {
+                double sum = 0.;
+                for (unsigned int m = 0; m < dpc; ++m)
+                  sum += result(l, b * dpc + m) * ty[j * dpc + m];
+                half_product[l * dpc + j] = sum;
+              }
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              {
+                double sum = 0.;
+                for (unsigned int l = 0; l < dpc; ++l)
+                  sum += tx[i * dpc + l] * half_product[l * dpc + j];
+                result(i, b * dpc + j) = leaf.weight_scale * sum;
+              }
+        }
+    }
+  if (leaf.half)
+    {
+      // With A, C, B and D the blocks V, K, W and K the other way of the
+      // half rule, those of the whole one are A + A^T, C + D^T, B + B^T and
+      // D + C^T.
+      Assert(result.n() == 4 * dpc, ExcInternalError());
+      FullMatrix<double> whole(dpc, n_columns);
+      for (unsigned int i = 0; i < dpc; ++i)
+        for (unsigned int j = 0; j < dpc; ++j)
+          {
+            whole(i, j)           = result(i, j) + result(j, i);
+            whole(i, dpc + j)     = result(i, dpc + j) + result(j, 3 * dpc + i);
+            whole(i, 2 * dpc + j) = result(i, 2 * dpc + j) + result(j, 2 * dpc + i);
+            if (n_columns > 3 * dpc)
+              whole(i, 3 * dpc + j) = result(i, 3 * dpc + j) + result(j, dpc + i);
+          }
+      return whole;
+    }
+  return std::move(result);
 }
 
 
@@ -3150,17 +3757,19 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                          const std::vector<double> &d1,
                          std::vector<double>       &curl) {
     const unsigned int n = set.n;
-    curl.resize(3 * dpc * n);
-    for (unsigned int i = 0; i < dpc; ++i)
-      for (unsigned int q = 0; q < n; ++q)
-        for (unsigned int c = 0; c < 3; ++c)
-          curl[(c * dpc + i) * n + q] =
-            d0[i * n + q] * set.tangents1[q][c] -
-            d1[i * n + q] * set.tangents0[q][c];
+    if (curl.size() < 3 * dpc * n)
+      curl.resize(3 * dpc * n);
+    for (unsigned int c = 0; c < 3; ++c)
+      for (unsigned int i = 0; i < dpc; ++i)
+        {
+          double       *out = &curl[(c * dpc + i) * n];
+          const double *a0  = &d0[i * n];
+          const double *a1  = &d1[i * n];
+          for (unsigned int q = 0; q < n; ++q)
+            out[q] = a0[q] * set.tangents1[q][c] - a1[q] * set.tangents0[q][c];
+        }
   };
-  std::vector<double> cx, cy;
-  curls(x, *leaf.test_derivatives0, *leaf.test_derivatives1, cx);
-  curls(y, *leaf.trial_derivatives0, *leaf.trial_derivatives1, cy);
+  std::vector<double> &cx = kernel_curls_x, &cy = kernel_curls_y;
   const std::vector<double> &sx = *leaf.test_shapes;
   const std::vector<double> &sy = *leaf.trial_shapes;
   const unsigned int         nx = x.n;
@@ -3172,8 +3781,32 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
       // Points in pairs: for each pair of shape functions, a sum over the
       // points with the weight of V, of K or of W.
       const unsigned int  n = leaf.weights->size();
-      std::vector<double> single_weight(n), double_weight(n), curl_weight(n),
-        back_weight(both ? n : 0);
+      const auto          weight_start = std::chrono::steady_clock::now();
+      if (kernel_weights.size() < 8 * n)
+        kernel_weights.resize(8 * n);
+      double *single_weight = kernel_weights.data();
+      double *double_weight = single_weight + n;
+      double *curl_weight   = double_weight + n;
+      double *back_weight   = curl_weight + n;
+      // W through the reference derivatives d0, d1 of the shapes instead of
+      // the curls d0 t1 - d1 t0: curl_i(x) . curl_j(y) = d0_i d0_j t1.t1
+      // - d0_i d1_j t1.t0 - d1_i d0_j t0.t1 + d1_i d1_j t0.t0, with the
+      // tangents of x first; four weights, and no curls to form.
+      double *g00 = back_weight + n;
+      double *g01 = g00 + n;
+      double *g10 = g01 + n;
+      double *g11 = g10 + n;
+      // On patches of a kept rule (LightLeaf::transformed), the reference
+      // derivatives of the patches: d/dx_d of the cell is 1/extent_d times
+      // theirs.
+      const double c00 = leaf.test_derivative_scale[0] *
+                         leaf.trial_derivative_scale[0],
+                   c01 = leaf.test_derivative_scale[0] *
+                         leaf.trial_derivative_scale[1],
+                   c10 = leaf.test_derivative_scale[1] *
+                         leaf.trial_derivative_scale[0],
+                   c11 = leaf.test_derivative_scale[1] *
+                         leaf.trial_derivative_scale[1];
       for (unsigned int p = 0; p < n; ++p)
         {
           const Tensor<1, spacedim> displacement = y.points[p] - x.points[p];
@@ -3186,36 +3819,128 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
           if (both)
             back_weight[p] = single_weight[p] * (displacement * x.normals[p]) /
                              (distance * distance);
+          g00[p] = c00 * curl_weight[p] * (x.tangents1[p] * y.tangents1[p]);
+          g01[p] = -c01 * curl_weight[p] * (x.tangents1[p] * y.tangents0[p]);
+          g10[p] = -c10 * curl_weight[p] * (x.tangents0[p] * y.tangents1[p]);
+          g11[p] = c11 * curl_weight[p] * (x.tangents0[p] * y.tangents0[p]);
         }
-      const auto sum = [n](const double *a, const double *b, const double *w) {
-        double acc = 0.0;
-#pragma omp simd reduction(+ : acc)
-        for (unsigned int p = 0; p < n; ++p)
-          acc += a[p] * b[p] * w[p];
-        return acc;
-      };
+      // The points in blocks that stay in the first-level cache: in each,
+      // the test shapes and curls times the weights once, then for every
+      // pair of shape functions the sums of V, K and K the other way from
+      // one pass over the trial shapes, and that of W over the curls. The
+      // sums over all points at once read some six hundred arrays of all
+      // points per pair, from memory rather than cache.
+      const auto sum_start = std::chrono::steady_clock::now();
+      profile.kernel_weight_seconds +=
+        std::chrono::duration<double>(sum_start - weight_start).count();
+      constexpr unsigned int block = 128;
+      if (kernel_block.size() < 7 * dpc * block)
+        kernel_block.resize(7 * dpc * block);
+      double *wx_single = kernel_block.data();
+      double *wx_double = wx_single + dpc * block;
+      double *wx_back   = wx_double + dpc * block;
+      // The weighted derivatives of the test shapes: d0 g00, d1 g10 (against
+      // d0 of the trial shapes), d0 g01, d1 g11 (against d1).
+      double *wx_d = wx_back + dpc * block;
+      const std::vector<double> &d0x = *leaf.test_derivatives0,
+                                &d1x = *leaf.test_derivatives1,
+                                &d0y = *leaf.trial_derivatives0,
+                                &d1y = *leaf.trial_derivatives1;
+      std::vector<double> sums_vk(3 * dpc * dpc, 0.0),
+        sums_w(2 * dpc * dpc, 0.0);
+      for (unsigned int begin = 0; begin < n; begin += block)
+        {
+          const unsigned int m = std::min(block, n - begin);
+          for (unsigned int i = 0; i < dpc; ++i)
+            {
+              const double *a = &sx[i * n + begin];
+              double       *vs = &wx_single[i * block];
+              double       *vd = &wx_double[i * block];
+#pragma omp simd
+              for (unsigned int k = 0; k < m; ++k)
+                {
+                  vs[k] = a[k] * single_weight[begin + k];
+                  vd[k] = a[k] * double_weight[begin + k];
+                }
+              if (both)
+                {
+                  double *vb = &wx_back[i * block];
+#pragma omp simd
+                  for (unsigned int k = 0; k < m; ++k)
+                    vb[k] = a[k] * back_weight[begin + k];
+                }
+              const double *a0 = &d0x[i * n + begin];
+              const double *a1 = &d1x[i * n + begin];
+              double       *v00 = &wx_d[i * block];
+              double       *v10 = &wx_d[(dpc + i) * block];
+              double       *v01 = &wx_d[(2 * dpc + i) * block];
+              double       *v11 = &wx_d[(3 * dpc + i) * block];
+#pragma omp simd
+              for (unsigned int k = 0; k < m; ++k)
+                {
+                  v00[k] = a0[k] * g00[begin + k];
+                  v10[k] = a1[k] * g10[begin + k];
+                  v01[k] = a0[k] * g01[begin + k];
+                  v11[k] = a1[k] * g11[begin + k];
+                }
+            }
+          // The weighted test shapes of V, K and K the other way are
+          // consecutive rows; against the trial shapes, then the three
+          // components of the curls.
+          add_row_products(wx_single,
+                           block,
+                           (both ? 3 : 2) * dpc,
+                           &sy[begin],
+                           n,
+                           dpc,
+                           m,
+                           sums_vk.data(),
+                           dpc);
+          add_row_products(wx_d,
+                           block,
+                           2 * dpc,
+                           &d0y[begin],
+                           n,
+                           dpc,
+                           m,
+                           sums_w.data(),
+                           dpc);
+          add_row_products(&wx_d[2 * dpc * block],
+                           block,
+                           2 * dpc,
+                           &d1y[begin],
+                           n,
+                           dpc,
+                           m,
+                           sums_w.data(),
+                           dpc);
+        }
       for (unsigned int i = 0; i < dpc; ++i)
         for (unsigned int j = 0; j < dpc; ++j)
           {
             if (joint)
               {
-                result(i, j) += sum(&sx[i * n], &sy[j * n], single_weight.data());
-                result(i, dpc + j) +=
-                  sum(&sx[i * n], &sy[j * n], double_weight.data());
+                result(i, j) += sums_vk[i * dpc + j];
+                result(i, dpc + j) += sums_vk[(dpc + i) * dpc + j];
               }
             if (both)
-              result(i, 3 * dpc + j) +=
-                sum(&sx[i * n], &sy[j * n], back_weight.data());
-            double w = 0.0;
-            for (unsigned int c = 0; c < 3; ++c)
-              w += sum(&cx[(c * dpc + i) * n],
-                       &cy[(c * dpc + j) * n],
-                       curl_weight.data());
-            result(i, w_column + j) += w;
+              result(i, 3 * dpc + j) += sums_vk[(2 * dpc + i) * dpc + j];
+            result(i, w_column + j) +=
+              sums_w[i * dpc + j] + sums_w[(dpc + i) * dpc + j];
           }
+      profile.kernel_sum_seconds += std::chrono::duration<double>(
+                                      std::chrono::steady_clock::now() - sum_start)
+                                      .count();
     }
   else
     {
+      const auto curl_start = std::chrono::steady_clock::now();
+      curls(x, *leaf.test_derivatives0, *leaf.test_derivatives1, cx);
+      curls(y, *leaf.trial_derivatives0, *leaf.trial_derivatives1, cy);
+      profile.kernel_curl_seconds +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      curl_start)
+          .count();
       // A tensor rule: the kernel blocks, then the sums over the test points
       // and over the trial points one after the other.
       std::vector<double> single_block(nx * ny), double_block(nx * ny),
@@ -3302,7 +4027,8 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_light(
   const std::vector<double> &test_coefficients,
   const std::vector<double> &trial_coefficients) const
 {
-  LightLeaf leaf;
+  LightLeaf &leaf = light_leaf;
+  leaf.reset();
   prepare_light_leaf(test_cell, test_patch, trial_cell, trial_patch, order,
                      leaf);
 
