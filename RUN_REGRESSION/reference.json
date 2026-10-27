@@ -17,8 +17,8 @@
   "best_ratio": "1.05373",
   "flux": "0.00333152",
   "gradient": "0.0189805",
-  "iterations": "54",
-  "rhs_norm": "0.9950078641419708"
+  "iterations": "53",
+  "rhs_norm": "0.9950078641281711"
  },
  "dg_laplace_p1": {
   "V_frobenius": "26.02570230850356",
@@ -34,8 +34,8 @@
   "best_ratio": "1.08392",
   "flux": "0.0135441",
   "gradient": "0.0801258",
-  "iterations": "71",
-  "rhs_norm": "0.8876459784891672"
+  "iterations": "70",
+  "rhs_norm": "0.8876459784747458"
  },
  "dg_laplace_p1_fmm_patch": {
   "best_ratio": "1.08392",
@@ -61,7 +61,7 @@
   "flux": "0.00242545",
   "gradient": "0.0125099",
   "iterations": "46",
-  "rhs_norm": "0.287909733090319"
+  "rhs_norm": "0.2879097330881725"
  },
  "dg_screened_p2_fmm_manufactured": {
   "flux": "0.00241083",
