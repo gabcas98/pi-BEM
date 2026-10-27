@@ -142,6 +142,12 @@
   "robin_residual": "0.0126805",
   "steps": "30"
  },
+ "robin_galerkin_fma": {
+  "iterations": "60",
+  "mixed_flux": "0.074793",
+  "mixed_potential": "0.00180881",
+  "mixed_robin_flux": "0.0754911"
+ },
  "robin_real_fma": {
   "iterations": "28",
   "phi_nodes": "0",

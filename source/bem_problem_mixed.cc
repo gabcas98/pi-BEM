@@ -124,6 +124,22 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         for (const auto e : indices_of(cell))
           (is_dirichlet_cell(cell) ? on_dirichlet : on_neumann)[e] = 1;
 
+      // The Robin part: on its cells the potential is unknown, as on the
+      // Neumann part, and the flux is g/b - (a/b) u, from the values at the
+      // nodes of BoundaryConditions::prepare_robin_datastructs(). A node of
+      // Neumann and Robin cells is a Neumann node.
+      const auto is_robin_cell = [&](const auto &cell) {
+        return std::find(comp_dom.robin_boundary_ids.begin(),
+                         comp_dom.robin_boundary_ids.end(),
+                         cell->material_id()) !=
+               comp_dom.robin_boundary_ids.end();
+      };
+      std::vector<char> on_neumann_cell(n, 0), on_robin_cell(n, 0);
+      for (const auto &cell : dh.active_cell_iterators())
+        if (!is_dirichlet_cell(cell))
+          for (const auto e : indices_of(cell))
+            (is_robin_cell(cell) ? on_robin_cell : on_neumann_cell)[e] = 1;
+
       // The hanging nodes, on each side in the indices of that side. A
       // hanging node on the interface whose coarse cell lies on the other
       // part is not hanging for its own side: on the Dirichlet side the flux
@@ -271,6 +287,37 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
             << n - n_original << " on degrees of freedom of both parts, "
             << counts[hanging] << " hanging nodes" << std::endl;
 
+      // The nodes of the Robin part, with a/b and g/b there.
+      std::vector<char> robin(n, 0);
+      unsigned int      n_robin_unknowns = 0;
+      for (types::global_dof_index e = 0; e < n; ++e)
+        if (on_robin_cell[e] && !on_neumann_cell[e] &&
+            (role[e] == free_potential || role[e] == tied_potential ||
+             role[e] == known_potential))
+          {
+            robin[e] = 1;
+            n_robin_unknowns += role[e] == free_potential;
+          }
+      const bool     has_robin = std::find(robin.begin(), robin.end(), 1) !=
+                             robin.end();
+      Vector<double> robin_coefficient(n), robin_datum(n);
+      if (has_robin)
+        {
+          AssertThrow(robin_matrix_diagonal.size() == n_original &&
+                        robin_rhs.size() == n_original,
+                      ExcMessage("The Robin data are not prepared."));
+          const Vector<double> coefficient(robin_matrix_diagonal),
+            datum(robin_rhs);
+          for (types::global_dof_index e = 0; e < n; ++e)
+            if (robin[e])
+              {
+                robin_coefficient[e] = coefficient[original[e]];
+                robin_datum[e]       = datum[original[e]];
+              }
+          pcout << "Mixed Galerkin problem: " << n_robin_unknowns
+                << " of the potential unknowns on the Robin part" << std::endl;
+        }
+
       // The data: the Dirichlet datum interpolated at the nodes of the
       // Dirichlet part and at the copies next to it, the Neumann datum
       // projected in L2 on the Neumann part. The mass matrix of the whole
@@ -359,12 +406,14 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               constraints.distribute_local_to_global(local,
                                                      indices_of(cell),
                                                      *whole_mass);
-            if (is_dirichlet_cell(cell) == on_dirichlet_part)
+            if (on_dirichlet_part ?
+                  is_dirichlet_cell(cell) :
+                  !is_dirichlet_cell(cell) && !is_robin_cell(cell))
               constraints.distribute_local_to_global(
                 local, local_rhs, indices_of(cell), part_mass, part_rhs);
           }
         for (types::global_dof_index e = 0; e < n; ++e)
-          if (!(on_dirichlet_part ? on_dirichlet[e] : on_neumann[e]))
+          if (!(on_dirichlet_part ? on_dirichlet[e] : on_neumann_cell[e]))
             part_mass.set(e, e, 1.0);
         SolverControl control(1000, 1e-14 * part_rhs.l2_norm() + 1e-300);
         SolverCG<Vector<double>>               cg(control);
@@ -422,6 +471,18 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               << " hanging nodes of the Neumann side on the interface, fixed "
                  "by the datum"
               << std::endl;
+      // The flux of the Robin part in the data: g/b, and where the potential
+      // is fixed by the Dirichlet datum the whole g/b - (a/b) u. The term
+      // -(a/b) u of the unknowns is in the block operator.
+      if (has_robin)
+        {
+          for (types::global_dof_index e = 0; e < n; ++e)
+            if (robin[e])
+              g_data[e] = robin_datum[e] - (role[e] == known_potential ?
+                                              robin_coefficient[e] * u_data[e] :
+                                              0.0);
+          constraints.distribute(g_data);
+        }
 
       // The operators of the whole surface, on rows and columns of all
       // indices, each process holding the rows of its degrees of freedom and
@@ -706,9 +767,25 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // With relaxed_rows, the products of the FMM through the coarser
       // expansions of the preconditioner (the last steps of GMRES).
       bool relaxed_rows = false;
+      // On the Robin part the flux -(a/b) u of the unknowns joins the flux
+      // of the Dirichlet part in V and K^T, and its identity term 1/2 M
+      // goes to the potential rows.
+      const auto robin_flux = [&](const Vector<double> &u) {
+        Vector<double> r(n);
+        for (types::global_dof_index e = 0; e < n; ++e)
+          if (robin[e] &&
+              (role[e] == free_potential || role[e] == tied_potential))
+            r[e] = robin_coefficient[e] * u[e];
+        return r;
+      };
       block.apply = [&](Vector<double> &y, const Vector<double> &x) {
-        Vector<double> t, u;
+        Vector<double> t, u, r;
         split(x, t, u);
+        if (has_robin)
+          {
+            r = robin_flux(u);
+            t -= r;
+          }
         Vector<double> dirichlet_rows, neumann_rows;
         if (through_fmm)
           calderon->vmult_rows(
@@ -719,6 +796,12 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
             dirichlet_rows.add(-k_sign, product(double_layer, u, false));
             neumann_rows = product(hypersingular, u, false);
             neumann_rows.add(k_sign, product(double_layer, t, true));
+          }
+        if (has_robin)
+          {
+            Vector<double> mass_r(n);
+            mass.vmult(mass_r, r);
+            neumann_rows.add(0.5, mass_r);
           }
         combine(dirichlet_rows, neumann_rows, x, y);
       };
@@ -778,7 +861,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           if (role[i] == flux)
             diagonal[i] = v_diagonal[i];
           else if (role[i] == free_potential || role[i] == tied_potential)
-            diagonal[master[i]] += w_diagonal[i];
+            diagonal[master[i]] +=
+              w_diagonal[i] +
+              (robin[i] ? 0.5 * robin_coefficient[i] * mass.diag_element(i) :
+                          0.0);
         for (types::global_dof_index i = 0; i < n; ++i)
           if (role[i] == tied_potential || role[i] == known_potential ||
               role[i] == hanging)
@@ -1076,7 +1162,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               case free_potential:
               case tied_potential:
                 u_full[i] = x[master[i]];
-                t_full[i] = g_data[i];
+                t_full[i] =
+                  g_data[i] - (robin[i] ? robin_coefficient[i] * u_full[i] : 0.0);
                 break;
               case known_potential:
                 u_full[i] = u_data[i];
@@ -1359,7 +1446,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                                                    update_quadrature_points);
         double flux_error = 0, flux_norm = 0, potential_error = 0,
                potential_norm = 0, flux_max = 0, potential_max = 0,
-               flux_error_edge = 0, flux_norm_edge = 0;
+               flux_error_edge = 0, flux_norm_edge = 0, robin_flux_error = 0,
+               robin_flux_norm = 0;
         Point<dim>     flux_where, potential_where;
         Vector<double> g(dim);
         // PIBEM_MIXED_ERROR_DUMP=file: one line per cell, its center, whether
@@ -1457,6 +1545,23 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                         potential_max   = std::abs(value - exact_value);
                         potential_where = error_values.quadrature_point(q);
                       }
+                    // On the Robin part the flux g/b - (a/b) u as well.
+                    if (has_robin && is_robin_cell(cell))
+                      {
+                        double flux_value = 0, exact_flux = 0;
+                        for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                          flux_value += error_values.shape_value(i, q) *
+                                        t_full[cell_dofs[i]];
+                        gradient.vector_value(error_data.quadrature_point(q),
+                                              g);
+                        for (unsigned int d = 0; d < dim; ++d)
+                          exact_flux += g[d] * error_data.normal_vector(q)[d];
+                        robin_flux_error += (flux_value - exact_flux) *
+                                            (flux_value - exact_flux) *
+                                            error_values.JxW(q);
+                        robin_flux_norm +=
+                          exact_flux * exact_flux * error_values.JxW(q);
+                      }
                   }
                 cell_exact[q]  = exact_value;
                 cell_max_error =
@@ -1498,9 +1603,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           }
         part_norm_squared[0] = flux_norm;
         part_norm_squared[1] = potential_norm;
+        // Zero without a Dirichlet part (Robin conditions everywhere).
         pcout << "Mixed Galerkin problem: flux on the Dirichlet part, "
                  "relative L2 error "
-              << std::sqrt(flux_error / flux_norm)
+              << (flux_norm > 0 ? std::sqrt(flux_error / flux_norm) : 0.)
               << "; potential on the Neumann part, relative L2 error "
               << std::sqrt(potential_error / potential_norm) << std::endl
               << "  flux on the cells at double nodes: absolute L2 error "
@@ -1515,6 +1621,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               << "  largest error of the flux " << flux_max << " at "
               << flux_where << ", of the potential " << potential_max
               << " at " << potential_where << std::endl;
+        if (has_robin)
+          pcout << "Mixed Galerkin problem: flux on the Robin part, relative "
+                   "L2 error "
+                << std::sqrt(robin_flux_error / robin_flux_norm) << std::endl;
       }
 
       // The indicators that adaptive_refinement() uses, and their sums on the

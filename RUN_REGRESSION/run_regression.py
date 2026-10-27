@@ -66,6 +66,8 @@ QUANTITIES = {
     'phi_nodes': (r'Phi Nodes error L_inf norm: (\S+)', 'six'),
     'robin_residual': (r'Robin Nodes Residual error L_2 norm: (\S+)', 'six'),
     'steps': (r'Solve terminated at step (\d+)', 'exact'),
+    'mixed_robin_flux': (r'flux on the Robin part, relative L2 error (\S+)',
+                         'six'),
 }
 
 # The mixed problem on the NACA wing: flux on the lower surface, potential
@@ -246,6 +248,15 @@ CASES = {
     # Dirichlet and Robin conditions in 2D.
     'robin_2d': ('circle_robin_2d.prm', {},
                  ['phi_nodes', 'robin_residual', 'iterations'], 2),
+    # The Robin part in the mixed Galerkin problem, multipole method: the
+    # flux -(a/b) u of the unknowns in V and K^T, its identity term in the
+    # potential rows.
+    'robin_galerkin_fma': ('sphere_real_robin.prm',
+                           {'Boundary integral formulation': 'galerkin',
+                            'Linear solver': 'CG',
+                            'Preconditioner': 'BlockJacobi'},
+                           ['mixed_flux', 'mixed_potential',
+                            'mixed_robin_flux', 'iterations']),
 }
 
 

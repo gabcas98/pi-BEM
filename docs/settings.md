@@ -121,6 +121,8 @@ them changes the solution.
   the Robin and complex problems of upstream pi-BEM on the sphere of its
   samples (a Robin datum that is not zero with the multipole method) and on
   a decagon in 2D.
+- `robin_galerkin_fma`: a Robin part in the mixed Galerkin problem, multipole
+  method.
 
 ## Environment switches
 

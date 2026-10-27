@@ -122,6 +122,20 @@ component whose data are all in slot 0 and which has no Robin part; complex
 components, Robin parts and other slots get the errors by material described
 here.
 
+The mixed Galerkin problem takes Robin parts too. On their cells the
+potential is unknown, as on the Neumann part, and the flux is
+`g/b - (a/b) u` with `a/b` and `g/b` at the nodes: the flux `-(a/b) u` of
+the unknowns joins that of the Dirichlet part in `V` and `K^T`, and its
+identity term `1/2 M` goes to the potential rows. A node of Neumann and Robin
+cells is a Neumann node. With Dirichlet on manifold 1 and
+`u + du/dn = 2(x+y+z)` on manifold 2 of the sample sphere, p = 1, the
+potential converges at order 2 (1.8e-3, 4.6e-4, 1.2e-4 at one to three
+refinements; dense matrices and FMM agree to 1e-3 of the error), and the
+flux on the Robin part at order 1 as that of the Dirichlet part. A nearly
+Dirichlet condition (`a/b = 100`) and Robin conditions on the whole surface
+(no Dirichlet part) converge in 82 and 21 GMRES steps. The mixed solver
+prints the flux error of the Robin part beside the other two.
+
 ## Robin conditions and geometry IDs
 
 The 3D Robin function has three entries `a; b; g`, expressing
