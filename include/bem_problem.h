@@ -318,11 +318,6 @@ public:
     const Function<dim> &dirichlet_function,
     const Function<dim> *exact_gradient = nullptr);
 
-  void
-  solve_galerkin_adjoint_double_layer(
-    TrilinosWrappers::MPI::Vector &dphi_dn,
-    const Function<dim>           *dirichlet_gradient = nullptr);
-
   /// The mixed problem in the symmetric Galerkin formulation: the flux on
   /// the Dirichlet part and the potential on the Neumann part, both in the
   /// continuous space of the scalar element, from the block system
@@ -390,9 +385,7 @@ public:
   void
   solve_system(TrilinosWrappers::MPI::Vector       &phi,
                TrilinosWrappers::MPI::Vector       &dphi_dn,
-               const TrilinosWrappers::MPI::Vector &tmp_rhs,
-               const Function<dim>                 *dirichlet_gradient =
-                 nullptr);
+               const TrilinosWrappers::MPI::Vector &tmp_rhs);
   /// Solve the prepared system and recover potential and normal derivative.
   /// The overload with imaginary vectors uses two real blocks. Integral
   /// operators and boundary/Robin data must already be initialized.
@@ -911,8 +904,6 @@ public:
   TrilinosWrappers::SparseMatrix    jump_matrix;
   TrilinosWrappers::SparseMatrix    calderon_hypersingular_matrix;
   TrilinosWrappers::SparseMatrix    calderon_mass_matrix;
-  TrilinosWrappers::SparseMatrix    adjoint_double_layer_matrix;
-  TrilinosWrappers::SparseMatrix    adjoint_single_layer_matrix;
 
   std::vector<TrilinosWrappers::MPI::Vector>
     laplace_patch_normal_components;
@@ -922,8 +913,6 @@ public:
 
   TrilinosWrappers::MPI::Vector system_rhs;
   TrilinosWrappers::MPI::Vector exact_regularized_dirichlet_rhs;
-  TrilinosWrappers::MPI::Vector adjoint_double_layer_rhs;
-  TrilinosWrappers::MPI::Vector adjoint_first_kind_rhs;
 
 
   TrilinosWrappers::MPI::Vector sol, sol_imag;
@@ -959,7 +948,6 @@ public:
 
   double calderon_stabilization;
   double calderon_dual_bubble_scaling;
-  bool   galerkin_component_rhs_diagnostics;
 
   /// compute the energy norm of the flux error after the solve; costs one
   /// extra pass over all panel pairs, so it is off by default
@@ -984,11 +972,6 @@ public:
     calderon_dual_cell_vertices;
   std::vector<unsigned int> calderon_dual_vertex_valence;
   std::vector<double>       calderon_dual_cell_areas;
-  std::vector<unsigned int> calderon_dual_cell_components;
-  std::vector<double>       calderon_dual_component_areas;
-  std::vector<std::set<types::material_id>> calderon_dof_material_ids;
-
-
 
   std::string linear_solver;
 
@@ -996,33 +979,6 @@ public:
 
   std::string boundary_integral_formulation;
 
-  std::string galerkin_neumann_formulation;
-
-  std::string galerkin_adjoint_continuity;
-
-  bool         galerkin_adjoint_component_weighting;
-  unsigned int galerkin_adjoint_primary_material_id;
-  std::set<types::material_id> galerkin_adjoint_primary_material_ids;
-  double       galerkin_adjoint_primary_eta_scale;
-  double       galerkin_adjoint_secondary_eta_scale;
-  bool         galerkin_adjoint_local_eta_scaling;
-  bool         galerkin_adjoint_dual_residual_stabilization;
-  std::string  galerkin_adjoint_dual_residual_lift;
-  bool         galerkin_adjoint_block_completion;
-  bool         galerkin_adjoint_hybrid_system;
-  bool         galerkin_hybrid_exact_trace_diagnostics;
-  bool         galerkin_analytical_hypersingular_rhs;
-  bool         galerkin_hybrid_conforming_complement;
-  double       galerkin_hybrid_complement_mass_regularization;
-  double       galerkin_hybrid_local_mass_regularization;
-  double       galerkin_hybrid_local_fluctuation_regularization;
-  double       galerkin_hybrid_local_jump_regularization;
-  bool         galerkin_hybrid_local_jump_h_scaling;
-  unsigned int galerkin_hybrid_local_mass_material_id;
-  double       galerkin_hybrid_local_mass_radius_min;
-  double       galerkin_hybrid_local_mass_radius_max;
-  unsigned int galerkin_hybrid_first_kind_polishing_steps;
-  double       galerkin_hybrid_first_kind_polishing_relaxation;
 
   std::string kernel_type;
 
