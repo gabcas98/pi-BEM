@@ -228,8 +228,8 @@ BEMFMA<dim>::direct_integrals_tbb()
   // We compute a vector containing all the possible
   // singular quadratures. We need them to properly treat the direct
   // contributions among nodes on the same block.
-  // TODO: is this the same as BEMProblem::get_singular_quadrature()?
-  // potentially, there's a different dh
+  // TODO: BEMProblem::assemble_system() integrates with QSplit of QDuffy,
+  // quasi-singular and adaptive rules; potentially, there's a different dh
   std::vector<QTelles<dim - 1>> sing_quadratures;
   for (unsigned int i = 0; i < fma_dh->get_fe().dofs_per_cell; ++i)
     {
@@ -1145,8 +1145,8 @@ BEMFMA<dim>::direct_integrals_omp()
   // We compute a vector containing all the possible singular quadratures. We
   // need them to properly treat the direct contributions among nodes on the
   // same block.
-  // TODO: is this the same as BEMProblem::get_singular_quadrature()?
-  // potentially, there's a different dh
+  // TODO: BEMProblem::assemble_system() integrates with QSplit of QDuffy,
+  // quasi-singular and adaptive rules; potentially, there's a different dh
   const auto                    dofs_per_cell = fma_dh->get_fe().dofs_per_cell;
   std::vector<QTelles<dim - 1>> sing_quadratures;
   sing_quadratures.reserve(dofs_per_cell);

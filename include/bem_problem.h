@@ -191,9 +191,6 @@ public:
   void
   reinit();
 
-  const Quadrature<dim - 1> &
-  get_singular_quadrature(const unsigned int index) const;
-
   const Quadrature<dim - 1>
   get_quasi_singular_quadrature(const typename DoFHandler<dim-1,dim>::active_cell_iterator &cell,
                                 const Mapping<dim-1,dim> &mapping,
@@ -251,7 +248,8 @@ public:
   /// method. We compute both the Double Layer Operator (Neumann matrix) and
   /// Single Layer Operator (Dirichlet matrix). Then we have to use dirichlet
   /// and neumann vector to assemble properly the system matrix and its right
-  /// hand side.
+  /// hand side. The real and the complex solve use it; the rows of each
+  /// process are integrated in parallel with MultithreadInfo::n_threads().
   void
   assemble_system();
 
@@ -268,14 +266,6 @@ public:
 
   void
   initialize_calderon_dual_space();
-
-  /// Assemble the direct boundary integral matrices using TBB workers.
-  void
-  assemble_system_tbb();
-
-  /// Assemble the direct boundary integral matrices on one thread.
-  void
-  assemble_system_singlethread();
 
   /// The next three methods are
   /// needed by the GMRES solver:

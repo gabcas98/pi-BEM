@@ -170,7 +170,7 @@
  },
  "robin_complex_direct": {
   "phi_nodes": "0",
-  "robin_residual": "0.0185763",
+  "robin_residual": "0.0185769",
   "steps": "31"
  },
  "robin_complex_fma": {
