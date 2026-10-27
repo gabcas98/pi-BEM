@@ -1,3 +1,4 @@
-#!/bin/bash
-CMD=`grep -e '- ' .travis.yml | sed 's/- //'`
-docker run  --user $(id -u):$(id -g) -i -t --rm -P -v `pwd`:/app:rw mathlab/deal2lkit:v9.1.1-debugrelease  /bin/sh -c "cd /app; $CMD"
+#!/bin/sh
+# Run the same warning-free Debug/Release checks used for releases.
+exec docker run --rm -v "$PWD:/workspace" -w /workspace dealii/dealii:v9.8.0-resolute-r1-arm64 \
+  bash -lc 'set -e; cmake -S . -B build-docker/9.8.0 -GNinja -DCMAKE_BUILD_TYPE=DebugRelease -DCMAKE_CXX_FLAGS=-Werror; cmake --build build-docker/9.8.0 -j 4; cd build-docker/9.8.0; ctest --output-on-failure'

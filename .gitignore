@@ -25,3 +25,11 @@ __pycache__/
 
 # Old tarball checkpoints, superseded by git
 /checkpoints/
+
+# From upstream
+.vscode
+*/.ipynb_checkpoints/
+tests_regression/robin_bconditions/parameters_bem_3.prm
+tests_regression/robin_bconditions/used_parameters_bem_3.prm
+
+build-docker/

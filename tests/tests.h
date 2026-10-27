@@ -20,9 +20,6 @@
 
 #include <deal.II/base/config.h>
 
-#ifdef DEAL_II_COMPILER_CUDA_AWARE
-#  include <deal.II/base/cuda.h>
-#endif
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/job_identifier.h>
 #include <deal.II/base/logstream.h>
@@ -720,6 +717,15 @@ struct EnableFPE
 #if defined(DEBUG) && defined(DEAL_II_HAVE_FP_EXCEPTIONS)
     // enable floating point exceptions
     feenableexcept(FE_DIVBYZERO | FE_INVALID);
+#endif
+  }
+
+  ~EnableFPE()
+  {
+#if defined(DEBUG) && defined(DEAL_II_HAVE_FP_EXCEPTIONS)
+    // Restore the startup exception mask before CGAL checks the FPU at exit.
+    // See deal.II commit 5b0d034e0a73a56336301071d23200eef8948fe8.
+    fedisableexcept(FE_DIVBYZERO | FE_INVALID);
 #endif
   }
 } deal_II_enable_fpe;

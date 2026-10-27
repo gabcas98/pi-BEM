@@ -35,9 +35,11 @@ IF(NOT "${_main}" STREQUAL "")
 ENDIF()
 
 
+
 CMAKE_MINIMUM_REQUIRED(VERSION 3.13.4)
 
-FIND_PACKAGE(deal.II 9.5.0 REQUIRED
+
+FIND_PACKAGE(deal.II 9.8.0 REQUIRED
   HINTS ${deal.II_DIR} ${DEAL_II_DIR} ../ ../../ $ENV{DEAL_II_DIR}
 )
 
@@ -52,7 +54,6 @@ ELSE()
 ENDIF()
 
 DEAL_II_INITIALIZE_CACHED_VARIABLES()
-
 
 PROJECT(${TARGET})
 
@@ -87,6 +88,18 @@ SET_SOURCE_FILES_PROPERTIES(${_fmm_kernel_files} PROPERTIES
   COMPILE_OPTIONS "${_fmm_kernel_options}")
 
 
+IF($ENV{PBEM_OPENMP})
+    message("compiling with OpenMP threading")
+    FIND_PACKAGE(OpenMP REQUIRED)
+    add_definitions("-DPBEM_OPENMP")
+ELSE()
+    message("compiling with TBB threading")
+ENDIF()
+#-fopenmp was not used in compiling .o files, it was substituted with -fopenmp-simd
+IF (OPENMP_FOUND)
+    add_definitions("-fopenmp")
+ENDIF()
+
 # We one library and one target for each type of deal.II library
 # we found. If you compiled deal.II with both Release and Debug
 # mode, this will generate both Release and Debug programs for you
@@ -114,10 +127,16 @@ FOREACH(_build_type ${_d2_build_types})
 		SET(_exe "${TARGET}_${_dim}d${${_build_type}_postfix}")
 		MESSAGE("-- Configuring executable ${_exe}")
 		ADD_EXECUTABLE(${_exe} ${_main})
-		target_compile_definitions(${_exe} PUBLIC DEAL_II_DIMENSION=${_dim})
-		TARGET_LINK_LIBRARIES(${_exe} ${_lib})
+
+		
+		IF (OPENMP_FOUND)
+		    TARGET_LINK_LIBRARIES(${_exe} ${_lib} OpenMP::OpenMP_CXX)
+		ELSE()
+		    TARGET_LINK_LIBRARIES(${_exe} ${_lib})
+        ENDIF()
+		target_compile_definitions(${_exe} PUBLIC DEAL_II_DIMENSION=${_dim} )
 		DEAL_II_SETUP_TARGET(${_exe} ${_BUILD_TYPE})
-    	ENDFOREACH()
+	ENDFOREACH()
 
 	# Benchmarks of the building blocks of the FMA
 	FOREACH(_bench fmm_expansions fmm_points yukawa_expansions exact_geometry exact_geometry_pibem exact_geometry_surfaces)
@@ -143,7 +162,7 @@ ENDFOREACH()
 
 INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests AND BEM_ENABLE_TESTING)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests AND "${BEM_ENABLE_TESTING}")
   ADD_SUBDIRECTORY(tests)
   ENABLE_TESTING()
 endif()
