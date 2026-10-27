@@ -1541,10 +1541,8 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
   // matrix assembly, so it is off unless a convergence study asks for it.
   prm.declare_entry("Compute energy norm error", "false", Patterns::Bool());
 
-  // The per-component, per-material and radial error breakdowns. They were
-  // written to find where the error concentrated on this geometry; once that
-  // is settled they are about thirty lines of output per run, so they are off
-  // unless asked for.
+  // The error breakdowns of the sphere-in-box geometry, removed in the
+  // cleanup of 2026-10-27: read, so that older files run, and ignored.
   prm.declare_entry("Detailed error diagnostics", "false", Patterns::Bool());
 
   // How the surface gradient is recovered once the trace and the flux are
@@ -1969,7 +1967,6 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
   galerkin_component_rhs_diagnostics =
     prm.get_bool("Galerkin component RHS diagnostics");
   compute_energy_norm = prm.get_bool("Compute energy norm error");
-  detailed_error_diagnostics = prm.get_bool("Detailed error diagnostics");
   gradient_recovery          = prm.get("Gradient recovery");
   removed(gradient_recovery == "weak_joint" ||
             gradient_recovery == "weak_discrete" ||

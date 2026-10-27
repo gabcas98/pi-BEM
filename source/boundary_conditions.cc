@@ -957,48 +957,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
   const double rhs_l2              = bem.system_rhs.l2_norm();
   const double relative_exact_residual =
     rhs_l2 > 0.0 ? exact_residual_l2 / rhs_l2 : exact_residual_l2;
-  const bool sphere_box_grid =
-    comp_dom.input_grid_name.find("sphere_box") != std::string::npos;
-
-  std::array<double, 2> component_exact_residual_l2{};
-  std::array<double, 2> component_rhs_l2{};
-  if (bem.boundary_integral_formulation == "galerkin" &&
-      (sphere_box_grid ||
-       (bem.galerkin_component_rhs_diagnostics &&
-        bem.calderon_dual_component_areas.size() == 2)))
-    {
-      std::array<double, 2> local_residual_squares{};
-      std::array<double, 2> local_rhs_squares{};
-      std::vector<types::global_dof_index> cell_indices(
-        bem.fe->dofs_per_cell);
-      for (const auto &cell : bem.dh.active_cell_iterators())
-        {
-          if (cell->subdomain_id() != this_mpi_process)
-            continue;
-          const unsigned int component = sphere_box_grid ?
-            (cell->material_id() == 1 ? 0 : 1) :
-            bem.calderon_dual_cell_components[cell->active_cell_index()];
-          AssertIndexRange(component, 2);
-          cell->get_dof_indices(cell_indices);
-          for (const auto dof : cell_indices)
-            {
-              local_residual_squares[component] +=
-                exact_residual[dof] * exact_residual[dof];
-              local_rhs_squares[component] +=
-                bem.system_rhs[dof] * bem.system_rhs[dof];
-            }
-        }
-      for (unsigned int component = 0; component < 2; ++component)
-        {
-          component_exact_residual_l2[component] = std::sqrt(
-            Utilities::MPI::sum(local_residual_squares[component],
-                                mpi_communicator));
-          component_rhs_l2[component] = std::sqrt(
-            Utilities::MPI::sum(local_rhs_squares[component],
-                                mpi_communicator));
-        }
-    }
-
   std::array<double, dim> coordinate_patch_relative_residuals{};
   if (bem.kernel_type == "laplace" && bem.solution_method == "Direct" &&
       bem.boundary_integral_formulation == "collocation")
@@ -1182,23 +1140,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       dphi_dn_node_error *= -1.0;
       dphi_dn_node_error.add(1., localized_dphi_dn);
 
-      std::array<double, 2> component_nodal_linf{};
-      if (sphere_box_grid)
-        {
-          std::vector<types::global_dof_index> cell_indices(
-            bem.fe->dofs_per_cell);
-          for (const auto &cell : bem.dh.active_cell_iterators())
-            {
-              const unsigned int component =
-                cell->material_id() == 1 ? 0 : 1;
-              cell->get_dof_indices(cell_indices);
-              for (const auto dof : cell_indices)
-                component_nodal_linf[component] =
-                  std::max(component_nodal_linf[component],
-                           std::abs(dphi_dn_node_error[dof]));
-            }
-        }
-
       Vector<double> recovered_dphi_dn(bem.dh.n_dofs());
       for (types::global_dof_index original_i = 0;
            original_i < bem.dh.n_dofs();
@@ -1246,105 +1187,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       double dphi_dn_interpolation_error_squared = 0.0;
       double projection_error_squared            = 0.0;
       double exact_dphi_dn_norm_squared          = 0.0;
-      std::array<double, 2> component_true_error_squared{};
-      std::array<double, 2> component_projection_error_squared{};
-      std::array<double, 2> component_exact_norm_squared{};
-      std::array<double, 2> component_true_linf{};
-      std::array<Point<dim>, 2> component_true_linf_point{};
-      std::map<unsigned int, double> material_true_error_squared;
-      std::map<unsigned int, double> material_projection_error_squared;
-      std::map<unsigned int, double> material_exact_norm_squared;
-      std::map<unsigned int, double> material_true_linf;
-      std::map<unsigned int, Point<dim>> material_true_linf_point;
-      std::array<std::array<double, 3>, 2> gap_true_error_squared{};
-      std::array<std::array<double, 3>, 2> gap_projection_error_squared{};
-      std::array<std::array<double, 3>, 2> gap_exact_norm_squared{};
-      std::array<double, 3> cube_bottom_true_error_squared{};
-      std::array<double, 3> cube_bottom_projection_error_squared{};
-      std::array<double, 3> cube_bottom_exact_norm_squared{};
-      std::array<double, 3> cube_bottom_signed_error{};
-      std::array<double, 3> cube_bottom_area{};
-      std::array<std::array<double, 5>, 3> cube_bottom_radial_error_squared{};
-      std::array<std::array<double, 5>, 3> cube_bottom_radial_exact_norm_squared{};
-      std::array<std::array<double, 5>, 3> cube_bottom_radial_signed_error{};
-      std::array<std::array<double, 5>, 3> cube_bottom_radial_area{};
-      std::array<double, 4> cube_bottom_edge_error_squared{};
-      std::array<double, 4> cube_bottom_edge_exact_norm_squared{};
-      std::array<double, 4> cube_bottom_edge_signed_error{};
-      std::array<double, 4> cube_bottom_edge_area{};
-      std::array<double, 3> cube_bottom_alignment_error_squared{};
-      std::array<double, 3> cube_bottom_alignment_exact_norm_squared{};
-      std::array<double, 3> cube_bottom_alignment_signed_error{};
-      std::array<double, 3> cube_bottom_alignment_area{};
-      struct CellErrorInfo
-      {
-        double contribution = 0.0;
-        unsigned int cell_index = numbers::invalid_unsigned_int;
-        unsigned int material_id = numbers::invalid_unsigned_int;
-        Point<dim> center;
-        double radial_distance = 0.0;
-        double edge_distance = 0.0;
-      };
-      std::vector<CellErrorInfo> top_true_error_cells;
-      constexpr double gap_core_radius    = 0.35;
-      constexpr double gap_annulus_radius = 1.00;
-      constexpr double gap_z_cut          = -0.90;
-      constexpr double cube_half_extent   = 6.5;
-      const auto gap_region = [&](const Point<dim> &point) {
-        if constexpr (dim == 3)
-          {
-            const double radial_distance =
-              std::sqrt(point[0] * point[0] + point[1] * point[1]);
-            if (point[2] >= gap_z_cut)
-              return 2U;
-            if (radial_distance < gap_core_radius)
-              return 0U;
-            if (radial_distance < gap_annulus_radius)
-              return 1U;
-            return 2U;
-          }
-        else
-          return 2U;
-      };
-      const auto radial_bin = [](const double radial_distance) {
-        if (radial_distance < 0.15)
-          return 0U;
-        if (radial_distance < 0.35)
-          return 1U;
-        if (radial_distance < 0.70)
-          return 2U;
-        if (radial_distance < 1.00)
-          return 3U;
-        return 4U;
-      };
-      const auto edge_bin = [](const double edge_distance) {
-        if (edge_distance < 0.25)
-          return 0U;
-        if (edge_distance < 0.75)
-          return 1U;
-        if (edge_distance < 1.50)
-          return 2U;
-        return 3U;
-      };
-      const auto alignment_bin = [](const Point<dim> &point) {
-        if constexpr (dim == 3)
-          {
-            const double ax = std::abs(point[0]);
-            const double ay = std::abs(point[1]);
-            const double largest = std::max(ax, ay);
-            if (largest < 1e-14)
-              return 1U;
-            const double balance = std::min(ax, ay) / largest;
-            if (balance < 0.25)
-              return 0U; // Near the coordinate axes.
-            if (balance > 0.75)
-              return 2U; // Near the diagonals x=+/-y.
-            return 1U;
-          }
-        else
-          return 1U;
-      };
-
       for (const auto &cell : bem.dh.active_cell_iterators())
         {
           dphi_dn_error_fe_values.reinit(cell);
@@ -1362,12 +1204,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
           double cell_true_error_squared          = 0.0;
           double cell_interpolation_error_squared = 0.0;
           double cell_projection_error_squared    = 0.0;
-	          const unsigned int boundary_component =
-	            cell->material_id() == 1 ? 0 : 1;
-	          const unsigned int material_id =
-	            static_cast<unsigned int>(cell->material_id());
-	          for (unsigned int q = 0; q < dphi_dn_error_quadrature.size(); ++q)
-	            {
+          for (unsigned int q = 0; q < dphi_dn_error_quadrature.size(); ++q)
+            {
               double exact_normal_trace = 0.0;
               for (unsigned int d = 0; d < dim; ++d)
                 exact_normal_trace +=
@@ -1384,119 +1222,13 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                 interpolation_error * interpolation_error * weight;
               exact_dphi_dn_norm_squared +=
                 exact_normal_trace * exact_normal_trace * weight;
-              if (sphere_box_grid)
-                {
-                  const Point<dim> quadrature_point =
-                    dphi_dn_error_fe_values.quadrature_point(q);
-                  const unsigned int region = gap_region(quadrature_point);
-	                  component_true_error_squared[boundary_component] +=
-	                    true_error * true_error * weight;
-	                  component_exact_norm_squared[boundary_component] +=
-	                    exact_normal_trace * exact_normal_trace * weight;
-	                  material_true_error_squared[material_id] +=
-	                    true_error * true_error * weight;
-	                  material_exact_norm_squared[material_id] +=
-	                    exact_normal_trace * exact_normal_trace * weight;
-	                  gap_true_error_squared[boundary_component][region] +=
-	                    true_error * true_error * weight;
-	                  gap_exact_norm_squared[boundary_component][region] +=
-	                    exact_normal_trace * exact_normal_trace * weight;
-	                  if (material_id == 3)
-	                    {
-	                      cube_bottom_true_error_squared[region] +=
-	                        true_error * true_error * weight;
-	                      cube_bottom_exact_norm_squared[region] +=
-	                        exact_normal_trace * exact_normal_trace * weight;
-	                      cube_bottom_signed_error[region] +=
-	                        true_error * weight;
-	                      cube_bottom_area[region] += weight;
-	                      const double radial_distance =
-	                        std::sqrt(quadrature_point[0] *
-	                                    quadrature_point[0] +
-	                                  quadrature_point[1] *
-	                                    quadrature_point[1]);
-	                      const unsigned int radius_bin =
-	                        radial_bin(radial_distance);
-	                      cube_bottom_radial_error_squared[region]
-	                                                      [radius_bin] +=
-	                        true_error * true_error * weight;
-	                      cube_bottom_radial_exact_norm_squared[region]
-	                                                          [radius_bin] +=
-	                        exact_normal_trace * exact_normal_trace * weight;
-	                      cube_bottom_radial_signed_error[region]
-	                                                     [radius_bin] +=
-	                        true_error * weight;
-	                      cube_bottom_radial_area[region][radius_bin] +=
-	                        weight;
-	                      const double edge_distance =
-	                        cube_half_extent -
-	                        std::max(std::abs(quadrature_point[0]),
-	                                 std::abs(quadrature_point[1]));
-	                      const unsigned int boundary_bin =
-	                        edge_bin(edge_distance);
-	                      cube_bottom_edge_error_squared[boundary_bin] +=
-	                        true_error * true_error * weight;
-	                      cube_bottom_edge_exact_norm_squared
-	                        [boundary_bin] +=
-	                        exact_normal_trace * exact_normal_trace * weight;
-	                      cube_bottom_edge_signed_error[boundary_bin] +=
-	                        true_error * weight;
-	                      cube_bottom_edge_area[boundary_bin] += weight;
-	                      const unsigned int axis_diagonal_bin =
-	                        alignment_bin(quadrature_point);
-	                      cube_bottom_alignment_error_squared
-	                        [axis_diagonal_bin] +=
-	                        true_error * true_error * weight;
-	                      cube_bottom_alignment_exact_norm_squared
-	                        [axis_diagonal_bin] +=
-	                        exact_normal_trace * exact_normal_trace * weight;
-	                      cube_bottom_alignment_signed_error
-	                        [axis_diagonal_bin] += true_error * weight;
-	                      cube_bottom_alignment_area[axis_diagonal_bin] +=
-	                        weight;
-	                    }
-	                  if (std::abs(true_error) >
-	                      component_true_linf[boundary_component])
-                    {
-                      component_true_linf[boundary_component] =
-                        std::abs(true_error);
-                      component_true_linf_point[boundary_component] =
-	                        dphi_dn_error_fe_values.quadrature_point(q);
-	                    }
-	                  if (std::abs(true_error) >
-	                      material_true_linf[material_id])
-	                    {
-	                      material_true_linf[material_id] =
-	                        std::abs(true_error);
-	                      material_true_linf_point[material_id] =
-	                        dphi_dn_error_fe_values.quadrature_point(q);
-	                    }
-	                }
               if (has_l2_projection)
                 {
                   const double projection_error =
                     projected_exact_dphi_dn[q] - exact_normal_trace;
                   cell_projection_error_squared +=
                     projection_error * projection_error * weight;
-                  if (sphere_box_grid)
-                    {
-                      const Point<dim> quadrature_point =
-                        dphi_dn_error_fe_values.quadrature_point(q);
-                      const unsigned int region =
-                        gap_region(quadrature_point);
-	                      component_projection_error_squared
-	                        [boundary_component] +=
-	                          projection_error * projection_error * weight;
-	                      material_projection_error_squared[material_id] +=
-	                        projection_error * projection_error * weight;
-	                      gap_projection_error_squared[boundary_component]
-	                                                  [region] +=
-	                        projection_error * projection_error * weight;
-	                      if (material_id == 3)
-	                        cube_bottom_projection_error_squared[region] +=
-	                          projection_error * projection_error * weight;
-	                    }
-	                }
+                }
             }
 
           const unsigned int cell_index = cell->active_cell_index();
@@ -1510,35 +1242,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
           dphi_dn_interpolation_error_squared +=
             cell_interpolation_error_squared;
           projection_error_squared += cell_projection_error_squared;
-          if (sphere_box_grid)
-            {
-              CellErrorInfo info;
-              info.contribution = std::sqrt(cell_true_error_squared);
-              info.cell_index   = cell_index;
-              info.material_id  = static_cast<unsigned int>(cell->material_id());
-              info.center       = cell->center();
-              if constexpr (dim == 3)
-                {
-                  info.radial_distance =
-                    std::sqrt(info.center[0] * info.center[0] +
-                              info.center[1] * info.center[1]);
-                  info.edge_distance =
-                    cube_half_extent -
-                    std::max(std::abs(info.center[0]),
-                             std::abs(info.center[1]));
-                }
-              top_true_error_cells.push_back(info);
-            }
-        }
-      if (sphere_box_grid)
-        {
-          std::sort(top_true_error_cells.begin(),
-                    top_true_error_cells.end(),
-                    [](const CellErrorInfo &a, const CellErrorInfo &b) {
-                      return a.contribution > b.contribution;
-                    });
-          if (top_true_error_cells.size() > 8)
-            top_true_error_cells.resize(8);
         }
 
       const double true_dphi_dn_L2_error =
@@ -1704,199 +1407,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                       true_dphi_dn_L2_error)
                 << std::endl;
         }
-      if (sphere_box_grid && bem.detailed_error_diagnostics)
-        {
-          pcout << "dPhidN errors separated by boundary component:"
-                << std::endl;
-          for (unsigned int component = 0; component < 2; ++component)
-            {
-              const double component_error =
-                std::sqrt(component_true_error_squared[component]);
-              const double component_exact_norm =
-                std::sqrt(component_exact_norm_squared[component]);
-              pcout << "  " << (component == 0 ? "sphere" : "cube")
-                    << ": L2 " << component_error
-                    << ", relative L2 "
-                    << (component_exact_norm > 0.0 ?
-                          component_error / component_exact_norm :
-                          component_error)
-                    << ", quadrature Linf "
-                    << component_true_linf[component]
-                    << ", nodal Linf "
-                    << component_nodal_linf[component]
-                    << ", max point "
-                    << component_true_linf_point[component];
-              if (has_l2_projection)
-                pcout << ", best projection L2 "
-                      << std::sqrt(
-                           component_projection_error_squared[component]);
-              pcout << std::endl;
-            }
-          pcout << "dPhidN true L2 split by gap zone "
-                << "(core: r<" << gap_core_radius
-                << ", annulus: r<" << gap_annulus_radius
-                << ", z<" << gap_z_cut << "):" << std::endl;
-          for (unsigned int component = 0; component < 2; ++component)
-            for (unsigned int region = 0; region < 3; ++region)
-              {
-                const double region_error =
-                  std::sqrt(gap_true_error_squared[component][region]);
-                const double region_exact_norm =
-                  std::sqrt(gap_exact_norm_squared[component][region]);
-                pcout << "  " << (component == 0 ? "sphere" : "cube")
-                      << ' '
-                      << (region == 0 ? "gap-core" :
-                          region == 1 ? "gap-annulus" :
-                                        "rest")
-                      << ": L2 " << region_error
-                      << ", relative L2 "
-                      << (region_exact_norm > 0.0 ?
-                            region_error / region_exact_norm :
-                            region_error);
-                if (has_l2_projection)
-                  pcout << ", best projection L2 "
-                        << std::sqrt(
-                             gap_projection_error_squared[component][region]);
-	                pcout << std::endl;
-	              }
-	          pcout << "dPhidN true L2 split by material id:" << std::endl;
-	          for (const auto &entry : material_true_error_squared)
-	            {
-	              const unsigned int material_id = entry.first;
-	              const double material_error = std::sqrt(entry.second);
-	              const double material_exact_norm =
-	                std::sqrt(material_exact_norm_squared[material_id]);
-	              pcout << "  material " << material_id
-	                    << ": L2 " << material_error
-	                    << ", relative L2 "
-	                    << (material_exact_norm > 0.0 ?
-	                          material_error / material_exact_norm :
-	                          material_error)
-	                    << ", quadrature Linf "
-	                    << material_true_linf[material_id]
-	                    << ", max point "
-	                    << material_true_linf_point[material_id];
-	              if (has_l2_projection)
-	                pcout << ", best projection L2 "
-	                      << std::sqrt(
-	                           material_projection_error_squared[material_id]);
-	              pcout << std::endl;
-	            }
-	          pcout << "dPhidN true L2 split on cube bottom face "
-	                << "(material 3):" << std::endl;
-	          for (unsigned int region = 0; region < 3; ++region)
-	            {
-	              const double region_error =
-	                std::sqrt(cube_bottom_true_error_squared[region]);
-	              const double region_exact_norm =
-	                std::sqrt(cube_bottom_exact_norm_squared[region]);
-	              pcout << "  "
-	                    << (region == 0 ? "gap-core" :
-	                        region == 1 ? "gap-annulus" :
-	                                      "rest")
-	                    << ": L2 " << region_error
-	                    << ", relative L2 "
-	                    << (region_exact_norm > 0.0 ?
-	                          region_error / region_exact_norm :
-	                          region_error);
-	              if (has_l2_projection)
-	                pcout << ", best projection L2 "
-	                      << std::sqrt(
-	                           cube_bottom_projection_error_squared[region]);
-	              pcout << ", signed mean error "
-	                    << (cube_bottom_area[region] > 0.0 ?
-	                          cube_bottom_signed_error[region] /
-	                            cube_bottom_area[region] :
-	                          0.0);
-	              pcout << std::endl;
-	            }
-	          pcout << "dPhidN true L2 radial split on cube bottom face:"
-	                << std::endl;
-	          const char *region_names[3] = {"gap-core",
-	                                         "gap-annulus",
-	                                         "rest"};
-	          const char *radial_names[5] = {"r<0.15",
-	                                         "0.15<=r<0.35",
-	                                         "0.35<=r<0.70",
-	                                         "0.70<=r<1.00",
-	                                         "r>=1.00"};
-	          for (unsigned int region = 0; region < 3; ++region)
-	            for (unsigned int bin = 0; bin < 5; ++bin)
-	              if (cube_bottom_radial_area[region][bin] > 0.0)
-	                {
-	                  const double bin_error =
-	                    std::sqrt(
-	                      cube_bottom_radial_error_squared[region][bin]);
-	                  const double bin_exact_norm =
-	                    std::sqrt(
-	                      cube_bottom_radial_exact_norm_squared[region][bin]);
-	                  pcout << "  " << region_names[region] << ", "
-	                        << radial_names[bin] << ": L2 " << bin_error
-	                        << ", relative L2 "
-	                        << (bin_exact_norm > 0.0 ?
-	                              bin_error / bin_exact_norm :
-	                              bin_error)
-	                        << ", signed mean error "
-	                        << cube_bottom_radial_signed_error[region][bin] /
-	                             cube_bottom_radial_area[region][bin]
-	                        << std::endl;
-	                }
-	          pcout << "dPhidN true L2 split by distance from cube-bottom "
-	                   "outer edge:"
-	                << std::endl;
-	          const char *edge_names[4] = {"edge<0.25",
-	                                       "0.25<=edge<0.75",
-	                                       "0.75<=edge<1.50",
-	                                       "edge>=1.50"};
-	          for (unsigned int bin = 0; bin < 4; ++bin)
-	            if (cube_bottom_edge_area[bin] > 0.0)
-	              {
-	                const double bin_error =
-	                  std::sqrt(cube_bottom_edge_error_squared[bin]);
-	                const double bin_exact_norm =
-	                  std::sqrt(cube_bottom_edge_exact_norm_squared[bin]);
-	                pcout << "  " << edge_names[bin] << ": L2 "
-	                      << bin_error << ", relative L2 "
-	                      << (bin_exact_norm > 0.0 ?
-	                            bin_error / bin_exact_norm :
-	                            bin_error)
-	                      << ", signed mean error "
-	                      << cube_bottom_edge_signed_error[bin] /
-	                           cube_bottom_edge_area[bin]
-	                      << std::endl;
-	              }
-	          pcout << "dPhidN true L2 split by cube-bottom xy alignment:"
-	                << std::endl;
-	          const char *alignment_names[3] = {"near axes",
-	                                            "off-axis",
-	                                            "near diagonals"};
-	          for (unsigned int bin = 0; bin < 3; ++bin)
-	            if (cube_bottom_alignment_area[bin] > 0.0)
-	              {
-	                const double bin_error =
-	                  std::sqrt(cube_bottom_alignment_error_squared[bin]);
-	                const double bin_exact_norm =
-	                  std::sqrt(
-	                    cube_bottom_alignment_exact_norm_squared[bin]);
-	                pcout << "  " << alignment_names[bin] << ": L2 "
-	                      << bin_error << ", relative L2 "
-	                      << (bin_exact_norm > 0.0 ?
-	                            bin_error / bin_exact_norm :
-	                            bin_error)
-	                      << ", signed mean error "
-	                      << cube_bottom_alignment_signed_error[bin] /
-	                           cube_bottom_alignment_area[bin]
-	                      << std::endl;
-	              }
-	          pcout << "Top true dPhidN error cells:" << std::endl;
-	          for (const auto &info : top_true_error_cells)
-	            pcout << "  cell " << info.cell_index << ", material "
-	                  << info.material_id << ", L2 contribution "
-	                  << info.contribution << ", center " << info.center
-	                  << ", r " << info.radial_distance
-	                  << ", edge distance " << info.edge_distance
-	                  << std::endl;
-	        }
       pcout << "dPhidN true maximum cell L2 contribution: "
             << true_dphi_dn_difference_per_cell.linfty_norm() << ", at cell "
             << max_true_dphi_cell_index << ", material "
@@ -1923,22 +1433,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                  "mixed and complex problems (the mixed Galerkin solver "
                  "prints its flux/potential row residuals above)"
               << std::endl;
-      if (!own_system &&
-          bem.boundary_integral_formulation == "galerkin" &&
-          bem.detailed_error_diagnostics &&
-          (sphere_box_grid ||
-           (bem.galerkin_component_rhs_diagnostics &&
-            bem.calderon_dual_component_areas.size() == 2)))
-        for (unsigned int component = 0; component < 2; ++component)
-          pcout << "Exact residual on "
-                << (component == 0 ? "sphere" : "cube") << ": L2 "
-                << component_exact_residual_l2[component]
-                << ", relative to component RHS "
-                << (component_rhs_l2[component] > 0.0 ?
-                      component_exact_residual_l2[component] /
-                        component_rhs_l2[component] :
-                      component_exact_residual_l2[component])
-                << std::endl;
       if (bem.boundary_integral_formulation == "collocation")
         {
           pcout << "Laplace coordinate patch relative residuals:";

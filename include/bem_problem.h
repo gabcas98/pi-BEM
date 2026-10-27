@@ -964,7 +964,6 @@ public:
   /// compute the energy norm of the flux error after the solve; costs one
   /// extra pass over all panel pairs, so it is off by default
   bool   compute_energy_norm;
-  bool        detailed_error_diagnostics;
   std::string gradient_recovery;
   double galerkin_far_field_tolerance;
   /// Assemble the single layer and the double-layer right-hand side in one
