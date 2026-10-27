@@ -137,6 +137,19 @@ The Galerkin multipole method of the Dirichlet problem needs `Mapping Type =
 Q`: it evaluates the geometry of the near field directly. The mixed problem
 also runs with `Mapping Type = FE`.
 
+With several real components the Galerkin formulation sets the operators up
+for the first and reuses them for the others on the same mesh: V, K and W of
+the mixed problem (dense or through the multipole method), the single layer
+of the Dirichlet problem with dense matrices, whose load vector each
+component assembles alone. The operators are freed after the last
+component, and by `BEMProblem::reinit()` on a new mesh. The Galerkin
+multipole method of the Dirichlet problem is set up again for every
+component, since its near field integrates the operator and the datum
+together. On the sample sphere with x+y+z and x^2-y^2, each component gives
+the numbers of a run of its own (the load vector of the Dirichlet problem to
+rounding: it is assembled alone instead of with the single layer), and the
+second mixed solve takes 0.2 s instead of 8 s with dense matrices.
+
 The mixed Galerkin problem takes Robin parts too. On their cells the
 potential is unknown, as on the Neumann part, and the flux is
 `g/b - (a/b) u` with `a/b` and `g/b` at the nodes: the flux `-(a/b) u` of

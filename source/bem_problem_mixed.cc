@@ -529,8 +529,21 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // multipole method (GalerkinCalderonFMMOperator) instead of dense
       // matrices.
       const bool through_fmm = solution_method == "FMA";
-      TrilinosWrappers::SparseMatrix single_layer, double_layer, hypersingular;
-      if (!through_fmm)
+      TrilinosWrappers::SparseMatrix &single_layer  = mixed_single_layer,
+                                     &double_layer  = mixed_double_layer,
+                                     &hypersingular = mixed_hypersingular;
+      std::unique_ptr<GalerkinCalderonFMMOperator> &calderon = mixed_calderon;
+      // Another component on the same mesh: the operators of the previous
+      // one.
+      const bool reuse = galerkin_reuse_operators &&
+                         mixed_operators_size == n &&
+                         (through_fmm ? calderon != nullptr :
+                                        single_layer.m() == n);
+      if (reuse)
+        pcout << "Mixed Galerkin problem: the operators of the previous "
+                 "component"
+              << std::endl;
+      if (!through_fmm && !reuse)
         {
           pcout << "Mixed Galerkin problem: three dense matrices of " << n
                 << " x " << n << ", about "
@@ -584,8 +597,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                                              since)
           .count();
       };
-      std::unique_ptr<GalerkinCalderonFMMOperator> calderon;
-      if (through_fmm)
+      if (!reuse && through_fmm)
         {
           GalerkinCalderonFMMOperator::AdditionalData data;
           data.quadrature_order        = galerkin_quadrature_order;
@@ -646,7 +658,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                 << seconds_since(assembly_start) << " s" << std::endl;
           calderon->print_statistics(pcout.get_stream());
         }
-      else
+      else if (!reuse)
         {
           integrator.assemble_single_double_hypersingular(
             dh,
@@ -660,7 +672,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           double_layer.compress(VectorOperation::add);
           hypersingular.compress(VectorOperation::add);
         }
-      if (!through_fmm)
+      mixed_operators_size = n;
+      if (!through_fmm && !reuse)
       {
         const auto &profile = integrator.rhs_profile();
         pcout << "Mixed Galerkin problem: V, K and W assembled in "
@@ -1686,6 +1699,16 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                 << std::sqrt(sums[0] + sums[1]) << ", on "
                 << dh.get_triangulation().n_active_cells() << " cells"
                 << std::endl;
+        }
+
+      // The operators stay for the next component on the same mesh.
+      if (current_component + 1 >= n_components)
+        {
+          single_layer.clear();
+          double_layer.clear();
+          hypersingular.clear();
+          calderon.reset();
+          mixed_operators_size = 0;
         }
     }
   else

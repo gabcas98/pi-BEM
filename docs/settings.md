@@ -125,6 +125,8 @@ them changes the solution.
   method.
 - `slots_mixed_fma`, `slots_dirichlet_dg`, `slots_dirichlet_fma`: two slots,
   each exact on its manifold and wrong on the other, in the Galerkin data.
+- `components_mixed_dense`, `components_dirichlet_dg`: two components, the
+  second with the operators of the first.
 
 ## Environment switches
 

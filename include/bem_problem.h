@@ -798,6 +798,16 @@ public:
   /// without global refinement).
   bool reuse_near_field = false;
   GalerkinCalderonFMMOperator::NearFieldCache near_field_cache;
+  /// The operators of the mixed problem, V, K and W as dense matrices or
+  /// through the multipole method, kept for the next component on the same
+  /// mesh (galerkin_reuse_operators, from reset_matrix false) and freed
+  /// after the last component and by reinit(); mixed_operators_size is the
+  /// number of indices they were built for, zero when there are none.
+  TrilinosWrappers::SparseMatrix mixed_single_layer, mixed_double_layer,
+    mixed_hypersingular;
+  std::unique_ptr<GalerkinCalderonFMMOperator> mixed_calderon;
+  types::global_dof_index                      mixed_operators_size     = 0;
+  bool                                         galerkin_reuse_operators = false;
   /// With reuse_near_field, the discrete traces of the last solve on its
   /// cells, the flux on the Dirichlet cells and the potential on the
   /// Neumann cells, by level and index, and the degree of the element: the

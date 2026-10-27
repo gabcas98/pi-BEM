@@ -270,6 +270,14 @@ CASES = {
                             {'Solution method': 'FMA',
                              'Mapping Type': 'Q'},
                             ['rhs_norm', 'iterations']),
+    # Two components with the same operators: the second reuses those of the
+    # first, in the mixed problem and in the Dirichlet problem (whose load
+    # vector it assembles alone); the values of the second.
+    'components_mixed_dense': ('sphere_components_mixed.prm', {},
+                               ['mixed_flux', 'mixed_potential',
+                                'iterations']),
+    'components_dirichlet_dg': ('sphere_components_dirichlet.prm', {},
+                                ['rhs_norm', 'flux', 'iterations']),
 }
 
 

@@ -4,6 +4,16 @@
   "gradient": "0.301983",
   "iterations": "47"
  },
+ "components_dirichlet_dg": {
+  "flux": "0.000114057",
+  "iterations": "28",
+  "rhs_norm": "0.06720018000309132"
+ },
+ "components_mixed_dense": {
+  "iterations": "63",
+  "mixed_flux": "0.0655028",
+  "mixed_potential": "0.00483511"
+ },
  "continuous_laplace_q2": {
   "V_frobenius": "31.86535925295528",
   "best_ratio": "1.05372",

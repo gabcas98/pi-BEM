@@ -611,8 +611,14 @@ BEMProblem<dim>::reinit()
 {
   // ENTRY
   Teuchos::TimeMonitor LocalTimer(*ReinitTime);
-  // The Galerkin FMM belongs to the previous mesh; the next solve sets it up.
+  // The Galerkin FMM and the operators of the mixed problem belong to the
+  // previous mesh; the next solve sets them up.
   galerkin_fmm.reset();
+  mixed_single_layer.clear();
+  mixed_double_layer.clear();
+  mixed_hypersingular.clear();
+  mixed_calderon.reset();
+  mixed_operators_size = 0;
 
   fe          = createFiniteElementPointer<dim - 1, dim, false>(scalar_fe_type,
                                                        scalar_fe_order);
@@ -8771,6 +8777,7 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
                       ExcMessage("The mixed Galerkin problem needs the "
                                  "gradient of the solution for the Neumann "
                                  "datum."));
+          galerkin_reuse_operators = !reset_matrix;
           solve_galerkin_mixed(phi, dphi_dn, *dirichlet_function,
                                *dirichlet_gradient);
           return;
@@ -8802,19 +8809,29 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
                              "requires pure Dirichlet boundary conditions."));
     }
 
-  // Another component reuses the matrices (reset_matrix false), but the
-  // Galerkin formulation and the exact regularized right-hand side assemble
-  // the right-hand side with them.
-  if (boundary_integral_formulation == "galerkin" ||
-      dirichlet_rhs_treatment == "exact_regularized")
+  // Another component reuses the matrices (reset_matrix false). The
+  // Galerkin load vector is then assembled alone, without the single layer
+  // (with it, when the matrices are assembled, if fused); the exact
+  // regularized right-hand side of the collocation is assembled with the
+  // matrices, and the Galerkin FMM of the Dirichlet problem is set up with
+  // its datum, so both are set up again.
+  const bool galerkin = boundary_integral_formulation == "galerkin";
+  if (!galerkin && dirichlet_rhs_treatment == "exact_regularized")
     reset_matrix = true;
 
-  if (reset_matrix && solution_method == "Direct")
+  if (solution_method == "Direct" && (reset_matrix || galerkin))
     {
-      if (boundary_integral_formulation == "galerkin")
-        galerkin_fused_dirichlet_function = dirichlet_function;
-      assemble_system();
-      galerkin_fused_dirichlet_function = nullptr;
+      if (reset_matrix)
+        {
+          if (galerkin)
+            galerkin_fused_dirichlet_function = dirichlet_function;
+          assemble_system();
+          galerkin_fused_dirichlet_function = nullptr;
+        }
+      else
+        pcout << "Galerkin problem: the single layer of the previous "
+                 "component"
+              << std::endl;
       if (boundary_integral_formulation == "galerkin")
         assemble_exact_galerkin_dirichlet_rhs(*dirichlet_function,
                                               dirichlet_gradient);
@@ -8823,7 +8840,7 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
       // neumann_matrix.print(std::cout);
       // dirichlet_matrix.print(std::cout);
     }
-  else if (reset_matrix && boundary_integral_formulation == "galerkin")
+  else if (galerkin)
     {
       // The single layer through the FMM; the right-hand side is assembled
       // as in the dense path when it is not fused with the matrix. A mixed
