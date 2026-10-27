@@ -1553,6 +1553,9 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
   // boundary integral equation at the support points, which for discontinuous
   // elements are interior to their cell and so avoid the corner ambiguity of
   // the free term that a continuous space would face at vertices.
+  // weak_joint, weak_discrete and hypersingular_weak_discrete are removed
+  // variants: still accepted by the pattern, so that older files are read,
+  // and refused by parse_parameters().
   prm.declare_entry("Gradient recovery",
                     "projection",
                     Patterns::Selection(
@@ -1689,6 +1692,8 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
                     Patterns::Selection(
                       "nodal|exact_regularized|manufactured_flux"));
 
+  // The hypersingular trace correction is removed: its parameters are read,
+  // so that older files run, and steps other than 0 are refused.
   prm.declare_entry("Hypersingular correction steps",
                     "0",
                     Patterns::Integer(0));
@@ -1944,6 +1949,15 @@ template <int dim>
 void
 BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
 {
+  // Variants removed in the cleanup of 2026-10-27, still in the git history:
+  // a file that selects one stops here.
+  const auto removed = [](const bool selected, const std::string &variant) {
+    AssertThrow(!selected,
+                ExcMessage(variant +
+                           " was removed from this pi-BEM in the cleanup of "
+                           "2026-10-27; it is in the git history."));
+  };
+
   prm.enter_subsection("Solver");
   solver_control.parse_parameters(prm);
   prm.leave_subsection();
@@ -1957,6 +1971,10 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
   compute_energy_norm = prm.get_bool("Compute energy norm error");
   detailed_error_diagnostics = prm.get_bool("Detailed error diagnostics");
   gradient_recovery          = prm.get("Gradient recovery");
+  removed(gradient_recovery == "weak_joint" ||
+            gradient_recovery == "weak_discrete" ||
+            gradient_recovery == "hypersingular_weak_discrete",
+          "Gradient recovery = " + gradient_recovery);
   galerkin_far_field_tolerance =
     prm.get_double("Galerkin far field tolerance");
   galerkin_fused_rhs      = prm.get_bool("Galerkin fused right-hand side");
@@ -2036,12 +2054,9 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
 
   dirichlet_rhs_treatment = prm.get("Dirichlet RHS treatment");
 
-  hypersingular_correction_steps =
-    prm.get_integer("Hypersingular correction steps");
-  hypersingular_correction_relaxation =
-    prm.get_double("Hypersingular correction relaxation");
-  hypersingular_correction_max_relative_update =
-    prm.get_double("Hypersingular correction maximum relative update");
+  removed(prm.get_integer("Hypersingular correction steps") != 0,
+          "The hypersingular trace correction (Hypersingular correction "
+          "steps)");
   enforce_laplace_linear_patch = prm.get_bool("Enforce Laplace linear patch");
 
   screened_kappa = prm.get_double("Screened Kappa");
@@ -2910,12 +2925,11 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       data.fmm.max_points_per_leaf  = fma.points_per_leaf();
       // The near field of the right-hand sides is integrated together with
       // that of the operator: the double layer of the Dirichlet datum, and
-      // the manufactured single layer when it is used or compared.
+      // the manufactured single layer when it is used.
       GalerkinFMMOperator::RightHandSideData rhs;
       rhs.dirichlet  = dirichlet_function;
       rhs.regularize = dirichlet_rhs_treatment != "nodal";
-      if (dirichlet_rhs_treatment == "manufactured_flux" ||
-          std::getenv("PIBEM_COMPARE_RHS") != nullptr)
+      if (dirichlet_rhs_treatment == "manufactured_flux")
         rhs.gradient = exact_gradient;
       // The consistent right-hand side is integrated in the traversal of
       // the single layer and the double layer.
@@ -3108,13 +3122,12 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
         pcout << std::setprecision(old_precision) << std::endl;
       }
 
-      // The manufactured right-hand side is assembled whenever the exact
-      // gradient is available, so the two constructions can be compared in
-      // the same run: their difference is precisely the inconsistency that
-      // breaks Galerkin orthogonality, measured rather than inferred.
+      // With manufactured_flux the manufactured right-hand side is assembled
+      // next to the regularised one, so the two constructions are compared
+      // in the same run: their difference is precisely the inconsistency
+      // that breaks Galerkin orthogonality, measured rather than inferred.
       const bool compare_rhs_constructions =
-        dirichlet_rhs_treatment == "manufactured_flux" ||
-        std::getenv("PIBEM_COMPARE_RHS") != nullptr;
+        dirichlet_rhs_treatment == "manufactured_flux";
       if (exact_gradient != nullptr && compare_rhs_constructions)
         {
           TrilinosWrappers::MPI::Vector manufactured_rhs(this_cpu_set,
@@ -7626,7 +7639,6 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
   // coefficients only for collocation.
   if ((kernel_type == "screened" &&
        boundary_integral_formulation != "galerkin") ||
-      hypersingular_correction_steps > 0 ||
       gradient_recovery == "hypersingular")
     compute_hypersingular_free_coeffs();
   else
@@ -8270,74 +8282,6 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
         }
     }
   solve_system(phi, dphi_dn, tmp_rhs, dirichlet_gradient);
-
-  if (hypersingular_correction_steps > 0)
-    {
-      AssertThrow(kernel_type == "laplace" && dim == 3,
-                  ExcMessage("Hypersingular trace correction is currently "
-                             "available only for three-dimensional Laplace."));
-
-      unsigned int locally_dirichlet = 0;
-      for (const auto i : this_cpu_set)
-        if (dirichlet_nodes[i] > 0.5)
-          ++locally_dirichlet;
-      const unsigned int globally_dirichlet =
-        Utilities::MPI::sum(locally_dirichlet, mpi_communicator);
-      AssertThrow(globally_dirichlet == dh.n_dofs(),
-                  ExcMessage("Hypersingular trace correction currently "
-                             "requires pure Dirichlet boundary conditions."));
-
-      for (unsigned int step = 0; step < hypersingular_correction_steps;
-           ++step)
-        {
-          const double previous_trace_norm = dphi_dn.l2_norm();
-          compute_gradients_hypersingular(phi, dphi_dn);
-          TrilinosWrappers::MPI::Vector corrected_dphi_dn(dphi_dn);
-          TrilinosWrappers::MPI::Vector correction(dphi_dn);
-          correction = 0;
-
-          for (const auto i : this_cpu_set)
-            {
-              const types::global_dof_index original_i =
-                sub_wise_to_original[i];
-              double hypersingular_trace = 0.0;
-              for (unsigned int d = 0; d < dim; ++d)
-                {
-                  const types::global_dof_index vector_i =
-                    vec_original_to_sub_wise[d * dh.n_dofs() + original_i];
-                  hypersingular_trace += vector_normals_solution[vector_i] *
-                                         get_vector_gradients_solution()[vector_i];
-                }
-              correction[i] = hypersingular_trace - dphi_dn[i];
-              corrected_dphi_dn[i] +=
-                hypersingular_correction_relaxation * correction[i];
-            }
-          correction.compress(VectorOperation::insert);
-          corrected_dphi_dn.compress(VectorOperation::insert);
-          const double relative_update =
-            hypersingular_correction_relaxation * correction.l2_norm() /
-            std::max(previous_trace_norm,
-                     std::numeric_limits<double>::min());
-          if (!std::isfinite(relative_update) ||
-              relative_update >
-                hypersingular_correction_max_relative_update)
-            {
-              pcout << "Hypersingular trace correction step " << step + 1
-                    << " rejected: relative update " << relative_update
-                    << " exceeds "
-                    << hypersingular_correction_max_relative_update
-                    << std::endl;
-              break;
-            }
-          constraints.distribute(corrected_dphi_dn);
-          corrected_dphi_dn.compress(VectorOperation::insert);
-          dphi_dn = corrected_dphi_dn;
-
-          pcout << "Hypersingular trace correction step " << step + 1
-                << " accepted: relative update " << relative_update
-                << std::endl;
-        }
-    }
 }
 
 template <int dim>
@@ -9090,35 +9034,6 @@ BEMProblem<dim>::compute_energy_norm_error(
       double       near_part     = 0.0;
       const double total         = energy_of(
         exact_gradient, error_values, diagonal_part, far_part, near_part);
-      if (std::getenv("PIBEM_ENERGY_SELFTEST") != nullptr)
-        pcout << "Energy breakdown: same-panel " << diagonal_part
-              << ", far regular " << far_part << ", near and singular "
-              << near_part << ", total " << total << std::endl;
-
-      if (std::getenv("PIBEM_ENERGY_SELFTEST") != nullptr)
-        {
-          Functions::ZeroFunction<dim> zero(dim);
-          std::vector<std::vector<double>> minus_discrete(discrete_values);
-          for (auto &cell_values : minus_discrete)
-            for (double &v : cell_values)
-              v = -v;
-          double       zero_diagonal = 0.0;
-          double       zero_far      = 0.0;
-          double       zero_near     = 0.0;
-          const double by_quadrature = energy_of(
-            zero, minus_discrete, zero_diagonal, zero_far, zero_near);
-          TrilinosWrappers::MPI::Vector image(this_cpu_set, mpi_communicator);
-          apply_single_layer(image, dphi_dn);
-          const double by_matrix = image * dphi_dn;
-          pcout << "Energy self-test: (V lambda_h, lambda_h) by quadrature "
-                << by_quadrature << ", by matrix " << by_matrix
-                << ", relative difference "
-                << std::abs(by_quadrature - by_matrix) /
-                     std::max(std::abs(by_matrix), 1e-30)
-                << std::endl
-                << "Energy of the error, raw sum: " << total << std::endl;
-        }
-
       AssertThrow(total > -1e-10 * std::max(1.0, std::abs(total)),
                   ExcMessage("The energy of the flux error came out negative, "
                              "which the single-layer operator forbids."));
@@ -9442,14 +9357,11 @@ BEMProblem<2>::compute_gradients_hypersingular(
 template <int dim>
 void
 BEMProblem<dim>::compute_gradients_weak(
-  const TrilinosWrappers::MPI::Vector &glob_phi,
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
-  const Function<dim>                 *analytic_phi,
-  const bool                           separate_normal)
+  const Function<dim>                 &analytic_phi)
 {
   Teuchos::TimeMonitor LocalTimer(*GradientTime);
-  pcout << "Computing gradients in weak form"
-        << (analytic_phi != nullptr ? " from the analytical trace" : "")
+  pcout << "Computing gradients in weak form from the analytical trace"
         << std::endl;
 
   // The surface gradient of the trace is recovered without ever
@@ -9465,8 +9377,6 @@ BEMProblem<dim>::compute_gradients_weak(
   // Dirichlet problem, phi can then be taken from the analytical function
   // rather than from its interpolant, and the tangential part of the gradient
   // becomes as accurate as the quadrature.
-  TrilinosWrappers::MPI::Vector phi(ghosted_set);
-  phi = glob_phi;
   TrilinosWrappers::MPI::Vector dphi_dn(ghosted_set);
   dphi_dn = glob_dphi_dn;
 
@@ -9527,9 +9437,7 @@ BEMProblem<dim>::compute_gradients_weak(
 
   // Integrating by parts on a curved surface leaves a curvature term,
   //     \int_K phi (div_S n)(v . n),
-  // which vanishes only where the surface is flat. It is evaluated from the
-  // projected normal field, treated like any other finite element field.
-  const Vector<double>            localized_normals(vector_normals_solution);
+  // which vanishes only where the surface is flat.
   const FEValuesExtractors::Vector all_components(0);
   std::vector<double>              total_curvature(vector_n_q_points);
 
@@ -9596,10 +9504,6 @@ BEMProblem<dim>::compute_gradients_weak(
         kappa[q] = div;
       }
   };
-  double curvature_check_defect = 0.0;
-  const bool check_curvature =
-    std::getenv("PIBEM_WEAK_GRADIENT_CHECK") != nullptr;
-
   cell_it vector_cell = gradient_dh.begin_active();
   cell_it cell = dh.begin_active(), endc = dh.end();
 
@@ -9616,16 +9520,10 @@ BEMProblem<dim>::compute_gradients_weak(
       const std::vector<Tensor<1, dim>> &normals =
         vector_fe_v.get_normal_vectors();
       fe_v.get_function_values(dphi_dn, flux_values);
-      if (separate_normal)
-        geometric_curvature(cell, total_curvature);
-      else
-        vector_fe_v[all_components].get_function_divergences(
-          localized_normals, total_curvature);
-      if (analytic_phi != nullptr)
-        for (unsigned int q = 0; q < vector_n_q_points; ++q)
-          trace_values[q] = on_cell(*analytic_phi, cell).value(fe_v.quadrature_point(q));
-      else
-        fe_v.get_function_values(phi, trace_values);
+      geometric_curvature(cell, total_curvature);
+      for (unsigned int q = 0; q < vector_n_q_points; ++q)
+        trace_values[q] =
+          on_cell(analytic_phi, cell).value(fe_v.quadrature_point(q));
 
       for (unsigned int q = 0; q < vector_n_q_points; ++q)
         for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
@@ -9637,28 +9535,16 @@ BEMProblem<dim>::compute_gradients_weak(
                 local_matrix(i, j) += vector_fe_v.shape_value(i, q) *
                                       vector_fe_v.shape_value(j, q) *
                                       vector_fe_v.JxW(q);
-            if (separate_normal)
-              // Only the tangential gradient grad_S phi is projected here,
-              // curvature term included, so the projected field is exactly
-              // tangential and its projection error has nothing directed
-              // along the normal to pass on. The flux is added afterwards.
-              local_rhs(i) += (-trace_values[q] *
-                                 vector_fe_v.shape_grad(i, q)[ci] +
-                               trace_values[q] * total_curvature[q] *
-                                 vector_fe_v.shape_value(i, q) *
-                                 normals[q][ci]) *
-                              vector_fe_v.JxW(q);
-            else
-              // normal part from the flux, tangential part by parts, plus
-              // the curvature term the integration by parts leaves behind
-              local_rhs(i) += (vector_fe_v.shape_value(i, q) *
-                                 flux_values[q] * normals[q][ci] -
-                               trace_values[q] *
-                                 vector_fe_v.shape_grad(i, q)[ci] +
-                               trace_values[q] * total_curvature[q] *
-                                 vector_fe_v.shape_value(i, q) *
-                                 normals[q][ci]) *
-                              vector_fe_v.JxW(q);
+            // Only the tangential gradient grad_S phi is projected here,
+            // curvature term included, so the projected field is exactly
+            // tangential and its projection error has nothing directed
+            // along the normal to pass on. The flux is added afterwards.
+            local_rhs(i) += (-trace_values[q] *
+                               vector_fe_v.shape_grad(i, q)[ci] +
+                             trace_values[q] * total_curvature[q] *
+                               vector_fe_v.shape_value(i, q) *
+                               normals[q][ci]) *
+                            vector_fe_v.JxW(q);
           }
 
       for (unsigned int f = 0; f < GeometryInfo<dim - 1>::faces_per_cell; ++f)
@@ -9666,12 +9552,9 @@ BEMProblem<dim>::compute_gradients_weak(
           vector_fe_face.reinit(vector_cell, f);
           fe_face.reinit(cell, f);
           normal_face.reinit(cell, f);
-          if (analytic_phi != nullptr)
-            for (unsigned int q = 0; q < face_quadrature.size(); ++q)
-              face_trace_values[q] =
-                on_cell(*analytic_phi, cell).value(fe_face.quadrature_point(q));
-          else
-            fe_face.get_function_values(phi, face_trace_values);
+          for (unsigned int q = 0; q < face_quadrature.size(); ++q)
+            face_trace_values[q] =
+              on_cell(analytic_phi, cell).value(fe_face.quadrature_point(q));
 
           const Point<dim> face_centre = cell->face(f)->center();
           const Tensor<1, dim> outward = face_centre - cell->center();
@@ -9707,139 +9590,12 @@ BEMProblem<dim>::compute_gradients_weak(
             }
         }
 
-      if (check_curvature && separate_normal)
-        {
-          // With phi = 1 the identity reads  -V_i + B_i + C_i = 0, with V the
-          // area integral of div_S v, B the boundary integral of v.m and C
-          // the curvature term. Its defect measures the curvature itself.
-          std::vector<double> balance(vector_dofs_per_cell, 0.0);
-          double              scale = 0.0;
-          for (unsigned int q = 0; q < vector_n_q_points; ++q)
-            for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-              {
-                const unsigned int ci =
-                  gradient_fe->system_to_component_index(i).first;
-                const double v = vector_fe_v.shape_grad(i, q)[ci] *
-                                 vector_fe_v.JxW(q);
-                balance[i] -= v;
-                balance[i] += total_curvature[q] *
-                              vector_fe_v.shape_value(i, q) * normals[q][ci] *
-                              vector_fe_v.JxW(q);
-                scale = std::max(scale, std::abs(v));
-              }
-          for (unsigned int f = 0; f < GeometryInfo<dim - 1>::faces_per_cell;
-               ++f)
-            {
-              vector_fe_face.reinit(vector_cell, f);
-              normal_face.reinit(cell, f);
-              const Tensor<1, dim> outward =
-                cell->face(f)->center() - cell->center();
-              for (unsigned int q = 0; q < face_quadrature.size(); ++q)
-                {
-                  Tensor<1, dim> m = normal_face.normal_vector(q);
-                  if (m.norm() < 1e-14)
-                    continue;
-                  m /= m.norm();
-                  if (m * outward < 0.0)
-                    m *= -1.0;
-                  for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-                    {
-                      const unsigned int ci =
-                        gradient_fe->system_to_component_index(i).first;
-                      balance[i] += vector_fe_face.shape_value(i, q) * m[ci] *
-                                    vector_fe_face.JxW(q);
-                    }
-                }
-            }
-          for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-            if (scale > 0.0)
-              curvature_check_defect =
-                std::max(curvature_check_defect, std::abs(balance[i]) / scale);
-        }
-
       vector_cell->get_dof_indices(vector_local_dof_indices);
       vector_constraints.distribute_local_to_global(local_matrix,
                                                     local_rhs,
                                                     vector_local_dof_indices,
                                                     vector_gradients_matrix,
                                                     vector_gradients_rhs);
-    }
-
-  // Does the assembled pair of terms satisfy the surface divergence theorem?
-  // For a flat cell the boundary integral of v.m and the area integral of
-  // div_S v must agree exactly; on a curved cell they differ by the curvature
-  // term. Measuring both tells a coding error from a missing term.
-  if (std::getenv("PIBEM_WEAK_GRADIENT_CHECK") != nullptr)
-    {
-      double flat_defect = 0.0, curved_defect = 0.0;
-      for (cell_it c = dh.begin_active(), vc = gradient_dh.begin_active();
-           c != endc;
-           ++c, ++vc)
-        {
-          if (c->subdomain_id() != this_mpi_process)
-            continue;
-          vector_fe_v.reinit(vc);
-          const std::vector<Tensor<1, dim>> &nn =
-            vector_fe_v.get_normal_vectors();
-          bool flat = true;
-          for (unsigned int q = 1; q < vector_n_q_points; ++q)
-            if ((nn[q] - nn[0]).norm() > 1e-8)
-              flat = false;
-          std::vector<double> volume(vector_dofs_per_cell, 0.0);
-          std::vector<double> boundary(vector_dofs_per_cell, 0.0);
-          double scale = 0.0;
-          for (unsigned int q = 0; q < vector_n_q_points; ++q)
-            for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-              {
-                const unsigned int ci =
-                  gradient_fe->system_to_component_index(i).first;
-                volume[i] +=
-                  vector_fe_v.shape_grad(i, q)[ci] * vector_fe_v.JxW(q);
-                scale = std::max(scale,
-                                 std::abs(vector_fe_v.shape_grad(i, q)[ci]) *
-                                   vector_fe_v.JxW(q));
-              }
-          for (unsigned int f = 0;
-               f < GeometryInfo<dim - 1>::faces_per_cell;
-               ++f)
-            {
-              vector_fe_face.reinit(vc, f);
-              normal_face.reinit(c, f);
-              const Tensor<1, dim> outward = c->face(f)->center() - c->center();
-              Tensor<1, dim> tangent = c->face(f)->vertex(1) -
-                                       c->face(f)->vertex(0);
-              if (tangent.norm() < 1e-14)
-                continue;
-              tangent /= tangent.norm();
-              for (unsigned int q = 0; q < face_quadrature.size(); ++q)
-                {
-                  Tensor<1, dim> m = normal_face.normal_vector(q);
-                  if (m.norm() < 1e-14)
-                    continue;
-                  m /= m.norm();
-                  if (m * outward < 0.0)
-                    m *= -1.0;
-                  for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-                    {
-                      const unsigned int ci =
-                        gradient_fe->system_to_component_index(i).first;
-                      boundary[i] += vector_fe_face.shape_value(i, q) * m[ci] *
-                                     vector_fe_face.JxW(q);
-                    }
-                }
-            }
-          double worst = 0.0;
-          for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-            worst = std::max(worst, std::abs(boundary[i] - volume[i]));
-          if (scale > 0.0)
-            (flat ? flat_defect : curved_defect) =
-              std::max(flat ? flat_defect : curved_defect, worst / scale);
-        }
-      pcout << "Weak gradient divergence-theorem defect: flat cells "
-            << Utilities::MPI::max(flat_defect, mpi_communicator)
-            << ", curved cells "
-            << Utilities::MPI::max(curved_defect, mpi_communicator)
-            << std::endl;
     }
 
   vector_gradients_matrix.compress(VectorOperation::add);
@@ -9856,15 +9612,8 @@ BEMProblem<dim>::compute_gradients_weak(
                mass_prec);
   vector_constraints.distribute(get_vector_gradients_solution());
 
-  gradient_normal_from_flux = separate_normal;
-  if (separate_normal)
+  gradient_normal_from_flux = true;
     {
-      if (check_curvature)
-        pcout << "Weak gradient divergence-theorem defect with geometric "
-                 "curvature: "
-              << Utilities::MPI::max(curvature_check_defect, mpi_communicator)
-              << std::endl;
-
       // Assemble the full gradient as the L2 projection, at the quadrature
       // points, of  P g_t + lambda_h n,  with n the exact normal of the
       // mapped surface there. Projecting rather than interpolating at the
@@ -9917,66 +9666,21 @@ BEMProblem<dim>::compute_gradients_weak(
                    full_rhs,
                    mass_prec);
       vector_constraints.distribute(get_vector_gradients_solution());
-      return;
     }
-
-  // The component of the gradient along the normal is the flux, by
-  // definition, and the flux is what the Galerkin system solved for. Imposing
-  // it removes the only place where a discrete field still had to be
-  // differentiated: the curvature term, which touches the normal component
-  // alone. What the weak form is left to supply is the tangential part.
-  {
-    const Vector<double> recovered(get_vector_gradients_solution());
-    const Vector<double> nodal_normals(vector_normals_solution);
-    const Vector<double> nodal_flux(glob_dphi_dn);
-    for (types::global_dof_index scalar_i = 0; scalar_i < dh.n_dofs();
-         ++scalar_i)
-      {
-        const types::global_dof_index original_i =
-          sub_wise_to_original[scalar_i];
-        std::array<types::global_dof_index, dim> index;
-        Tensor<1, dim>                          value, normal;
-        bool owned = true;
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            index[d] =
-              vec_original_to_sub_wise[d * dh.n_dofs() + original_i];
-            if (!vector_this_cpu_set.is_element(index[d]))
-              owned = false;
-            value[d]  = recovered(index[d]);
-            normal[d] = nodal_normals(index[d]);
-          }
-        if (!owned)
-          continue;
-        const double length = normal.norm();
-        if (length < 1e-14)
-          continue;
-        normal /= length;
-        const Tensor<1, dim> corrected =
-          value - (value * normal) * normal + nodal_flux[scalar_i] * normal;
-        for (unsigned int d = 0; d < dim; ++d)
-          get_vector_gradients_solution()(index[d]) = corrected[d];
-      }
-    get_vector_gradients_solution().compress(VectorOperation::insert);
-  }
 }
 
 template <int dim>
 void
 BEMProblem<dim>::compute_gradients_hypersingular_weak(
-  const TrilinosWrappers::MPI::Vector &glob_phi,
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
   const Function<dim>                 &analytic_phi,
-  const Function<dim>                 &trace_gradient,
-  const bool                           discrete_trace)
+  const Function<dim>                 &trace_gradient)
 {
   if constexpr (dim != 3)
     {
-      (void)glob_phi;
       (void)glob_dphi_dn;
       (void)analytic_phi;
       (void)trace_gradient;
-      (void)discrete_trace;
       AssertThrow(false,
                   ExcMessage("The Galerkin form of the gradient "
                              "representation is implemented for surfaces "
@@ -9986,8 +9690,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
     {
       Teuchos::TimeMonitor LocalTimer(*GradientTime);
       pcout << "Computing gradients from the Galerkin form of the gradient "
-               "representation, "
-            << (discrete_trace ? "discrete" : "analytical") << " trace"
+               "representation, analytical trace"
             << std::endl;
 
       // On the boundary, the average of the interior and exterior traces of
@@ -10007,13 +9710,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       // first-kind residual V lambda_h - R phi.
 
       // The densities are needed on every cell, not only on the owned ones.
-      const Vector<double> phi_full(glob_phi);
       const Vector<double> flux_full(glob_dphi_dn);
-      const bool           self_check =
-        std::getenv("PIBEM_HYPERSINGULAR_WEAK_CHECK") != nullptr;
-      if (self_check)
-        pcout << "  self-check: the exact flux replaces the Galerkin flux"
-              << std::endl;
 
       // Orientation of the mesh normals: int_Gamma n_out . x = 3 |Omega| > 0
       // for a bounded domain. Every process holds all cells.
@@ -10037,17 +9734,9 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       const double sigma = position_flux > 0.0 ? 1.0 : -1.0;
 
       SurfacePotentialEvaluator::Densities densities;
-      if (self_check)
-        densities.flux_gradient = &trace_gradient;
-      else
-        densities.flux_coefficients = &flux_full;
-      if (discrete_trace)
-        densities.trace_coefficients = &phi_full;
-      else
-        {
-          densities.trace_function = &analytic_phi;
-          densities.trace_gradient = &trace_gradient;
-        }
+      densities.flux_coefficients = &flux_full;
+      densities.trace_function    = &analytic_phi;
+      densities.trace_gradient    = &trace_gradient;
       const char  *duffy_env = std::getenv("PIBEM_HW_DUFFY_ORDER");
       const char  *near_env  = std::getenv("PIBEM_HW_NEAR_RATIO");
       const unsigned int duffy_order =
@@ -10066,7 +9755,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       // sum, as in the assembly of the matrix.
       std::vector<Vector<double>> adjoint_moments(
         dh.get_triangulation().n_active_cells());
-      if (!discrete_trace)
         {
           const GalerkinSingularQuadrature singular_strategy =
             galerkin_singular_quadrature == "iterated_duffy" ?
@@ -10123,7 +9811,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
           std::vector<std::vector<double>>         cached_JxW(n_cells);
           std::vector<FullMatrix<double>>          cached_shapes(n_cells);
           std::vector<types::global_dof_index>     dofs(fe->dofs_per_cell);
-          Vector<double>                           exact(dim);
           for (const auto &cell : dh.active_cell_iterators())
             {
               const unsigned int c = cell->active_cell_index();
@@ -10137,15 +9824,8 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               for (unsigned int q = 0; q < n_pair_points; ++q)
                 {
                   double flux = 0.0;
-                  if (self_check)
-                    {
-                      on_cell(trace_gradient, cell).vector_value(cached_points[c][q], exact);
-                      for (unsigned int d = 0; d < dim; ++d)
-                        flux += exact[d] * cached_normals[c][q][d];
-                    }
-                  else
-                    for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
-                      flux += flux_full(dofs[k]) * pair_values.shape_value(k, q);
+                  for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
+                    flux += flux_full(dofs[k]) * pair_values.shape_value(k, q);
                   cached_weighted_flux[c][q] = flux * pair_values.JxW(q);
                   cached_JxW[c][q]           = pair_values.JxW(q);
                   for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
@@ -10186,13 +9866,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                           potential[q] += sum;
                         }
                     }
-                  else if (self_check)
-                    moments.add(1.0,
-                                integrator.integrate_adjoint_double_layer_flux(
-                                  test_cell,
-                                  trial_cell,
-                                  galerkin_quadrature_order,
-                                  trace_gradient));
                   else
                     {
                       const FullMatrix<double> block =
@@ -10301,10 +9974,8 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       Vector<double>     rhs_t(nv), coef_t(nv), rhs_full(nv), coef_full(nv);
       Vector<double>     rhs_check(nv), check_scale(nv);
       Vector<double>     rhs_n(ns), coef_n(ns), rhs_best(ns), coef_best(ns);
-      std::vector<double> trace_q(area_rule.size());
       std::vector<double> flux_q(area_rule.size());
       std::vector<double> exact_flux_q(area_rule.size());
-      std::vector<double> edge_trace(edge_rule.size());
       std::vector<types::global_dof_index> vector_indices(nv);
       Vector<double>                       gradient_value(dim);
 
@@ -10314,21 +9985,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       double norm_exact = 0.0;
       double n_targets  = 0.0;
       Point<dim> worst_location, worst_edge_location;
-      std::array<double, 4> star_to_best_by_material{{0, 0, 0, 0}};
-      std::array<double, 3> tangential_by_region{{0, 0, 0}};
-      const bool split_by_region = std::getenv("PIBEM_HW_DEBUG") != nullptr;
-      Point<dim> box_lower, box_upper;
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          box_lower[d] = std::numeric_limits<double>::max();
-          box_upper[d] = -std::numeric_limits<double>::max();
-        }
-      for (const auto &v : dh.get_triangulation().get_vertices())
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            box_lower[d] = std::min(box_lower[d], v[d]);
-            box_upper[d] = std::max(box_upper[d], v[d]);
-          }
 
       get_vector_gradients_solution().reinit(vector_this_cpu_set,
                                        mpi_communicator);
@@ -10348,8 +10004,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
           rhs_best    = 0;
           rhs_check   = 0;
           check_scale = 0;
-          if (discrete_trace)
-            scalar_values.get_function_values(phi_full, trace_q);
           scalar_values.get_function_values(flux_full, flux_q);
 
           for (unsigned int q = 0; q < area_rule.size(); ++q)
@@ -10357,8 +10011,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               const Point<dim>     &x      = vector_values.quadrature_point(q);
               const Tensor<1, dim> &normal = vector_values.normal_vector(q);
               const double          JxW    = vector_values.JxW(q);
-              const double trace =
-                discrete_trace ? trace_q[q] : on_cell(analytic_phi, cell).value(x);
+              const double trace = on_cell(analytic_phi, cell).value(x);
               const auto potentials = evaluator.evaluate(x, normal, trace);
               n_targets += 1.0;
               const double residual =
@@ -10401,8 +10054,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   const double psi = scalar_values.shape_value(j, q);
                   // The screened hypersingular operator adds
                   // kappa^2 int psi n_x . V(n phi) to Maue's form.
-                  if (!discrete_trace)
-                    rhs_n(j) += 2.0 * sigma *
+                  rhs_n(j) += 2.0 * sigma *
                                 (cross_product_3d(normal,
                                                   scalar_values.shape_grad(j,
                                                                            q)) *
@@ -10423,8 +10075,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               FEValues<dim - 1, dim> &es = *edge_scalar_values[f];
               ev.reinit(vector_cell);
               es.reinit(cell);
-              if (discrete_trace)
-                es.get_function_values(phi_full, edge_trace);
               const unsigned int along   = f < 2 ? 1 : 0;
               const unsigned int across  = 1 - along;
               const double       outward = (f % 2 == 0) ? -1.0 : 1.0;
@@ -10446,8 +10096,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   Tensor<1, dim> m = o - (o * t) * t - (o * normal) * normal;
                   m /= m.norm();
 
-                  const double trace =
-                    discrete_trace ? edge_trace[q] : on_cell(analytic_phi, cell).value(x);
+                  const double trace = on_cell(analytic_phi, cell).value(x);
                   const auto potentials = evaluator.evaluate(x, normal, trace);
                   n_targets += 1.0;
                   const double residual =
@@ -10465,7 +10114,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                       rhs_t(i) += w * vm * ds;
                       rhs_check(i) += vm * ds;
                     }
-                  if (!discrete_trace)
                     {
                       // -oint psi (n x m) . V(n x grad phi): the edge term
                       // of Maue's form, which cancels between neighbours
@@ -10484,8 +10132,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
           // With w = 1 the tangential right-hand side must vanish: the
           // divergence theorem on the cell, curvature and co-normals
           // included.
-          if (!discrete_trace)
-            rhs_n.add(2.0 * sigma,
+          rhs_n.add(2.0 * sigma,
                       adjoint_moments[cell->active_cell_index()]);
 
           // Normalised by the largest term of the cell: a test function
@@ -10503,10 +10150,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
           inverse_v.invert(mass_v);
           inverse_s.invert(mass_s);
           inverse_v.vmult(coef_t, rhs_t);
-          if (discrete_trace)
-            cell->get_dof_values(flux_full, coef_n);
-          else
-            inverse_s.vmult(coef_n, rhs_n);
+          inverse_s.vmult(coef_n, rhs_n);
           inverse_s.vmult(coef_best, rhs_best);
 
           // Full field: L2 projection of P g_t + lambda* n, with n the exact
@@ -10533,13 +10177,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
 
               const double exact = exact_flux_q[q];
               error_star += (lambda_star - exact) * (lambda_star - exact) * JxW;
-              {
-                const unsigned int material =
-                  std::min<unsigned int>(cell->material_id(), 3);
-                star_to_best_by_material[material] +=
-                  (lambda_star - lambda_best) * (lambda_star - lambda_best) *
-                  JxW;
-              }
               error_galerkin +=
                 (flux_q[q] - exact) * (flux_q[q] - exact) * JxW;
               error_best += (lambda_best - exact) * (lambda_best - exact) * JxW;
@@ -10547,38 +10184,6 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
             }
           inverse_v.vmult(coef_full, rhs_full);
 
-          // Tangential error of the recovered field, split between the
-          // region within 0.35 of the vertical axis below the origin - the
-          // contact core of the sphere-in-box benchmark - and the rest.
-          if (split_by_region)
-            for (unsigned int q = 0; q < area_rule.size(); ++q)
-              {
-                const Point<dim>     &x      = vector_values.quadrature_point(q);
-                const Tensor<1, dim> &normal = vector_values.normal_vector(q);
-                Tensor<1, dim>        g;
-                for (unsigned int k = 0; k < nv; ++k)
-                  g[component[k]] +=
-                    coef_full(k) * vector_values.shape_value(k, q);
-                on_cell(trace_gradient, cell).vector_value(x, gradient_value);
-                Tensor<1, dim> e;
-                for (unsigned int d = 0; d < dim; ++d)
-                  e[d] = g[d] - gradient_value[d];
-                e -= (e * normal) * normal;
-                const bool core =
-                  std::sqrt(x[0] * x[0] + x[1] * x[1]) < 0.35 && x[2] < -0.5;
-                // Within 0.5 of an edge of the box: two coordinates close to
-                // the planes of the box faces.
-                unsigned int close_planes = 0;
-                for (unsigned int d = 0; d < dim; ++d)
-                  if (std::abs(x[d] - box_lower[d]) < 0.5 ||
-                      std::abs(x[d] - box_upper[d]) < 0.5)
-                    ++close_planes;
-                const unsigned int region = core               ? 0 :
-                                            close_planes >= 2 ? 1 :
-                                                                2;
-                tangential_by_region[region] +=
-                  (e * e) * vector_values.JxW(q);
-              }
           vector_cell->get_dof_indices(vector_indices);
           for (unsigned int i = 0; i < nv; ++i)
             get_vector_gradients_solution()(vector_indices[i]) = coef_full(i);
@@ -10638,34 +10243,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
             << "  first-kind residual V lambda - R phi at the targets: rms "
             << rms << ", max interior " << max_residual << ", max on edges "
             << max_edge_residual << std::endl;
-      if (std::getenv("PIBEM_HW_DEBUG") != nullptr)
-        std::cerr << "  rank " << this_mpi_process << ": worst interior residual "
-                  << residual_max << " at " << worst_location
-                  << ", worst edge residual " << edge_residual_max << " at "
-                  << worst_edge_location << std::endl;
-      if (split_by_region)
-        pcout << "  tangential error of the recovered field: contact core "
-              << std::sqrt(Utilities::MPI::sum(tangential_by_region[0],
-                                               mpi_communicator))
-              << ", near box edges "
-              << std::sqrt(Utilities::MPI::sum(tangential_by_region[1],
-                                               mpi_communicator))
-              << ", elsewhere "
-              << std::sqrt(Utilities::MPI::sum(tangential_by_region[2],
-                                               mpi_communicator))
-              << std::endl;
-      if (!discrete_trace && std::getenv("PIBEM_HW_DEBUG") != nullptr)
-        {
-          pcout << "  |lambda* - Q_h lambda| / |lambda| by material:";
-          for (unsigned int m = 1; m < 4; ++m)
-            pcout << " " << m << ": "
-                  << std::sqrt(Utilities::MPI::sum(star_to_best_by_material[m],
-                                                   mpi_communicator)) /
-                       exact_norm;
-          pcout << std::endl;
-        }
-      if (!discrete_trace)
-        pcout << "  normal part, L2 error relative to |lambda|: "
+      pcout << "  normal part, L2 error relative to |lambda|: "
                  "representation "
               << e_star / exact_norm << ", Galerkin flux "
               << e_galerkin / exact_norm << ", best approximation "
@@ -10682,8 +10260,6 @@ BEMProblem<dim>::compute_gradients_hypersingular(
 {
   Teuchos::TimeMonitor LocalTimer(*AssembleTime);
   pcout << "Computing gradients with hypersingular integrals" << std::endl;
-  std::array<double, 4> hypersingular_free_term_report{
-    {std::numeric_limits<double>::max(), 0.0, 0.0, 0.0}};
 
   TrilinosWrappers::MPI::Vector vector_hyp_gradients_solution(
     vector_this_cpu_set, mpi_communicator);
@@ -11048,26 +10624,6 @@ BEMProblem<dim>::compute_gradients_hypersingular(
           Tensor<2, dim> CC;
           // pcout<<"C: "<<std::endl;
           // C.print_formatted(std::cout, 7, true,10,"0");
-          if (std::getenv("PIBEM_HYP_GRADIENT_CHECK") != nullptr)
-            {
-              const double det =
-                C(0, 0) * (C(1, 1) * C(2, 2) - C(1, 2) * C(2, 1)) -
-                C(0, 1) * (C(1, 0) * C(2, 2) - C(1, 2) * C(2, 0)) +
-                C(0, 2) * (C(1, 0) * C(2, 1) - C(1, 1) * C(2, 0));
-              double norm = 0.0;
-              for (unsigned int di = 0; di < dim; ++di)
-                for (unsigned int dj = 0; dj < dim; ++dj)
-                  norm += C(di, dj) * C(di, dj);
-              hypersingular_free_term_report[0] =
-                std::min(hypersingular_free_term_report[0], std::abs(det));
-              hypersingular_free_term_report[1] =
-                std::max(hypersingular_free_term_report[1], std::abs(det));
-              hypersingular_free_term_report[2] =
-                std::max(hypersingular_free_term_report[2],
-                         std::sqrt(norm));
-              hypersingular_free_term_report[3] =
-                std::max(hypersingular_free_term_report[3], b.norm());
-            }
           Cinv.invert(C);
           Cinv.copy_to(CC);
           // pcout<<"Cinv: "<<std::endl;
@@ -11094,20 +10650,6 @@ BEMProblem<dim>::compute_gradients_hypersingular(
 
   vector_hyp_gradients_solution.compress(VectorOperation::insert);
   get_vector_gradients_solution() = vector_hyp_gradients_solution;
-  if (std::getenv("PIBEM_HYP_GRADIENT_CHECK") != nullptr)
-    pcout << "Hypersingular free term: |det C| in ["
-          << Utilities::MPI::min(hypersingular_free_term_report[0],
-                                 mpi_communicator)
-          << ", "
-          << Utilities::MPI::max(hypersingular_free_term_report[1],
-                                 mpi_communicator)
-          << "], max |C| "
-          << Utilities::MPI::max(hypersingular_free_term_report[2],
-                                 mpi_communicator)
-          << ", max |b| "
-          << Utilities::MPI::max(hypersingular_free_term_report[3],
-                                 mpi_communicator)
-          << std::endl;
   pcout << "done computing gradients with hypersingular integrals" << std::endl;
 }
 

@@ -450,13 +450,13 @@ public:
                                   const TrilinosWrappers::MPI::Vector &dphi_dn);
 
   /// Recover the gradient in weak form: the tangential part comes from
-  /// integrating by parts on each cell, so the trace is never differentiated
-  /// and may be taken from the analytical Dirichlet datum when one is given.
+  /// integrating by parts on each cell the analytical trace, so the trace is
+  /// never differentiated; it is projected alone, with the curvature term,
+  /// and the full field is the L2 projection of that part plus the flux
+  /// times the normal.
   void
-  compute_gradients_weak(const TrilinosWrappers::MPI::Vector &phi,
-                         const TrilinosWrappers::MPI::Vector &dphi_dn,
-                         const Function<dim> *analytic_phi = nullptr,
-                         const bool           separate_normal = true);
+  compute_gradients_weak(const TrilinosWrappers::MPI::Vector &dphi_dn,
+                         const Function<dim>                 &analytic_phi);
 
   /// Recover the gradient from the Galerkin form of its boundary integral
   /// representation, the route that leads to the hypersingular equation. On
@@ -468,16 +468,12 @@ public:
   /// the trace nor the potentials are differentiated; W is taken in Maue's
   /// form, with the edge terms that discontinuous test functions leave. Only
   /// the tangential gradient of the trace enters, through n x grad phi; the
-  /// normal component of trace_gradient is used for diagnostics alone. With
-  /// discrete_trace the tangential part uses the discrete trace instead of
-  /// the analytical one and the normal part is the Galerkin flux.
+  /// normal component of trace_gradient is used for diagnostics alone.
   void
   compute_gradients_hypersingular_weak(
-    const TrilinosWrappers::MPI::Vector &phi,
     const TrilinosWrappers::MPI::Vector &dphi_dn,
     const Function<dim>                 &analytic_phi,
-    const Function<dim>                 &trace_gradient,
-    const bool                           discrete_trace);
+    const Function<dim>                 &trace_gradient);
 
   /// We have parallelised the computation of the L2 projection of the normal
   /// vector. We need a solution vector that has also ghost cells. for this
@@ -901,9 +897,6 @@ public:
   double       near_singular_subdivision_ratio;
   unsigned int near_singular_subdivision_max_levels;
 
-  unsigned int hypersingular_correction_steps;
-  double       hypersingular_correction_relaxation;
-  double       hypersingular_correction_max_relative_update;
 
   TrilinosWrappers::SparsityPattern full_sparsity_pattern;
   TrilinosWrappers::SparsityPattern calderon_sparsity_pattern;

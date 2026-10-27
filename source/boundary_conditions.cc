@@ -759,25 +759,10 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     // directly instead of its interpolant. The tangential gradient is
     // projected alone, with the geometric curvature term, and the full field
     // is then the L2 projection of that part plus lambda_h n.
-    bem.compute_gradients_weak(phi, dphi_dn, &potential, true);
-  else if (bem.gradient_recovery == "weak_joint")
-    // Earlier variant, kept for comparison: one projection of
-    // lambda n + grad_S phi, normal component replaced at the nodes. Worse
-    // at every mesh tried: the normal part is interpolated rather than
-    // projected, and the projection error of lambda n leaks into the
-    // tangential components.
-    bem.compute_gradients_weak(phi, dphi_dn, &potential, false);
-  else if (bem.gradient_recovery == "weak_discrete")
-    bem.compute_gradients_weak(phi, dphi_dn);
+    bem.compute_gradients_weak(dphi_dn, potential);
   else if (bem.gradient_recovery == "hypersingular_weak")
     // Galerkin form of the gradient representation, analytical trace.
-    bem.compute_gradients_hypersingular_weak(
-      phi, dphi_dn, potential, wind, false);
-  else if (bem.gradient_recovery == "hypersingular_weak_discrete")
-    // Same, with the discrete trace in the tangential part: the case of a
-    // trace that is computed rather than given.
-    bem.compute_gradients_hypersingular_weak(
-      phi, dphi_dn, potential, wind, true);
+    bem.compute_gradients_hypersingular_weak(dphi_dn, potential, wind);
   else
     bem.compute_gradients(phi, dphi_dn);
   Vector<double> localized_gradient_solution(
@@ -1083,77 +1068,6 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
   const double energy_norm_error =
     bem.compute_energy_norm ? bem.compute_energy_norm_error(dphi_dn, wind) :
                               0.0;
-
-  // Galerkin orthogonality check. The discrete solution is the V-orthogonal
-  // projection of the exact flux, so the best L2 projection, the discrete
-  // solution and the exact flux form a right triangle in the energy inner
-  // product. The three sides are measured independently here - two of them
-  // above - so agreement is a genuine test of the energy machinery rather
-  // than an identity it satisfies by construction.
-  if (bem.compute_energy_norm && exact_residual_uses_l2_projection &&
-      std::getenv("PIBEM_ENERGY_SELFTEST") != nullptr)
-    {
-      const double projection_energy =
-        bem.compute_energy_norm_error(parallel_exact_dphi_dn, wind);
-
-      // Isolate whether the right-hand side is the one V induces. The
-      // Galerkin equations make lambda_h the V-orthogonal projection only if
-      // b(mu) equals <V lambda, mu>. The cross term <V lambda, lambda_I> is
-      // recovered from three energies, each measured independently, and
-      // compared against the assembled b - so a mismatch indicts the
-      // right-hand side rather than the operator.
-      {
-        TrilinosWrappers::MPI::Vector zero(bem.this_cpu_set, mpi_communicator);
-        zero = 0.0;
-        const double exact_energy = bem.compute_energy_norm_error(zero, wind);
-        TrilinosWrappers::MPI::Vector projection_image(bem.this_cpu_set,
-                                                       mpi_communicator);
-        bem.dirichlet_matrix.vmult(projection_image, parallel_exact_dphi_dn);
-        const double projection_square =
-          projection_image * parallel_exact_dphi_dn;
-        const double cross_from_energies =
-          0.5 * (exact_energy * exact_energy + projection_square -
-                 projection_energy * projection_energy);
-        const double cross_from_rhs = bem.system_rhs * parallel_exact_dphi_dn;
-
-        // The sharpest form of the same test. Taking the zero function as the
-        // comparison member of the space, orthogonality reads
-        //     |lambda|^2 = |lambda - lambda_h|^2 + |lambda_h|^2,
-        // and because the energy functional is exactly quadratic the common
-        // term <V lambda, lambda> cancels out of the defect, so the quadrature
-        // error in it does not enter. Printed at full precision because the
-        // defect lives many digits below the terms themselves.
-        TrilinosWrappers::MPI::Vector discrete_image(bem.this_cpu_set,
-                                                     mpi_communicator);
-        bem.dirichlet_matrix.vmult(discrete_image, dphi_dn);
-        const double discrete_square = discrete_image * dphi_dn;
-        const double defect = exact_energy * exact_energy -
-                              energy_norm_error * energy_norm_error -
-                              discrete_square;
-        const std::streamsize saved = pcout.get_stream().precision(17);
-        pcout << "Orthogonality defect: |lambda|^2 "
-              << exact_energy * exact_energy << ", |lambda-lambda_h|^2 "
-              << energy_norm_error * energy_norm_error << ", |lambda_h|^2 "
-              << discrete_square << ", defect " << defect << std::endl;
-        pcout.get_stream().precision(saved);
-        pcout << "RHS consistency: <V lambda, lambda_I> from energies "
-              << cross_from_energies << ", from the assembled b "
-              << cross_from_rhs << ", relative difference "
-              << std::abs(cross_from_energies - cross_from_rhs) /
-                   std::max(std::abs(cross_from_rhs), 1e-30)
-              << std::endl
-              << "  |lambda|_V " << exact_energy << ", |lambda_I|_V "
-              << std::sqrt(std::max(projection_square, 0.0)) << std::endl;
-      }
-      const double predicted = std::sqrt(energy_norm_error * energy_norm_error +
-                                         std::max(algebraic_energy_square, 0.0));
-      pcout << "Galerkin orthogonality: |lambda - lambda_I|_V measured "
-            << projection_energy << ", predicted from the other two sides "
-            << predicted << ", relative difference "
-            << std::abs(projection_energy - predicted) /
-                 std::max(projection_energy, 1e-30)
-            << std::endl;
-    }
 
   // Vector<double> localised_alpha(bem.alpha);
   // We let only the first processor do the error computations

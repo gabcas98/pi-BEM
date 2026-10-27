@@ -163,14 +163,16 @@ enables them.
 | `PIBEM_UNFUSED_ROWS` | Uses three separate FMM evaluations for the rows of the mixed problem instead of the fused pass. |
 | `PIBEM_CALDERON_DIPOLE_KT` | Computes K' from three dipole sums. |
 
-### Older diagnostics
+### Gradient recovery
 
 | Variable | Effect |
 |---|---|
-| `PIBEM_COMPARE_RHS` | Assembles the manufactured right-hand side next to the consistent one in the Dirichlet Galerkin problem. |
-| `PIBEM_ENERGY_SELFTEST` | Checks the energy-norm error against the best L2 projection (right triangle). |
-| `PIBEM_WEAK_GRADIENT_CHECK` | Checks the surface divergence theorem in `compute_gradients_weak()`. |
-| `PIBEM_HYPERSINGULAR_WEAK_CHECK` | Replaces the Galerkin flux with the exact one in `compute_gradients_hypersingular_weak()`. |
-| `PIBEM_HW_DEBUG` | Splits the errors of `compute_gradients_hypersingular_weak()` by region. |
 | `PIBEM_HW_DUFFY_ORDER`, `PIBEM_HW_NEAR_RATIO`, `PIBEM_HW_PAIR_RATIO`, `PIBEM_HW_PAIR_DEPTH`, `PIBEM_HW_PAIR_ORDER`, `PIBEM_HW_POINTS` | Set the rules of `compute_gradients_hypersingular_weak()`. Defaults: Duffy order 12, near ratio 0.5, pair ratio, depth and order from the near-singular parameters (depth at least 10), and degree + 4 points. |
-| `PIBEM_HYP_GRADIENT_CHECK` | Reports the free-term matrices of `compute_gradients_hypersingular()`. |
+
+The older diagnostic switches (`PIBEM_COMPARE_RHS`, `PIBEM_ENERGY_SELFTEST`,
+`PIBEM_WEAK_GRADIENT_CHECK`, `PIBEM_HYPERSINGULAR_WEAK_CHECK`,
+`PIBEM_HW_DEBUG`, `PIBEM_HYP_GRADIENT_CHECK`) were removed in the cleanup of
+2026-10-27, with the gradient recoveries `weak_joint`, `weak_discrete` and
+`hypersingular_weak_discrete` and the hypersingular trace correction. Their
+parameters are still read, so that older files run, and a file that selects
+one of them stops with a message.
