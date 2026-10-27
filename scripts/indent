@@ -25,11 +25,10 @@ if test ! -f .clang-format ; then
 fi
 
 
-# loop over all directories in which we may have source files;
-# collect a list of files and then spawn a parallel process to
-# indent all of them
+# the header and source files under version control: the run folders hold
+# copies of older sources that are not to be touched
 echo "--- Indenting all header and source files"
-SRC_FILES=`find . -name "*.cc"`
-H_FILES=`find . -name "*.h"`
+SRC_FILES=`git ls-files '*.cc'`
+H_FILES=`git ls-files '*.h'`
 clang-format -i $SRC_FILES
 clang-format -i $H_FILES

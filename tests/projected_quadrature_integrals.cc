@@ -93,11 +93,11 @@ integrate(const Triangulation<dim, spacedim> &tria,
           const Point<spacedim>              &c,
           unsigned int                       &n_irregular)
 {
-  const MappingQ<dim, spacedim>          mapping(1);
-  ProjectedQuadrature<dim, spacedim>     quadrature(mapping,
+  const MappingQ<dim, spacedim>      mapping(1);
+  ProjectedQuadrature<dim, spacedim> quadrature(mapping,
                                                 QGauss<dim>(n_points),
                                                 projector);
-  std::array<double, 3> result = {{0, 0, 0}};
+  std::array<double, 3>              result = {{0, 0, 0}};
   for (const auto &cell : tria.active_cell_iterators())
     {
       quadrature.reinit(cell);
@@ -127,11 +127,11 @@ convergence(const std::string                  &name,
   const SphericalProjector<dim, spacedim>  closest(center, radius);
   const SphericalProjector<dim, spacedim>  along_normal(
     center, radius, Direction<spacedim>::mesh_normal());
-  const SwirlField<spacedim>               field(center, 0.5);
-  const SphericalProjector<dim, spacedim>  along_field(
+  const SwirlField<spacedim>              field(center, 0.5);
+  const SphericalProjector<dim, spacedim> along_field(
     center, radius, Direction<spacedim>(field));
-  const MappingQ<dim, spacedim>            mapping(1);
-  const SphericalProjector<dim, spacedim>  along_vertex_normal(
+  const MappingQ<dim, spacedim>           mapping(1);
+  const SphericalProjector<dim, spacedim> along_vertex_normal(
     center,
     radius,
     Direction<spacedim>::interpolated_mesh_normal(tria, mapping));
@@ -194,9 +194,9 @@ main()
     // surface with the shape functions of the mesh.
     const MappingQ<2, 3>           mapping(1);
     const SphericalProjector<2, 3> projector(center, R);
-    ProjectedQuadrature<2, 3> quadrature(mapping, QGauss<2>(4), projector);
-    const FE_Q<2, 3>          fe(1);
-    double                    difference = 0;
+    ProjectedQuadrature<2, 3>      quadrature(mapping, QGauss<2>(4), projector);
+    const FE_Q<2, 3>               fe(1);
+    double                         difference = 0;
     for (const auto &cell : tria.active_cell_iterators())
       {
         quadrature.reinit(cell);
@@ -225,13 +225,12 @@ main()
     GridGenerator::hyper_sphere(curved, center, R);
     curved.refine_global(3);
     GridGenerator::flatten_triangulation(curved, tria);
-    convergence<1, 2>("circle",
-                      tria,
-                      center,
-                      R,
-                      {{2 * numbers::PI * R,
-                        numbers::PI * R * R,
-                        numbers::PI * R * R * R}});
+    convergence<1, 2>(
+      "circle",
+      tria,
+      center,
+      R,
+      {{2 * numbers::PI * R, numbers::PI * R * R, numbers::PI * R * R * R}});
     deallog << std::endl;
   }
 
@@ -244,11 +243,8 @@ main()
     GridGenerator::hyper_sphere(curved, center, R);
     curved.refine_global(2);
     GridGenerator::flatten_triangulation(curved, sphere);
-    GridGenerator::subdivided_hyper_rectangle(cylinder,
-                                              {16, 4},
-                                              Point<2>(0, 0),
-                                              Point<2>(2 * numbers::PI,
-                                                       length));
+    GridGenerator::subdivided_hyper_rectangle(
+      cylinder, {16, 4}, Point<2>(0, 0), Point<2>(2 * numbers::PI, length));
     GridTools::transform(
       [&](const Point<3> &p) {
         return axis_point + Point<3>(R_cylinder * std::cos(p[0]),
@@ -274,12 +270,12 @@ main()
     const CylindricalProjector     on_cylinder(axis_point,
                                            Tensor<1, 3>({0, 0, 1}),
                                            R_cylinder);
-    ProjectorCollection<2, 3>  projector;
+    ProjectorCollection<2, 3>      projector;
     projector.add(1, on_sphere);
     projector.add(2, on_cylinder);
 
-    const double exact = 4 * numbers::PI * R * R +
-                         2 * numbers::PI * R_cylinder * length + 4;
+    const double exact =
+      4 * numbers::PI * R * R + 2 * numbers::PI * R_cylinder * length + 4;
     deallog << "sphere, cylinder and square, " << tria.n_active_cells()
             << " flat cells; relative error of the area" << std::endl;
     unsigned int n_irregular = 0;

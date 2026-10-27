@@ -275,8 +275,8 @@ main(int argc, char **argv)
   double sink = 0; // keeps the compiler from dropping the evaluations
   for (unsigned int p = 2; p <= max_order; ++p)
     {
-      const unsigned int repetitions = 4000 / (p * p) + 5;
-      const unsigned int np          = sources.points.size();
+      const unsigned int  repetitions = 4000 / (p * p) + 5;
+      const unsigned int  np          = sources.points.size();
       std::vector<double> t_old(6, 0.), t_new(6, 0.);
 
       if (p <= max_old_order)
@@ -332,17 +332,17 @@ main(int argc, char **argv)
                      },
                      repetitions) /
                    np;
-        t_new[1] = microseconds(
-                     [&]() {
-                       for (unsigned int i = 0; i < np; ++i)
-                         LE::add_dipole(w,
-                                        sources.strengths[i] *
-                                          sources.normals[i],
-                                        sources.points[i] - b.source_leaf,
-                                        dip.data());
-                     },
-                     repetitions) /
-                   np;
+        t_new[1] =
+          microseconds(
+            [&]() {
+              for (unsigned int i = 0; i < np; ++i)
+                LE::add_dipole(w,
+                               sources.strengths[i] * sources.normals[i],
+                               sources.points[i] - b.source_leaf,
+                               dip.data());
+            },
+            repetitions) /
+          np;
         t_new[2] = microseconds(
           [&]() {
             LE::multipole_to_multipole(w,
@@ -367,15 +367,14 @@ main(int argc, char **argv)
                                local.data());
           },
           repetitions);
-        t_new[5] = microseconds(
-                     [&]() {
-                       for (const auto &x : targets)
-                         sink += LE::evaluate_local(w,
-                                                    local.data(),
-                                                    x - b.target_leaf);
-                     },
-                     repetitions) /
-                   targets.size();
+        t_new[5] =
+          microseconds(
+            [&]() {
+              for (const auto &x : targets)
+                sink += LE::evaluate_local(w, local.data(), x - b.target_leaf);
+            },
+            repetitions) /
+          targets.size();
       }
 
       std::cout << std::setw(3) << p << std::fixed;
@@ -399,10 +398,10 @@ main(int argc, char **argv)
   for (unsigned int p = 4; p <= std::min(max_order, 16u); p += 4)
     {
       namespace YE = YukawaExpansions;
-      LE::Workspace           w(p);
-      const LE::RealBasis     basis(p);
-      const YE::Operators     operators(p);
-      const unsigned int      nc = LE::n_coefficients(p);
+      LE::Workspace            w(p);
+      const LE::RealBasis      basis(p);
+      const YE::Operators      operators(p);
+      const unsigned int       nc = LE::n_coefficients(p);
       std::vector<LE::complex> M(nc, 0.), L_direct(nc, 0.), L_rotated(nc, 0.);
       std::uniform_real_distribution<double> u(-0.5, 0.5);
       for (unsigned int i = 0; i < 30; ++i)
@@ -411,9 +410,10 @@ main(int argc, char **argv)
                        Tensor<1, 3>({u(rng), u(rng), u(rng)}),
                        M.data());
       double worst = 0;
-      for (const Tensor<1, 3> zL_minus_zM :
-           {Tensor<1, 3>({4., 2., 2.}), Tensor<1, 3>({-3., 0., 0.}),
-            Tensor<1, 3>({0., 0., -5.}), Tensor<1, 3>({1., -6., 3.})})
+      for (const Tensor<1, 3> zL_minus_zM : {Tensor<1, 3>({4., 2., 2.}),
+                                             Tensor<1, 3>({-3., 0., 0.}),
+                                             Tensor<1, 3>({0., 0., -5.}),
+                                             Tensor<1, 3>({1., -6., 3.})})
         {
           std::fill(L_direct.begin(), L_direct.end(), 0.);
           LE::multipole_to_local(w, M.data(), zL_minus_zM, L_direct.data());
@@ -443,11 +443,11 @@ main(int argc, char **argv)
                   m == 0 ? LE::complex(f * Y[YE::index(n, 0)], 0.) :
                            f * LE::complex(Y[YE::index(n, m)],
                                            Y[YE::index(n, -int(m))]);
-                largest = std::max(largest, std::abs(L_direct[LE::index(n, m)]));
-                difference =
-                  std::max(difference,
-                           std::abs(L_rotated[LE::index(n, m)] -
-                                    L_direct[LE::index(n, m)]));
+                largest =
+                  std::max(largest, std::abs(L_direct[LE::index(n, m)]));
+                difference = std::max(difference,
+                                      std::abs(L_rotated[LE::index(n, m)] -
+                                               L_direct[LE::index(n, m)]));
               }
           worst = std::max(worst, difference / largest);
         }
@@ -462,21 +462,23 @@ main(int argc, char **argv)
                "translation]\n";
   for (unsigned int p = 4; p <= std::min(max_order, 12u); p += 2)
     {
-      constexpr unsigned int B       = 8;
+      constexpr unsigned int B = 8;
       LE::Workspace          w(p);
       const unsigned int     rows    = LE::n_coefficients(p);
       const unsigned int     columns = (p + 1) * (p + 1);
       std::vector<double>    T_re(rows * columns), T_im(rows * columns);
-      std::vector<double>    X_re(columns * B), X_im(columns * B),
-        Y_re(rows * B), Y_im(rows * B);
+      std::vector<double> X_re(columns * B), X_im(columns * B), Y_re(rows * B),
+        Y_im(rows * B);
       std::uniform_real_distribution<double> u(-1., 1.);
       for (unsigned int i = 0; i < columns * B; ++i)
         {
           X_re[i] = u(rng);
           X_im[i] = u(rng);
         }
-      LE::multipole_to_local_operator(
-        w, Tensor<1, 3>({4., 2., 2.}), T_re.data(), T_im.data());
+      LE::multipole_to_local_operator(w,
+                                      Tensor<1, 3>({4., 2., 2.}),
+                                      T_re.data(),
+                                      T_im.data());
       const unsigned int n     = 20000;
       const auto         start = std::chrono::steady_clock::now();
       for (unsigned int k = 0; k < n; ++k)
@@ -492,8 +494,7 @@ main(int argc, char **argv)
           sink += Y_re[k % (rows * B)];
         }
       const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      start)
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
       std::cout << "  p=" << p << ": " << std::fixed << std::setprecision(3)
                 << 1e6 * seconds / (double(n) * B) << '\n';

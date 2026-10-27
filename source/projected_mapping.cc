@@ -22,7 +22,6 @@
 #include <deal.II/fe/fe_nothing.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
-
 #include <deal.II/fe/mapping_related_data.h>
 
 #include <cmath>
@@ -207,7 +206,7 @@ namespace ExactGeometry
     std::vector<DerivativeForm<1, dim, spacedim>>              &jacobians) const
   {
     const Quadrature<dim> quadrature(unit_points);
-    const UpdateFlags     flags = MappingQ<dim, spacedim>::requires_update_flags(
+    const UpdateFlags flags = MappingQ<dim, spacedim>::requires_update_flags(
       update_quadrature_points | update_jacobians |
       projector->get_needed_update_flags());
     const auto base_data = MappingQ<dim, spacedim>::get_data(flags, quadrature);
@@ -243,8 +242,8 @@ namespace ExactGeometry
     const std::vector<double>                                  &weights,
     const unsigned int                                          face_no,
     const InternalData                                         &data,
-    internal::FEValuesImplementation::MappingRelatedData<dim, spacedim>
-      &output) const
+    internal::FEValuesImplementation::MappingRelatedData<dim, spacedim> &output)
+    const
   {
     const UpdateFlags flags = data.update_each;
     if (!(flags & update_quadrature_points) || !(flags & update_jacobians))
@@ -263,7 +262,8 @@ namespace ExactGeometry
         if (flags & update_jacobian_grads)
           x.hessian = output.jacobian_grads[q];
         const ProjectionResult<spacedim> r = projector->project(x, *data.cache);
-        const DerivativeForm<1, dim, spacedim> D = compose(r.jacobian, x.jacobian);
+        const DerivativeForm<1, dim, spacedim> D =
+          compose(r.jacobian, x.jacobian);
 
         // The unit normal of the exact geometry, oriented like the mesh.
         Tensor<1, spacedim> normal;
@@ -332,8 +332,8 @@ namespace ExactGeometry
         output.jacobians[q]         = D;
         // MappingQ keeps the covariant transformation of the shape
         // gradients in the inverse Jacobians of the output.
-        if ((flags & (update_inverse_jacobians |
-                      update_covariant_transformation)) &&
+        if ((flags &
+             (update_inverse_jacobians | update_covariant_transformation)) &&
             q < output.inverse_jacobians.size())
           output.inverse_jacobians[q] = D.covariant_form().transpose();
         if ((flags & update_volume_elements) && q < data.volume_elements.size())
@@ -527,7 +527,8 @@ namespace ExactGeometry
         if (std::sqrt(step) <= tolerance)
           return xi;
       }
-    AssertThrow(false, (typename Mapping<dim, spacedim>::ExcTransformationFailed()));
+    AssertThrow(false,
+                (typename Mapping<dim, spacedim>::ExcTransformationFailed()));
     return xi;
   }
 
@@ -538,7 +539,7 @@ namespace ExactGeometry
   ProjectedMapping<dim, spacedim>::transform_points_real_to_unit_cell(
     const typename Triangulation<dim, spacedim>::cell_iterator &cell,
     const ArrayView<const Point<spacedim>>                     &real_points,
-    const ArrayView<Point<dim>>                                &unit_points) const
+    const ArrayView<Point<dim>> &unit_points) const
   {
     AssertDimension(real_points.size(), unit_points.size());
     for (unsigned int i = 0; i < real_points.size(); ++i)
@@ -626,7 +627,9 @@ namespace ExactGeometry
         }
     current = next;
     next    = (next + 1) % n_slots;
-    mapping.projector->reinit(*mapping.mesh_mapping, new_cell, *caches[current]);
+    mapping.projector->reinit(*mapping.mesh_mapping,
+                              new_cell,
+                              *caches[current]);
     cells[current] = new_cell;
   }
 
@@ -642,14 +645,14 @@ namespace ExactGeometry
     DerivativeForm<1, dim, spacedim>       &D) const
   {
     MeshPoint<dim, spacedim> m;
-    m.cell                             = cells[current];
-    m.unit_point                       = unit_point;
-    m.point                            = x;
-    m.jacobian                         = V;
+    m.cell       = cells[current];
+    m.unit_point = unit_point;
+    m.point      = x;
+    m.jacobian   = V;
     const ProjectionResult<spacedim> r =
       mapping.projector->project(m, *caches[current]);
-    y                                  = r.point;
-    D                                  = compose(r.jacobian, V);
+    y = r.point;
+    D = compose(r.jacobian, V);
   }
 
 
@@ -667,10 +670,9 @@ namespace ExactGeometry
     const unsigned int rank = Utilities::MPI::this_mpi_process(communicator);
     // FE_Q orders its support points, the Gauss-Lobatto points, as
     // MappingQ orders its own: vertices, lines, interior.
-    const FE_Q<dim, spacedim>       support_element(degree);
-    const Quadrature<dim>           support(
-      support_element.get_unit_support_points());
-    const unsigned int              n_points = support.size();
+    const FE_Q<dim, spacedim> support_element(degree);
+    const Quadrature<dim> support(support_element.get_unit_support_points());
+    const unsigned int    n_points = support.size();
     const FE_Nothing<dim, spacedim> nothing;
 
     // MappingQCache keeps the support points of the cells of all levels.
@@ -717,16 +719,10 @@ namespace ExactGeometry
       });
 
     const QGauss<dim>       check(degree + 1);
-    FEValues<dim, spacedim> interpolated(cache,
-                                         nothing,
-                                         check,
-                                         update_quadrature_points |
-                                           update_JxW_values);
-    FEValues<dim, spacedim> projected(exact,
-                                      nothing,
-                                      check,
-                                      update_quadrature_points |
-                                        update_JxW_values);
+    FEValues<dim, spacedim> interpolated(
+      cache, nothing, check, update_quadrature_points | update_JxW_values);
+    FEValues<dim, spacedim> projected(
+      exact, nothing, check, update_quadrature_points | update_JxW_values);
     double       point = 0, element = 0;
     unsigned int index = 0;
     for (const auto &cell : triangulation.active_cell_iterators())
@@ -738,14 +734,13 @@ namespace ExactGeometry
         const double diameter = cell->diameter();
         for (unsigned int q = 0; q < check.size(); ++q)
           {
-            point   = std::max(point,
+            point = std::max(point,
                              interpolated.quadrature_point(q).distance(
                                projected.quadrature_point(q)) /
                                diameter);
-            element = std::max(element,
-                               std::abs(interpolated.JxW(q) /
-                                          projected.JxW(q) -
-                                        1));
+            element =
+              std::max(element,
+                       std::abs(interpolated.JxW(q) / projected.JxW(q) - 1));
           }
       }
     return {Utilities::MPI::max(point, communicator),
@@ -772,14 +767,11 @@ namespace ExactGeometry
                                        nothing,
                                        support,
                                        update_quadrature_points);
-    FEValues<dim, spacedim>         at_check(exact,
-                                     nothing,
-                                     check,
-                                     update_quadrature_points |
-                                       update_JxW_values);
+    FEValues<dim, spacedim>         at_check(
+      exact, nothing, check, update_quadrature_points | update_JxW_values);
     // The shape values and reference gradients of FE_Q at the check points.
-    const unsigned int n = element.n_dofs_per_cell();
-    Table<2, double>   values(check.size(), n);
+    const unsigned int       n = element.n_dofs_per_cell();
+    Table<2, double>         values(check.size(), n);
     Table<2, Tensor<1, dim>> gradients(check.size(), n);
     for (unsigned int q = 0; q < check.size(); ++q)
       for (unsigned int k = 0; k < n; ++k)
@@ -787,8 +779,8 @@ namespace ExactGeometry
           values(q, k)    = element.shape_value(k, check.point(q));
           gradients(q, k) = element.shape_grad(k, check.point(q));
         }
-    double             point = 0, surface = 0;
-    unsigned int       index = 0;
+    double              point = 0, surface = 0;
+    unsigned int        index   = 0;
     const unsigned long n_cells = triangulation.n_active_cells();
     const unsigned int  begin   = part * n_cells / n_parts;
     const unsigned int  end     = (part + 1) * n_cells / n_parts;
@@ -812,9 +804,9 @@ namespace ExactGeometry
                   for (unsigned int a = 0; a < dim; ++a)
                     D[i][a] += X[i] * gradients(q, k)[a];
               }
-            point   = std::max(point,
-                             x.distance(at_check.quadrature_point(q)) /
-                               diameter);
+            point =
+              std::max(point,
+                       x.distance(at_check.quadrature_point(q)) / diameter);
             surface = std::max(surface,
                                std::abs(surface_element(D) * check.weight(q) /
                                           at_check.JxW(q) -

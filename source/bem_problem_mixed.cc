@@ -18,14 +18,6 @@
 // the Calderon preconditioner, GMRES, the errors and the indicators of the
 // adaptive refinement.
 
-#include "../include/bem_problem.h"
-#include "../include/cellwise_function.h"
-#include "../include/galerkin_calderon_fmm_operator.h"
-#include "../include/galerkin_panel_pair_integrator.h"
-#include "../include/inexact_gmres.h"
-#include "../include/mixed_calderon_preconditioner.h"
-#include "mapping_hanging_constraints.h"
-
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -36,6 +28,14 @@
 #include <numeric>
 #include <sstream>
 #include <vector>
+
+#include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
+#include "../include/galerkin_calderon_fmm_operator.h"
+#include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/inexact_gmres.h"
+#include "../include/mixed_calderon_preconditioner.h"
+#include "mapping_hanging_constraints.h"
 
 using namespace std;
 
@@ -52,8 +52,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // One part for a real problem, two for the real and the imaginary
       // part of a complex one: vectors of all parts, one after the other.
       const unsigned int n_parts = phi.size();
-      AssertThrow((n_parts == 1 || n_parts == 2) &&
-                    dphi_dn.size() == n_parts &&
+      AssertThrow((n_parts == 1 || n_parts == 2) && dphi_dn.size() == n_parts &&
                     potential.size() == n_parts && gradient.size() == n_parts,
                   ExcMessage("The mixed Galerkin problem has one part, or "
                              "two for a complex problem."));
@@ -70,13 +69,14 @@ BEMProblem<dim>::solve_galerkin_mixed(
                    nullptr),
                   ExcMessage("The mixed Galerkin problem needs continuous "
                              "elements, Finite Element type = FEQ."));
-      const auto start = std::chrono::steady_clock::now();
+      const auto                    start = std::chrono::steady_clock::now();
       const types::global_dof_index n_original = dh.n_dofs();
       const unsigned int            k          = fe->dofs_per_cell;
 
       AffineConstraints<double> hanging_node_constraints;
       if (exact_geometry)
-        ExactGeometry::make_mapping_hanging_node_constraints(*mapping, dh, hanging_node_constraints);
+        ExactGeometry::make_mapping_hanging_node_constraints(
+          *mapping, dh, hanging_node_constraints);
       else
         DoFTools::make_hanging_node_constraints(dh, hanging_node_constraints);
       hanging_node_constraints.close();
@@ -160,9 +160,9 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // the Dirichlet datum, the trace of the coarse Dirichlet cell at the
       // node, with the weights of the constraint.
       AffineConstraints<double> constraints;
-      std::vector<std::pair<
-        types::global_dof_index,
-        std::vector<std::pair<types::global_dof_index, double>>>>
+      std::vector<
+        std::pair<types::global_dof_index,
+                  std::vector<std::pair<types::global_dof_index, double>>>>
                         interface_known;
       std::vector<char> forced_known(n, 0);
       // The part of the coarse cell of every hanging node: 1 Dirichlet,
@@ -227,8 +227,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
                   if (neumann_side)
                     {
                       interface_known.emplace_back(
-                        e,
-                        *hanging_node_constraints.get_constraint_entries(i));
+                        e, *hanging_node_constraints.get_constraint_entries(i));
                       forced_known[e] = 1;
                     }
                   continue;
@@ -236,7 +235,9 @@ BEMProblem<dim>::solve_galerkin_mixed(
               constraints.add_line(e);
               for (const auto &[m, c] :
                    *hanging_node_constraints.get_constraint_entries(i))
-                constraints.add_entry(e, neumann_side ? neumann_index(m) : m, c);
+                constraints.add_entry(e,
+                                      neumann_side ? neumann_index(m) : m,
+                                      c);
               constraints.set_inhomogeneity(
                 e, hanging_node_constraints.get_inhomogeneity(i));
             }
@@ -276,8 +277,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
                         master[e] = std::min(master[e], m);
                     }
               role[e] = next_to_dirichlet || forced_known[e] ? known_potential :
-                        master[e] == e ? free_potential :
-                                         tied_potential;
+                        master[e] == e                       ? free_potential :
+                                                               tied_potential;
               if (role[e] == known_potential)
                 master[e] = e;
             }
@@ -293,8 +294,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
       pcout << "Mixed Galerkin problem: " << counts[flux]
             << " flux unknowns on the Dirichlet part, "
             << counts[free_potential] << " potential unknowns on the Neumann "
-            << "part, " << counts[tied_potential]
-            << " tied double nodes, " << counts[known_potential]
+            << "part, " << counts[tied_potential] << " tied double nodes, "
+            << counts[known_potential]
             << " potential values fixed by the Dirichlet datum, of which "
             << n - n_original << " on degrees of freedom of both parts, "
             << counts[hanging] << " hanging nodes" << std::endl;
@@ -312,8 +313,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
             robin[e] = 1;
             n_robin_unknowns += role[e] == free_potential;
           }
-      const bool     has_robin = std::find(robin.begin(), robin.end(), 1) !=
-                             robin.end();
+      const bool has_robin =
+        std::find(robin.begin(), robin.end(), 1) != robin.end();
       Vector<double> robin_coefficient(n), robin_coefficient_imag(n);
       std::vector<Vector<double>> robin_datum(n_parts, Vector<double>(n));
       if (has_robin)
@@ -353,7 +354,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // The flux (a/b) u of the Robin part, at the nodes where the function
       // takes u, in the complex product for two parts.
       const auto robin_product = [&](const std::vector<Vector<double>> &u,
-                                     const auto &where) {
+                                     const auto                        &where) {
         std::vector<Vector<double>> r(n_parts, Vector<double>(n));
         for (types::global_dof_index e = 0; e < n; ++e)
           if (robin[e] && where(e))
@@ -448,7 +449,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
       const bool             separate_data = data_mapping != &*mapping;
       // The mass matrix of the cells of one part, and the projection of the
       // normal trace of the gradient of the part p on them.
-      const auto project_flux = [&](const bool on_dirichlet_part,
+      const auto project_flux = [&](const bool            on_dirichlet_part,
                                     SparseMatrix<double> *whole_mass,
                                     const unsigned int    p,
                                     const bool potential_values = false) {
@@ -472,8 +473,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
                                  .value(data.quadrature_point(q));
                 else
                   {
-                    on_cell(*gradient[p], cell).vector_value(
-                      data.quadrature_point(q), g);
+                    on_cell(*gradient[p], cell)
+                      .vector_value(data.quadrature_point(q), g);
                     for (unsigned int d = 0; d < dim; ++d)
                       flux_value += g[d] * data.normal_vector(q)[d];
                   }
@@ -595,17 +596,16 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // With Solution method = FMA the operators are applied by the fast
       // multipole method (GalerkinCalderonFMMOperator) instead of dense
       // matrices.
-      const bool through_fmm = solution_method == "FMA";
+      const bool                      through_fmm   = solution_method == "FMA";
       TrilinosWrappers::SparseMatrix &single_layer  = mixed_single_layer,
                                      &double_layer  = mixed_double_layer,
                                      &hypersingular = mixed_hypersingular;
       std::unique_ptr<GalerkinCalderonFMMOperator> &calderon = mixed_calderon;
       // Another component on the same mesh: the operators of the previous
       // one.
-      const bool reuse = galerkin_reuse_operators &&
-                         mixed_operators_size == n &&
-                         (through_fmm ? calderon != nullptr :
-                                        single_layer.m() == n);
+      const bool reuse =
+        galerkin_reuse_operators && mixed_operators_size == n &&
+        (through_fmm ? calderon != nullptr : single_layer.m() == n);
       if (reuse)
         pcout << "Mixed Galerkin problem: the operators of the previous "
                  "component"
@@ -650,11 +650,9 @@ BEMProblem<dim>::solve_galerkin_mixed(
       integrator.set_kinked_singular_order(
         galerkin_kinked_singular_quadrature_order,
         galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
+      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
       integrator.set_dof_index_map(
-        [&](const typename DoFHandler<dim - 1, dim>::active_cell_iterator
-                                                  &cell,
+        [&](const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
             std::vector<types::global_dof_index> &indices) {
           indices = indices_of(cell);
         });
@@ -667,9 +665,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
       if (!reuse && through_fmm)
         {
           GalerkinCalderonFMMOperator::AdditionalData data;
-          data.quadrature_order        = galerkin_quadrature_order;
-          data.near_distance_ratio     = std::max(galerkin_near_singular_distance_ratio,
-                                              galerkin_kinked_distance_ratio);
+          data.quadrature_order = galerkin_quadrature_order;
+          data.near_distance_ratio =
+            std::max(galerkin_near_singular_distance_ratio,
+                     galerkin_kinked_distance_ratio);
           data.fmm.order               = fma.truncation_order();
           data.fmm.theta               = fma.opening_criterion();
           data.fmm.max_points_per_leaf = fma.points_per_leaf();
@@ -685,8 +684,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
                 << data.fmm.order << " (dipoles "
                 << data.fmm.order + data.dipole_order_increase
                 << "), opening criterion " << data.fmm.theta
-                << ", quadrature order " << data.quadrature_order
-                << std::endl;
+                << ", quadrature order " << data.quadrature_order << std::endl;
           calderon =
             std::make_unique<GalerkinCalderonFMMOperator>(mpi_communicator);
           // The near-field blocks of the previous mesh, for adaptive
@@ -696,7 +694,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
             {
               const std::vector<double> signature = {
                 double(fe->degree),
-                double(exact_geometry ? geometry_degree_in_use : mapping_degree),
+                double(exact_geometry ? geometry_degree_in_use :
+                                        mapping_degree),
                 double(data.quadrature_order),
                 double(galerkin_singular_quadrature_order),
                 double(galerkin_folded_singular_quadrature_order),
@@ -741,52 +740,51 @@ BEMProblem<dim>::solve_galerkin_mixed(
         }
       mixed_operators_size = n;
       if (!through_fmm && !reuse)
-      {
-        const auto &profile = integrator.rhs_profile();
-        pcout << "Mixed Galerkin problem: V, K and W assembled in "
-              << seconds_since(assembly_start)
-              << " s; on the slowest process far pairs "
-              << Utilities::MPI::max(profile.far_seconds, mpi_communicator)
-              << " s, near and singular pairs "
-              << Utilities::MPI::max(profile.near_seconds, mpi_communicator)
-              << " s" << std::endl
-              << "  rule construction "
-              << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
-              << " s, of which geometry "
-              << Utilities::MPI::max(profile.geometry_seconds,
-                                     mpi_communicator)
-              << " s and shape values "
-              << Utilities::MPI::max(profile.shape_seconds, mpi_communicator)
-              << " s; kernel loops "
-              << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
-              << " s; "
-              << Utilities::MPI::sum(double(profile.singular_leaves),
-                                     mpi_communicator)
-              << " singular leaves ("
-              << Utilities::MPI::sum(double(profile.singular_points),
-                                     mpi_communicator)
-              << " points), "
-              << Utilities::MPI::sum(double(profile.regular_leaves),
-                                     mpi_communicator)
-              << " regular leaves" << std::endl;
-      }
+        {
+          const auto &profile = integrator.rhs_profile();
+          pcout << "Mixed Galerkin problem: V, K and W assembled in "
+                << seconds_since(assembly_start)
+                << " s; on the slowest process far pairs "
+                << Utilities::MPI::max(profile.far_seconds, mpi_communicator)
+                << " s, near and singular pairs "
+                << Utilities::MPI::max(profile.near_seconds, mpi_communicator)
+                << " s" << std::endl
+                << "  rule construction "
+                << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
+                << " s, of which geometry "
+                << Utilities::MPI::max(profile.geometry_seconds,
+                                       mpi_communicator)
+                << " s and shape values "
+                << Utilities::MPI::max(profile.shape_seconds, mpi_communicator)
+                << " s; kernel loops "
+                << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
+                << " s; "
+                << Utilities::MPI::sum(double(profile.singular_leaves),
+                                       mpi_communicator)
+                << " singular leaves ("
+                << Utilities::MPI::sum(double(profile.singular_points),
+                                       mpi_communicator)
+                << " points), "
+                << Utilities::MPI::sum(double(profile.regular_leaves),
+                                       mpi_communicator)
+                << " regular leaves" << std::endl;
+        }
 
       // Products of the distributed matrices with vectors that every process
       // holds whole.
       TrilinosWrappers::MPI::Vector in(owned, mpi_communicator),
         out(owned, mpi_communicator);
       using CalderonOperator = GalerkinCalderonFMMOperator::Operator;
-      const auto product = [&](const TrilinosWrappers::SparseMatrix &matrix,
+      const auto product     = [&](const TrilinosWrappers::SparseMatrix &matrix,
                                const Vector<double>                 &x,
                                const bool transpose) {
         if (through_fmm)
           {
             const CalderonOperator op =
-              &matrix == &single_layer ? CalderonOperator::single_layer :
-              &matrix == &hypersingular ?
-                                         CalderonOperator::hypersingular :
-              transpose ? CalderonOperator::double_layer_transpose :
-                          CalderonOperator::double_layer;
+              &matrix == &single_layer  ? CalderonOperator::single_layer :
+                  &matrix == &hypersingular ? CalderonOperator::hypersingular :
+                  transpose ? CalderonOperator::double_layer_transpose :
+                              CalderonOperator::double_layer;
             Vector<double> y(n);
             calderon->vmult(op, y, x);
             return y;
@@ -829,24 +827,22 @@ BEMProblem<dim>::solve_galerkin_mixed(
             << ", with K of the opposite sign "
             << minus.l2_norm() / (0.5 * mass_ones.l2_norm());
       if (diagnostics)
-        pcout << "; |W 1| = "
-              << product(hypersingular, ones, false).l2_norm();
+        pcout << "; |W 1| = " << product(hypersingular, ones, false).l2_norm();
       pcout << std::endl;
 
       // The block operator on vectors of all degrees of freedom: rows and
       // columns of the flux unknowns, of the free potentials, whose rows
       // collect those of their tied copies, and the identity elsewhere.
-      const auto split = [&](const Vector<double> &x,
-                             Vector<double>       &t,
-                             Vector<double>       &u) {
-        t.reinit(n);
-        u.reinit(n);
-        for (types::global_dof_index i = 0; i < n; ++i)
-          if (role[i] == flux)
-            t[i] = x[i];
-          else if (role[i] == free_potential || role[i] == tied_potential)
-            u[i] = x[master[i]];
-      };
+      const auto split =
+        [&](const Vector<double> &x, Vector<double> &t, Vector<double> &u) {
+          t.reinit(n);
+          u.reinit(n);
+          for (types::global_dof_index i = 0; i < n; ++i)
+            if (role[i] == flux)
+              t[i] = x[i];
+            else if (role[i] == free_potential || role[i] == tied_potential)
+              u[i] = x[master[i]];
+        };
       const auto combine = [&](const Vector<double> &dirichlet_rows,
                                const Vector<double> &neumann_rows,
                                const Vector<double> &identity,
@@ -880,11 +876,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
         std::copy(x.begin() + p * n, x.begin() + (p + 1) * n, v.begin());
         return v;
       };
-      const auto set_part = [&](Vector<double>       &x,
-                                const unsigned int    p,
-                                const Vector<double> &v) {
-        std::copy(v.begin(), v.end(), x.begin() + p * n);
-      };
+      const auto set_part =
+        [&](Vector<double> &x, const unsigned int p, const Vector<double> &v) {
+          std::copy(v.begin(), v.end(), x.begin() + p * n);
+        };
       // On the Robin part the flux -(a/b) u of the unknowns joins the flux
       // of the Dirichlet part in V and K^T, and its identity term 1/2 M
       // goes to the potential rows. The operators act on each part.
@@ -905,12 +900,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
           {
             Vector<double> dirichlet_rows, neumann_rows, rows;
             if (through_fmm)
-              calderon->vmult_rows(t[p],
-                                   u[p],
-                                   k_sign,
-                                   dirichlet_rows,
-                                   neumann_rows,
-                                   relaxed_rows);
+              calderon->vmult_rows(
+                t[p], u[p], k_sign, dirichlet_rows, neumann_rows, relaxed_rows);
             else
               {
                 dirichlet_rows = product(single_layer, t[p], false);
@@ -1013,41 +1004,41 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // solution, the flux projected in L2 on the Dirichlet part and the
       // potential interpolated on the Neumann part.
       if (diagnostics || std::getenv("PIBEM_RESIDUAL_DUMP") != nullptr)
-      {
-        Vector<double> exact(n_parts * n);
-        for (unsigned int p = 0; p < n_parts; ++p)
-          {
-            Vector<double> exact_part = project_flux(true, nullptr, p);
-            for (types::global_dof_index e = 0; e < n; ++e)
-              if (role[e] == free_potential)
-                exact_part[e] = potential_at[p][e]->value(point(e));
-              else if (role[e] != flux)
-                exact_part[e] = 0;
-            set_part(exact, p, exact_part);
-          }
-        Vector<double> residual;
-        block.vmult(residual, exact);
-        residual -= rhs;
-        // PIBEM_RESIDUAL_DUMP=file: for every flux and free potential
-        // unknown, its support point, whether it is a flux, its residual and
-        // its right-hand side; the imaginary part after the real one.
-        if (const char *name = std::getenv("PIBEM_RESIDUAL_DUMP");
-            name != nullptr && this_mpi_process == 0)
-          {
-            std::ofstream out(name);
-            out << std::setprecision(10);
-            for (types::global_dof_index i = 0; i < n_parts * n; ++i)
-              {
-                const types::global_dof_index e = i % n;
-                if (role[e] == flux || role[e] == free_potential)
-                  out << point(e) << ' ' << (role[e] == flux) << ' '
-                      << residual[i] << ' ' << rhs[i] << '\n';
-              }
-          }
-        pcout << "Mixed Galerkin problem: relative residual of the exact "
-                 "solution "
-              << residual.l2_norm() / rhs.l2_norm() << std::endl;
-      }
+        {
+          Vector<double> exact(n_parts * n);
+          for (unsigned int p = 0; p < n_parts; ++p)
+            {
+              Vector<double> exact_part = project_flux(true, nullptr, p);
+              for (types::global_dof_index e = 0; e < n; ++e)
+                if (role[e] == free_potential)
+                  exact_part[e] = potential_at[p][e]->value(point(e));
+                else if (role[e] != flux)
+                  exact_part[e] = 0;
+              set_part(exact, p, exact_part);
+            }
+          Vector<double> residual;
+          block.vmult(residual, exact);
+          residual -= rhs;
+          // PIBEM_RESIDUAL_DUMP=file: for every flux and free potential
+          // unknown, its support point, whether it is a flux, its residual and
+          // its right-hand side; the imaginary part after the real one.
+          if (const char *name = std::getenv("PIBEM_RESIDUAL_DUMP");
+              name != nullptr && this_mpi_process == 0)
+            {
+              std::ofstream out(name);
+              out << std::setprecision(10);
+              for (types::global_dof_index i = 0; i < n_parts * n; ++i)
+                {
+                  const types::global_dof_index e = i % n;
+                  if (role[e] == flux || role[e] == free_potential)
+                    out << point(e) << ' ' << (role[e] == flux) << ' '
+                        << residual[i] << ' ' << rhs[i] << '\n';
+                }
+            }
+          pcout << "Mixed Galerkin problem: relative residual of the exact "
+                   "solution "
+                << residual.l2_norm() / rhs.l2_norm() << std::endl;
+        }
 
       // GMRES, every process running the same iteration on whole vectors.
       // The flux and the potential rows have different scales, about h^3
@@ -1059,26 +1050,25 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // ancestor; the values of all parts, one after the other.
       if (reuse_near_field && !transfer_values.empty() &&
           transfer_degree == fe->degree &&
-          transfer_values.begin()->second.size() ==
-            n_parts * fe->dofs_per_cell)
+          transfer_values.begin()->second.size() == n_parts * fe->dofs_per_cell)
         {
-          const auto &unit_points = fe->get_unit_support_points();
+          const auto  &unit_points = fe->get_unit_support_points();
           unsigned int transferred = 0;
           for (const auto &cell : dh.active_cell_iterators())
             {
               const auto &cell_dofs = indices_of(cell);
               for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
                 {
-                  const types::global_dof_index e = cell_dofs[i];
-                  const bool flux_dof = role[e] == flux;
-                  const bool potential_dof =
+                  const types::global_dof_index e        = cell_dofs[i];
+                  const bool                    flux_dof = role[e] == flux;
+                  const bool                    potential_dof =
                     role[e] == free_potential || role[e] == tied_potential;
                   if (!flux_dof && !potential_dof)
                     continue;
                   Point<dim - 1> point    = unit_points[i];
                   auto           ancestor = cell;
-                  auto found = transfer_values.find({{ancestor->level(),
-                                                      ancestor->index()}});
+                  auto           found    = transfer_values.find(
+                    {{ancestor->level(), ancestor->index()}});
                   while (found == transfer_values.end() &&
                          ancestor->level() > 0)
                     {
@@ -1115,7 +1105,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // reduction relative to the start.
       SolverControl control(std::max(solver_control.max_steps(), 5000u),
                             1e-300);
-      const auto set_tolerance = [&](const auto &preconditioner) {
+      const auto    set_tolerance = [&](const auto &preconditioner) {
         Vector<double> preconditioned_rhs(n_parts * n);
         preconditioner.vmult(preconditioned_rhs, rhs);
         control.set_tolerance(mixed_galerkin_solver_reduction *
@@ -1141,7 +1131,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
           const types::global_dof_index n = inverse.size();
           for (types::global_dof_index i = 0; i < n; ++i)
             {
-              y[i] = inverse[i] * x[i] - inverse_imag[i] * x[n + i];
+              y[i]     = inverse[i] * x[i] - inverse_imag[i] * x[n + i];
               y[n + i] = inverse[i] * x[n + i] + inverse_imag[i] * x[i];
             }
         }
@@ -1157,7 +1147,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
           for (types::global_dof_index i = 0; i < n; ++i)
             {
               const double a = diagonal[i], b = diagonal_imag[i],
-                           s = a * a + b * b;
+                           s                 = a * a + b * b;
               preconditioner.inverse[i]      = s != 0.0 ? a / s : 1.0;
               preconditioner.inverse_imag[i] = s != 0.0 ? -b / s : 0.0;
             }
@@ -1290,8 +1280,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
                 }
               unsigned int relaxed_steps = 0;
               const auto   apply         = [&](Vector<double>       &y,
-                                       const Vector<double> &v,
-                                       const double          residual) {
+                                     const Vector<double> &v,
+                                     const double          residual) {
                 relaxed_rows = residual < mixed_galerkin_relaxation * rhs_norm;
                 relaxed_steps += relaxed_rows;
                 Vector<double> w(n_parts * n);
@@ -1343,10 +1333,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
               << std::sqrt(r[0] / f[0]) << ", of the potential rows "
               << std::sqrt(r[1] / f[1]) << std::endl;
       }
-      pcout << "Mixed Galerkin problem: GMRES iterations: "
-            << gmres_steps << ", in "
-            << std::chrono::duration<double>(
-                 std::chrono::steady_clock::now() - start)
+      pcout << "Mixed Galerkin problem: GMRES iterations: " << gmres_steps
+            << ", in "
+            << std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                             start)
                  .count()
             << " s since the start of the mixed solve" << std::endl;
       if (calderon)
@@ -1452,14 +1442,19 @@ BEMProblem<dim>::solve_galerkin_mixed(
         {
           const auto &tria = dh.get_triangulation();
           jump_indicator.reinit(tria.n_active_cells());
-          const QGauss<dim - 2>  face_quadrature(fe->degree + 1);
-          const unsigned int     nq    = face_quadrature.size();
-          const UpdateFlags      flags = update_gradients |
-                                    update_normal_vectors |
+          const QGauss<dim - 2> face_quadrature(fe->degree + 1);
+          const unsigned int    nq = face_quadrature.size();
+          const UpdateFlags flags  = update_gradients | update_normal_vectors |
                                     update_quadrature_points |
                                     update_JxW_values;
-          FEFaceValues<dim - 1, dim>    here(*mapping, *fe, face_quadrature, flags);
-          FEFaceValues<dim - 1, dim>    there(*mapping, *fe, face_quadrature, flags);
+          FEFaceValues<dim - 1, dim> here(*mapping,
+                                          *fe,
+                                          face_quadrature,
+                                          flags);
+          FEFaceValues<dim - 1, dim> there(*mapping,
+                                           *fe,
+                                           face_quadrature,
+                                           flags);
           // The conormal derivative of the trace at the quadrature points.
           const auto derivative = [&](const FEValuesBase<dim - 1, dim> &v,
                                       const auto                       &cell,
@@ -1483,14 +1478,14 @@ BEMProblem<dim>::solve_galerkin_mixed(
                                 const auto                       &cell_b,
                                 const Vector<double>             &f,
                                 const char                       *kind) {
-            const std::vector<double> da = derivative(a, cell_a, f);
-            const std::vector<double> db = derivative(b, cell_b, f);
-            double same = 0, reversed = 0;
+            const std::vector<double> da   = derivative(a, cell_a, f);
+            const std::vector<double> db   = derivative(b, cell_b, f);
+            double                    same = 0, reversed = 0;
             for (unsigned int q = 0; q < nq; ++q)
               {
                 same += a.quadrature_point(q).distance(b.quadrature_point(q));
-                reversed +=
-                  a.quadrature_point(q).distance(b.quadrature_point(nq - 1 - q));
+                reversed += a.quadrature_point(q).distance(
+                  b.quadrature_point(nq - 1 - q));
               }
             const double length =
               a.quadrature_point(0).distance(a.quadrature_point(nq - 1));
@@ -1509,8 +1504,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
             double sum = 0;
             for (unsigned int q = 0; q < nq; ++q)
               {
-                const double j =
-                  da[q] + db[same <= reversed ? q : nq - 1 - q];
+                const double j = da[q] + db[same <= reversed ? q : nq - 1 - q];
                 sum += j * j * a.JxW(q);
               }
             return sum;
@@ -1522,14 +1516,15 @@ BEMProblem<dim>::solve_galerkin_mixed(
           // coarse cell (samples, then Newton in the edge parameter), with
           // the conormal of the fine side reversed.
           const auto jump_hanging = [&](const FEValuesBase<dim - 1, dim> &fine,
-                                        const auto                       &fine_cell,
-                                        const auto                       &coarse,
-                                        const unsigned int coarse_face,
-                                        const Vector<double>             &f) {
-            const std::vector<double> d_fine = derivative(fine, fine_cell, f);
-            const auto on_face = [&](const double t) {
-              return coarse_face < 2 ? Point<dim - 1>(double(coarse_face), t) :
-                                       Point<dim - 1>(t, double(coarse_face - 2));
+                                        const auto           &fine_cell,
+                                        const auto           &coarse,
+                                        const unsigned int    coarse_face,
+                                        const Vector<double> &f) {
+            const std::vector<double> d_fine  = derivative(fine, fine_cell, f);
+            const auto                on_face = [&](const double t) {
+              return coarse_face < 2 ?
+                                      Point<dim - 1>(double(coarse_face), t) :
+                                      Point<dim - 1>(t, double(coarse_face - 2));
             };
             const auto x_of = [&](const double t) {
               return mapping->transform_unit_to_real_cell(coarse, on_face(t));
@@ -1538,7 +1533,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
             for (unsigned int q = 0; q < nq; ++q)
               {
                 const Point<dim> target = fine.quadrature_point(q);
-                double t = 0, gap = target.distance(x_of(0.));
+                double           t = 0, gap = target.distance(x_of(0.));
                 for (unsigned int k = 1; k <= 16; ++k)
                   if (target.distance(x_of(k / 16.)) < gap)
                     {
@@ -1547,13 +1542,15 @@ BEMProblem<dim>::solve_galerkin_mixed(
                     }
                 for (unsigned int step = 0; step < 30; ++step)
                   {
-                    const double         lo = std::max(0., t - 1e-7),
+                    const double lo = std::max(0., t - 1e-7),
                                  hi = std::min(1., t + 1e-7);
-                    const Tensor<1, dim> tangent = (x_of(hi) - x_of(lo)) / (hi - lo);
-                    const double next = std::clamp(
-                      t + (target - x_of(t)) * tangent / tangent.norm_square(),
-                      0.,
-                      1.);
+                    const Tensor<1, dim> tangent =
+                      (x_of(hi) - x_of(lo)) / (hi - lo);
+                    const double next =
+                      std::clamp(t + (target - x_of(t)) * tangent /
+                                       tangent.norm_square(),
+                                 0.,
+                                 1.);
                     const bool done = std::abs(next - t) < 1e-13;
                     t               = next;
                     if (done)
@@ -1588,13 +1585,13 @@ BEMProblem<dim>::solve_galerkin_mixed(
                   this_mpi_process)
                 continue;
               // The jumps of all parts.
-              const bool                         d = is_dirichlet_cell(cell);
-              const std::vector<Vector<double>> &f = d ? t_full : u_full;
+              const bool                         d    = is_dirichlet_cell(cell);
+              const std::vector<Vector<double>> &f    = d ? t_full : u_full;
               double                             sum  = 0;
-              const double          area = cell->measure();
+              const double                       area = cell->measure();
               // The weight of an edge: a_F/2 for the potential, a_F^3/(2 pi^2)
               // for the flux.
-              const bool l2 = mixed_galerkin_indicator_norm == "L2";
+              const bool l2     = mixed_galerkin_indicator_norm == "L2";
               const auto weight = [&](const unsigned int face) {
                 const double a = area / cell->face(face)->measure();
                 return 0.5 * (d || l2 ? a * a * a / (M_PI * M_PI) : a);
@@ -1604,8 +1601,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
                   if (cell->at_boundary(face))
                     continue;
                   if (cell->face(face)->has_children())
-                    for (unsigned int s = 0;
-                         s < cell->face(face)->n_children();
+                    for (unsigned int s = 0; s < cell->face(face)->n_children();
                          ++s)
                       {
                         const auto child =
@@ -1632,12 +1628,14 @@ BEMProblem<dim>::solve_galerkin_mixed(
                       here.reinit(cell, face);
                       if (cell->neighbor_is_coarser(face))
                         for (const auto &f_part : f)
-                          sum += weight(face) *
-                                 jump_hanging(here,
-                                              cell,
-                                              neighbor,
-                                              cell->neighbor_of_coarser_neighbor(face).first,
-                                              f_part);
+                          sum +=
+                            weight(face) *
+                            jump_hanging(
+                              here,
+                              cell,
+                              neighbor,
+                              cell->neighbor_of_coarser_neighbor(face).first,
+                              f_part);
                       else
                         {
                           there.reinit(neighbor,
@@ -1668,11 +1666,12 @@ BEMProblem<dim>::solve_galerkin_mixed(
       {
         const QGauss<dim - 1>  error_quadrature(fe->degree + 4);
         FEValues<dim - 1, dim> error_values(*mapping,
-                                      *fe,
-                                      error_quadrature,
-                                      update_values | update_normal_vectors |
-                                        update_quadrature_points |
-                                        update_JxW_values);
+                                            *fe,
+                                            error_quadrature,
+                                            update_values |
+                                              update_normal_vectors |
+                                              update_quadrature_points |
+                                              update_JxW_values);
         FEValues<dim - 1, dim> error_data_values(*data_mapping,
                                                  *fe,
                                                  error_quadrature,
@@ -1693,23 +1692,22 @@ BEMProblem<dim>::solve_galerkin_mixed(
           {
             double flux_error = 0, flux_norm = 0, potential_error = 0,
                    potential_norm = 0, flux_max = 0, potential_max = 0,
-                   flux_error_edge = 0, flux_norm_edge = 0, robin_flux_error = 0,
-                   robin_flux_norm = 0;
+                   flux_error_edge = 0, flux_norm_edge = 0,
+                   robin_flux_error = 0, robin_flux_norm = 0;
             Point<dim>     flux_where, potential_where;
             Vector<double> g(dim);
             for (const auto &cell : dh.active_cell_iterators())
               {
-                const double cell_error_before =
-                  flux_error + potential_error;
-                const double cell_norm_before = flux_norm + potential_norm;
+                const double cell_error_before = flux_error + potential_error;
+                const double cell_norm_before  = flux_norm + potential_norm;
                 FullMatrix<double> local_mass(fe->dofs_per_cell);
                 Vector<double>     local_rhs(fe->dofs_per_cell);
                 double             local_square = 0;
                 error_values.reinit(cell);
                 const FEValues<dim - 1, dim> &error_data =
-                  separate_data ? (error_data_values.reinit(cell),
-                                   error_data_values) :
-                                  error_values;
+                  separate_data ?
+                    (error_data_values.reinit(cell), error_data_values) :
+                    error_values;
                 const auto &cell_dofs = indices_of(cell);
                 const bool  dirichlet = is_dirichlet_cell(cell);
                 bool        at_edge   = false;
@@ -1727,18 +1725,20 @@ BEMProblem<dim>::solve_galerkin_mixed(
                   {
                     double value = 0;
                     for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                      value += error_values.shape_value(i, q) *
-                               (dirichlet ? t_full[p] : u_full[p])[cell_dofs[i]];
+                      value +=
+                        error_values.shape_value(i, q) *
+                        (dirichlet ? t_full[p] : u_full[p])[cell_dofs[i]];
                     double exact_value;
                     if (dirichlet)
                       {
-                        on_cell(*gradient[p], cell).vector_value(
-                          error_data.quadrature_point(q), g);
+                        on_cell(*gradient[p], cell)
+                          .vector_value(error_data.quadrature_point(q), g);
                         exact_value = 0;
                         for (unsigned int d = 0; d < dim; ++d)
                           exact_value += g[d] * error_data.normal_vector(q)[d];
                         flux_error += (value - exact_value) *
-                                      (value - exact_value) * error_values.JxW(q);
+                                      (value - exact_value) *
+                                      error_values.JxW(q);
                         if (dump.is_open())
                           {
                             for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
@@ -1750,12 +1750,14 @@ BEMProblem<dim>::solve_galerkin_mixed(
                                     error_values.shape_value(j, q) *
                                     error_values.JxW(q);
                                 local_rhs(i) += error_values.shape_value(i, q) *
-                                                exact_value * error_values.JxW(q);
+                                                exact_value *
+                                                error_values.JxW(q);
                               }
                             local_square +=
                               exact_value * exact_value * error_values.JxW(q);
                           }
-                        flux_norm += exact_value * exact_value * error_values.JxW(q);
+                        flux_norm +=
+                          exact_value * exact_value * error_values.JxW(q);
                         if (at_edge)
                           {
                             flux_error_edge += (value - exact_value) *
@@ -1772,10 +1774,11 @@ BEMProblem<dim>::solve_galerkin_mixed(
                       }
                     else
                       {
-                        exact_value = on_cell(*potential[p], cell).value(
-                          error_data.quadrature_point(q));
+                        exact_value = on_cell(*potential[p], cell)
+                                        .value(error_data.quadrature_point(q));
                         potential_error += (value - exact_value) *
-                                           (value - exact_value) * error_values.JxW(q);
+                                           (value - exact_value) *
+                                           error_values.JxW(q);
                         potential_norm +=
                           exact_value * exact_value * error_values.JxW(q);
                         if (std::abs(value - exact_value) > potential_max)
@@ -1790,10 +1793,11 @@ BEMProblem<dim>::solve_galerkin_mixed(
                             for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
                               flux_value += error_values.shape_value(i, q) *
                                             t_full[p][cell_dofs[i]];
-                            on_cell(*gradient[p], cell).vector_value(
-                              error_data.quadrature_point(q), g);
+                            on_cell(*gradient[p], cell)
+                              .vector_value(error_data.quadrature_point(q), g);
                             for (unsigned int d = 0; d < dim; ++d)
-                              exact_flux += g[d] * error_data.normal_vector(q)[d];
+                              exact_flux +=
+                                g[d] * error_data.normal_vector(q)[d];
                             robin_flux_error += (flux_value - exact_flux) *
                                                 (flux_value - exact_flux) *
                                                 error_values.JxW(q);
@@ -1801,10 +1805,11 @@ BEMProblem<dim>::solve_galerkin_mixed(
                               exact_flux * exact_flux * error_values.JxW(q);
                           }
                       }
-                    cell_exact[q]  = exact_value;
+                    cell_exact[q] = exact_value;
                     cell_max_error =
                       std::max(cell_max_error, std::abs(value - exact_value));
-                    cell_max_exact = std::max(cell_max_exact, std::abs(exact_value));
+                    cell_max_exact =
+                      std::max(cell_max_exact, std::abs(exact_value));
                   }
                 cell_squared_error[cell->active_cell_index()] +=
                   flux_error + potential_error - cell_error_before;
@@ -1816,14 +1821,18 @@ BEMProblem<dim>::solve_galerkin_mixed(
                         Vector<double> coefficients(local_rhs);
                         local_mass.gauss_jordan();
                         local_mass.vmult(coefficients, local_rhs);
-                        best = std::max(local_square - (coefficients * local_rhs),
-                                        0.);
-                        for (unsigned int q = 0; q < error_quadrature.size(); ++q)
+                        best =
+                          std::max(local_square - (coefficients * local_rhs),
+                                   0.);
+                        for (unsigned int q = 0; q < error_quadrature.size();
+                             ++q)
                           {
                             double b = 0;
                             for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                              b += coefficients[i] * error_values.shape_value(i, q);
-                            best_max = std::max(best_max, std::abs(b - cell_exact[q]));
+                              b += coefficients[i] *
+                                   error_values.shape_value(i, q);
+                            best_max =
+                              std::max(best_max, std::abs(b - cell_exact[q]));
                           }
                       }
                     // Then, at the quadrature points of the cell, the largest
@@ -1831,7 +1840,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
                     // the local best approximation, and whether the cell has a
                     // hanging node.
                     dump << cell->center() << ' ' << dirichlet << ' ' << at_edge
-                         << ' ' << flux_error + potential_error - cell_error_before
+                         << ' '
+                         << flux_error + potential_error - cell_error_before
                          << ' ' << flux_norm + potential_norm - cell_norm_before
                          << ' ' << best << ' ' << cell_max_error << ' '
                          << cell_max_exact << ' ' << best_max << ' '
@@ -1862,7 +1872,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
             if (has_robin)
               pcout << "Mixed Galerkin problem" << part_name[p]
                     << ": flux on the Robin part, relative L2 error "
-                    << std::sqrt(robin_flux_error / robin_flux_norm) << std::endl;
+                    << std::sqrt(robin_flux_error / robin_flux_norm)
+                    << std::endl;
           }
       }
 
@@ -1877,16 +1888,15 @@ BEMProblem<dim>::solve_galerkin_mixed(
               const unsigned int c = cell->active_cell_index();
               const double       h = cell_extent(cell);
               const bool         d = is_dirichlet_cell(cell);
-              const bool jumps = mixed_galerkin_error_indicator == "jumps";
+              const bool jumps     = mixed_galerkin_error_indicator == "jumps";
               if (mixed_galerkin_indicator_norm == "L2")
                 mixed_indicators[c] =
                   (jumps ? jump_indicator[c] : cell_squared_error[c]) /
                   part_norm_squared[d ? 0 : 1];
               else
-                mixed_indicators[c] =
-                  jumps ? jump_indicator[c] :
-                          (d ? h * cell_squared_error[c] :
-                               cell_squared_error[c] / h);
+                mixed_indicators[c] = jumps ? jump_indicator[c] :
+                                              (d ? h * cell_squared_error[c] :
+                                                   cell_squared_error[c] / h);
               sums[d ? 0 : 1] += mixed_indicators[c];
             }
           pcout << "Mixed Galerkin problem: error indicator ("

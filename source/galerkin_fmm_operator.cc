@@ -13,23 +13,27 @@
 // ---------------------------------------------------------------------
 
 #include "../include/galerkin_fmm_operator.h"
-#include "../include/cellwise_function.h"
 
 #include <deal.II/base/bounding_box.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
+
 #include <deal.II/grid/grid_tools.h>
+
 #include <deal.II/lac/trilinos_sparsity_pattern.h>
+
 #include <deal.II/numerics/rtree.h>
 
-#include <map>
-#include <array>
 #include <algorithm>
-#include <set>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <map>
 #include <ostream>
+#include <set>
+
+#include "../include/cellwise_function.h"
 
 using namespace dealii;
 
@@ -94,7 +98,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
       cells.push_back(cell);
     }
   const QGauss<2> quadrature(data.quadrature_order);
-  n_q_points   = quadrature.size();
+  n_q_points = quadrature.size();
   // The cells are stored for the mappings that FEPointEvaluation evaluates
   // on the cell, as MappingFEField (Mapping Type = FE).
   mapping_info = std::make_unique<NonMatching::MappingInfo<2, 3>>(
@@ -148,7 +152,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
     }
   setup_geometry = seconds_since(start);
 
-  start = std::chrono::steady_clock::now();
+  start                               = std::chrono::steady_clock::now();
   LaplaceFMM::AdditionalData fmm_data = data.fmm;
   fmm_data.kappa                      = kappa;
   fmm.reinit(points, fmm_data);
@@ -203,11 +207,12 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
           const GalerkinPanelPairType type =
             integrator.classify(cells[t], cells[r]);
           const unsigned int cost =
-            type == GalerkinPanelPairType::same_panel         ? 6 :
+            type == GalerkinPanelPairType::same_panel ? 6 :
             type == GalerkinPanelPairType::common_edge ||
-                type == GalerkinPanelPairType::nonconforming_edge ? 5 :
-            type == GalerkinPanelPairType::common_vertex        ? 2 :
-                                                                  1;
+                type == GalerkinPanelPairType::nonconforming_edge ?
+                                                        5 :
+            type == GalerkinPanelPairType::common_vertex ? 2 :
+                                                           1;
           found.push_back({{t, r, cost}});
         }
     }
@@ -215,8 +220,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
   // Deal all pairs out by cost, the most expensive first to the least
   // loaded process: the singular pairs cluster where the mesh is graded.
   std::vector<std::array<unsigned int, 3>> all_pairs;
-  for (const auto &part :
-       Utilities::MPI::all_gather(mpi_communicator, found))
+  for (const auto &part : Utilities::MPI::all_gather(mpi_communicator, found))
     all_pairs.insert(all_pairs.end(), part.begin(), part.end());
   std::sort(all_pairs.begin(),
             all_pairs.end(),
@@ -225,7 +229,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                      x[0] != y[0] ? x[0] < y[0] :
                                     x[1] < y[1];
             });
-  std::vector<unsigned long> load(n_mpi_processes, 0);
+  std::vector<unsigned long>                        load(n_mpi_processes, 0);
   std::map<unsigned int, std::vector<unsigned int>> my_pairs;
   n_near_pairs = 0;
   for (const auto &pair : all_pairs)
@@ -319,7 +323,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
   // layer and the double layer, when the integrator carries the gradient.
   const bool fused_flux = rhs.gradient != nullptr && rhs.dirichlet != nullptr &&
                           integrator.get_flux_function() == rhs.gradient;
-  Vector<double> exact_test_flux(dpc), exact_trial_flux(dpc);
+  Vector<double>      exact_test_flux(dpc), exact_trial_flux(dpc);
   std::vector<double> test_side(n_q_points), trial_side(n_q_points);
   for (unsigned int k = 0; k < near_test_cells.size(); ++k)
     {
@@ -392,7 +396,7 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                   const double       distance  = x_minus_y.norm();
                   const double       weight    = inverse_4pi * JxW[a] * JxW[b];
                   const double       screening = std::exp(-kappa * distance);
-                  kernel(q, s) = weight * screening / distance;
+                  kernel(q, s)                 = weight * screening / distance;
                   if (rhs.dirichlet != nullptr)
                     {
                       // The Laplace dipole against E(r) phi(y) - phi(x),
@@ -480,13 +484,13 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
             {
               // From the fused traversal, or else each direction with its
               // own.
-              local = fused_flux ?
-                        exact_test_flux :
-                        integrator.integrate_single_layer_flux(
-                          cells[t],
-                          cells[r],
-                          data.quadrature_order,
-                          *rhs.gradient);
+              local =
+                fused_flux ?
+                  exact_test_flux :
+                  integrator.integrate_single_layer_flux(cells[t],
+                                                         cells[r],
+                                                         data.quadrature_order,
+                                                         *rhs.gradient);
               for (unsigned int i = 0; i < dpc; ++i)
                 {
                   double sum = 0;
@@ -499,13 +503,12 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
                                                      near_manufactured);
               if (!self)
                 {
-                  local = fused_flux ?
-                            exact_trial_flux :
-                            integrator.integrate_single_layer_flux(
-                              cells[r],
-                              cells[t],
-                              data.quadrature_order,
-                              *rhs.gradient);
+                  local = fused_flux ? exact_trial_flux :
+                                       integrator.integrate_single_layer_flux(
+                                         cells[r],
+                                         cells[t],
+                                         data.quadrature_order,
+                                         *rhs.gradient);
                   // partial^T: the kernel block seen from the trial cell
                   for (unsigned int j = 0; j < dpc; ++j)
                     {
@@ -558,10 +561,10 @@ GalerkinFMMOperator::setup_patch_preconditioner()
       my_pairs.push_back(r);
     }
   auto gather = [&](const auto &mine, const MPI_Datatype type) {
-    using T         = typename std::decay_t<decltype(mine)>::value_type;
-    const int count = mine.size();
+    using T                = typename std::decay_t<decltype(mine)>::value_type;
+    const int        count = mine.size();
     std::vector<int> counts(n_mpi_processes), offsets(n_mpi_processes, 0);
-    int ierr = MPI_Allgather(
+    int              ierr = MPI_Allgather(
       &count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi_communicator);
     AssertThrowMPI(ierr);
     for (unsigned int p = 1; p < n_mpi_processes; ++p)
@@ -579,8 +582,7 @@ GalerkinFMMOperator::setup_patch_preconditioner()
     return all;
   };
   const std::vector<unsigned int> all_pairs = gather(my_pairs, MPI_UNSIGNED);
-  const std::vector<double>       all_blocks =
-    gather(computed_blocks, MPI_DOUBLE);
+  const std::vector<double> all_blocks = gather(computed_blocks, MPI_DOUBLE);
   std::map<std::pair<unsigned int, unsigned int>, const double *> exact;
   for (unsigned int k = 0; 2 * k < all_pairs.size(); ++k)
     exact[{all_pairs[2 * k], all_pairs[2 * k + 1]}] =
@@ -590,17 +592,17 @@ GalerkinFMMOperator::setup_patch_preconditioner()
   // or from the point rule, the rule of the dense path for a far pair.
   FullMatrix<double> kernel(n_q_points, n_q_points), partial(dpc, n_q_points);
   const double       inverse_4pi = 1. / (4. * numbers::PI);
-  auto               block       = [&](const unsigned int a,
-                         const unsigned int b,
-                         FullMatrix<double> &result) {
+  auto               block       = [&](const unsigned int  a,
+                   const unsigned int  b,
+                   FullMatrix<double> &result) {
     result.reinit(dpc, dpc);
     const auto hit = exact.find({std::min(a, b), std::max(a, b)});
     if (hit != exact.end())
       {
         for (unsigned int i = 0; i < dpc; ++i)
           for (unsigned int j = 0; j < dpc; ++j)
-            result(i, j) = a <= b ? hit->second[i * dpc + j] :
-                                    hit->second[j * dpc + i];
+            result(i, j) =
+              a <= b ? hit->second[i * dpc + j] : hit->second[j * dpc + i];
         return;
       }
     for (unsigned int q = 0; q < n_q_points; ++q)
@@ -632,8 +634,8 @@ GalerkinFMMOperator::setup_patch_preconditioner()
 
   // A local unknown expands into free unknowns: itself, or the masters of
   // its constraint with their weights; computed once per cell.
-  std::vector<std::vector<std::vector<std::pair<types::global_dof_index,
-                                                double>>>>
+  std::vector<
+    std::vector<std::vector<std::pair<types::global_dof_index, double>>>>
                                        expansion(cells.size());
   std::vector<types::global_dof_index> dofs(dpc);
   auto expand = [&](const unsigned int c) -> const auto & {
@@ -673,9 +675,9 @@ GalerkinFMMOperator::setup_patch_preconditioner()
   // unknown on the rim of a patch also lives in cells outside it, and the
   // block would miss their share, lose the property of a principal
   // submatrix and, as it turned out, its definiteness.
-  std::vector<unsigned int> support_size(dof_handler->n_dofs(), 0);
+  std::vector<unsigned int>            support_size(dof_handler->n_dofs(), 0);
   std::vector<types::global_dof_index> cell_support;
-  auto support_of = [&](const unsigned int c) {
+  auto                                 support_of = [&](const unsigned int c) {
     cell_support.clear();
     for (const auto &terms : expand(c))
       for (const auto &term : terms)
@@ -715,7 +717,7 @@ GalerkinFMMOperator::setup_patch_preconditioner()
 
       // The free unknowns of the patch, and where each unknown of each
       // cell goes among them.
-      std::vector<types::global_dof_index> &free = patch_dofs[k];
+      std::vector<types::global_dof_index>           &free = patch_dofs[k];
       std::map<types::global_dof_index, unsigned int> in_patch;
       for (const unsigned int a : patch_cells)
         for (const auto f : support_of(a))
@@ -792,9 +794,9 @@ GalerkinFMMOperator::apply_patch_preconditioner(
 
 
 void
-GalerkinFMMOperator::test_potentials(const std::vector<double> &values,
-                                     const Vector<double>      &near_field,
-                                     const double               sign,
+GalerkinFMMOperator::test_potentials(const std::vector<double>     &values,
+                                     const Vector<double>          &near_field,
+                                     const double                   sign,
                                      TrilinosWrappers::MPI::Vector &dst) const
 {
   const unsigned int dpc = dof_handler->get_fe().dofs_per_cell;
@@ -940,13 +942,12 @@ GalerkinFMMOperator::print_statistics(std::ostream &out) const
         << " cells, " << n_q_points << " points each; " << pairs
         << " near pairs corrected, " << near_exact.n_nonzero_elements()
         << " near-field entries\n"
-        << "  setup: geometry " << sg << " s, trees " << st
-        << " s, near field " << sn << " s (slowest process "
-        << setup_near_imbalance << " times the mean), patches " << sp
-        << " s\n"
+        << "  setup: geometry " << sg << " s, trees " << st << " s, near field "
+        << sn << " s (slowest process " << setup_near_imbalance
+        << " times the mean), patches " << sp << " s\n"
         << "  right-hand sides " << tr << " s\n"
         << "  seconds per product, slowest process (" << n_vmult
-        << " products): density " << te << ", FMM " << tf << ", testing "
-        << tt << ", near correction " << tn << '\n'
+        << " products): density " << te << ", FMM " << tf << ", testing " << tt
+        << ", near correction " << tn << '\n'
         << std::setprecision(precision);
 }

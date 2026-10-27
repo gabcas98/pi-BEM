@@ -62,7 +62,7 @@ namespace
   struct Results
   {
     std::map<types::material_id, double> area;
-    double volume = 0, moment = 0, waterplane = 0;
+    double                               volume = 0, moment = 0, waterplane = 0;
   };
 
   Results
@@ -157,12 +157,12 @@ main(int argc, char **argv)
       for (const auto &cell : domain.tria.active_cell_iterators())
         if (cell->material_id() >= 1 && cell->material_id() <= n_surfaces)
           for (const unsigned int v : cell->vertex_indices())
-            distance = std::max(
-              distance,
-              cell->vertex(v).distance(OpenCASCADE::closest_point(
-                domain.cad_surfaces[cell->material_id() - 1],
-                cell->vertex(v),
-                1e-7)));
+            distance =
+              std::max(distance,
+                       cell->vertex(v).distance(OpenCASCADE::closest_point(
+                         domain.cad_surfaces[cell->material_id() - 1],
+                         cell->vertex(v),
+                         1e-7)));
       std::cout << "level " << level << ": " << domain.tria.n_active_cells()
                 << " cells, largest distance of a vertex from the CAD "
                 << distance << std::endl;

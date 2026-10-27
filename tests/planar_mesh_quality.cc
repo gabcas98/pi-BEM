@@ -1,16 +1,18 @@
-#include "tests.h"
 #include "planar_mesh_quality.h"
 
 #include <deal.II/grid/grid_generator.h>
+
+#include "tests.h"
 
 int
 main()
 {
   initlog();
   Triangulation<2, 3> tria;
-  GridGenerator::subdivided_hyper_rectangle(tria, {2, 2},
-                                           Point<2>(0, 0),
-                                           Point<2>(2, 2));
+  GridGenerator::subdivided_hyper_rectangle(tria,
+                                            {2, 2},
+                                            Point<2>(0, 0),
+                                            Point<2>(2, 2));
   for (const auto &cell : tria.active_cell_iterators())
     for (const auto v : cell->vertex_indices())
       if (cell->vertex(v).distance(Point<3>(1, 1, 0)) < 1e-12)
@@ -18,7 +20,7 @@ main()
           cell->vertex(v) = Point<3>(1.5, 1.4, 0);
           break;
         }
-  const auto old_vertices = tria.get_vertices();
+  const auto             old_vertices = tria.get_vertices();
   std::set<unsigned int> boundary;
   for (const auto &cell : tria.active_cell_iterators())
     for (const auto f : cell->face_indices())
@@ -37,7 +39,7 @@ main()
 
   tria.begin_active()->set_refine_flag();
   tria.execute_coarsening_and_refinement();
-  const auto before_hanging = tria.get_vertices();
+  const auto             before_hanging = tria.get_vertices();
   std::set<unsigned int> hanging_face_vertices;
   for (const auto &cell : tria.active_cell_iterators())
     for (const auto f : cell->face_indices())
@@ -50,7 +52,8 @@ main()
             for (const auto v : face->child(c)->vertex_indices())
               hanging_face_vertices.insert(face->child(c)->vertex_index(v));
         }
-  AssertThrow(!hanging_face_vertices.empty(), ExcMessage("Missing hanging face."));
+  AssertThrow(!hanging_face_vertices.empty(),
+              ExcMessage("Missing hanging face."));
   PlanarMeshQuality::smooth(tria, {0}, 5);
   for (const auto v : hanging_face_vertices)
     AssertThrow(tria.get_vertices()[v] == before_hanging[v],
@@ -58,8 +61,8 @@ main()
 
   // Curved material patches must fail before any vertex is moved.
   tria.begin_active()->vertex(0)[2] = 0.1;
-  const auto before_curved = tria.get_vertices();
-  bool rejected = false;
+  const auto before_curved          = tria.get_vertices();
+  bool       rejected               = false;
   try
     {
       PlanarMeshQuality::smooth(tria, {0}, 5);
@@ -70,5 +73,6 @@ main()
     }
   AssertThrow(rejected && tria.get_vertices() == before_curved,
               ExcMessage("A curved patch was silently modified."));
-  deallog << "Planar quality, fixed boundary and hanging contacts: OK" << std::endl;
+  deallog << "Planar quality, fixed boundary and hanging contacts: OK"
+          << std::endl;
 }

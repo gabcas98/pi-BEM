@@ -30,6 +30,8 @@
 //  - on a disk trimmed by a circle (a cap of the cylinder of OpenCASCADE),
 //    the boundary faces of the mesh have the length of the circle.
 
+#include "projected_mapping.h"
+
 #include <deal.II/base/function.h>
 #include <deal.II/base/quadrature_lib.h>
 
@@ -46,11 +48,10 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "projected_mapping.h"
+#include <numeric>
+
 #include "projected_quadrature.h"
 #include "tests.h"
-
-#include <numeric>
 
 #ifdef DEAL_II_WITH_OPENCASCADE
 #  include <BRepPrimAPI_MakeCylinder.hxx>
@@ -115,12 +116,11 @@ sphere()
         for (unsigned int q = 0; q < quadrature.size(); ++q)
           {
             area += fe_values.JxW(q);
-            difference =
-              std::max({difference,
-                        std::abs(fe_values.JxW(q) -
-                                 projected.get_JxW_values()[q]),
-                        fe_values.quadrature_point(q).distance(
-                          projected.get_points()[q])});
+            difference = std::max(
+              {difference,
+               std::abs(fe_values.JxW(q) - projected.get_JxW_values()[q]),
+               fe_values.quadrature_point(q).distance(
+                 projected.get_points()[q])});
           }
       }
     deallog << "area through FEValues: relative error "
@@ -132,31 +132,28 @@ sphere()
   // The surface divergence theorem on every cell, for a quadratic finite
   // element function.
   {
-    const FE_Q<2, 3>  fe(2);
-    DoFHandler<2, 3>  dof_handler(tria);
+    const FE_Q<2, 3> fe(2);
+    DoFHandler<2, 3> dof_handler(tria);
     dof_handler.distribute_dofs(fe);
     Vector<double> phi(dof_handler.n_dofs());
-    VectorTools::interpolate(mapping,
-                             dof_handler,
-                             Smooth(),
-                             phi);
+    VectorTools::interpolate(mapping, dof_handler, Smooth(), phi);
 
-    const QGauss<2>   quadrature(8);
-    const QGauss<1>   face_quadrature(8);
-    FEValues<2, 3>    fe_values(mapping,
+    const QGauss<2>           quadrature(8);
+    const QGauss<1>           face_quadrature(8);
+    FEValues<2, 3>            fe_values(mapping,
                              fe,
                              quadrature,
                              update_values | update_gradients |
                                update_JxW_values | update_quadrature_points);
-    FEFaceValues<2, 3> fe_face_values(mapping,
+    FEFaceValues<2, 3>        fe_face_values(mapping,
                                       fe,
                                       face_quadrature,
                                       update_values | update_JxW_values |
                                         update_normal_vectors);
-    std::vector<double>         values(quadrature.size());
-    std::vector<Tensor<1, 3>>   gradients(quadrature.size());
-    std::vector<double>         face_values(face_quadrature.size());
-    double                      residual = 0, size = 0;
+    std::vector<double>       values(quadrature.size());
+    std::vector<Tensor<1, 3>> gradients(quadrature.size());
+    std::vector<double>       face_values(face_quadrature.size());
+    double                    residual = 0, size = 0;
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
         fe_values.reinit(cell);
@@ -186,9 +183,7 @@ sphere()
 
     // Support points on the sphere.
     std::vector<Point<3>> support_points(dof_handler.n_dofs());
-    DoFTools::map_dofs_to_support_points(mapping,
-                                         dof_handler,
-                                         support_points);
+    DoFTools::map_dofs_to_support_points(mapping, dof_handler, support_points);
     double off_sphere = 0;
     for (const auto &p : support_points)
       off_sphere = std::max(off_sphere, std::abs(p.distance(center) - R));
@@ -199,16 +194,16 @@ sphere()
   // Inverse map and second derivatives.
   {
     double     inverse = 0, second = 0;
-    const auto cell    = std::next(tria.begin_active(), 7);
+    const auto cell = std::next(tria.begin_active(), 7);
     for (const Point<2> &p : {Point<2>(0.2, 0.3), Point<2>(0.9, 0.05)})
       {
         const Point<3> x = mapping.transform_unit_to_real_cell(cell, p);
-        inverse = std::max(inverse,
-                           p.distance(mapping.transform_real_to_unit_cell(cell,
-                                                                         x)));
+        inverse =
+          std::max(inverse,
+                   p.distance(mapping.transform_real_to_unit_cell(cell, x)));
         // d/dxi of the Jacobian against central differences of the
         // Jacobian at the quadrature points of a shifted rule.
-        const double  h = 1e-3;
+        const double     h = 1e-3;
         const FE_Q<2, 3> fe(1);
         FEValues<2, 3>   center_values(mapping,
                                      fe,
@@ -232,16 +227,16 @@ sphere()
             minus_values.reinit(cell);
             for (unsigned int i = 0; i < 3; ++i)
               for (unsigned int a = 0; a < 2; ++a)
-                second = std::max(
-                  second,
-                  std::abs(center_values.jacobian_grad(0)[i][a][b] -
-                           (plus_values.jacobian(0)[i][a] -
-                            minus_values.jacobian(0)[i][a]) /
-                             (2 * h)));
+                second =
+                  std::max(second,
+                           std::abs(center_values.jacobian_grad(0)[i][a][b] -
+                                    (plus_values.jacobian(0)[i][a] -
+                                     minus_values.jacobian(0)[i][a]) /
+                                      (2 * h)));
           }
       }
-    deallog << "transform_real_to_unit_cell: largest error "
-            << format(inverse) << std::endl
+    deallog << "transform_real_to_unit_cell: largest error " << format(inverse)
+            << std::endl
             << "second derivatives against central differences of the "
                "first: "
             << (second < 1e-5 ? std::string("below 1e-5") : format(second))
@@ -276,7 +271,9 @@ interpolation()
       const auto estimate =
         estimate_interpolation_deviation(exact, tria, degree, 4);
       const FE_Q<2, 3> fe(1);
-      FEValues<2, 3>   values(cache, fe, QGauss<2>(degree + 2),
+      FEValues<2, 3>   values(cache,
+                            fe,
+                            QGauss<2>(degree + 2),
                             update_JxW_values);
       double           area = 0;
       for (const auto &cell : tria.active_cell_iterators())
@@ -309,24 +306,19 @@ trimmed_disk()
   GridGenerator::extract_boundary_mesh(flat_volume, tria);
 
   const TopoDS_Shape shape =
-    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-half_length, 0, 0),
-                                    gp_Dir(1, 0, 0)),
-                             R,
-                             2 * half_length)
+    BRepPrimAPI_MakeCylinder(
+      gp_Ax2(gp_Pnt(-half_length, 0, 0), gp_Dir(1, 0, 0)), R, 2 * half_length)
       .Shape();
   const OpenCASCADE::ShapeProjector<2> projector(shape);
   const ProjectedMapping<2, 3>         mapping(1, projector);
   const FE_Q<2, 3>                     fe(1);
-  FEFaceValues<2, 3>                   fe_face_values(mapping,
-                                    fe,
-                                    QGauss<1>(8),
-                                    update_JxW_values |
-                                      update_quadrature_points);
-  FEValues<2, 3>                       fe_values(mapping,
-                               fe,
-                               QGauss<2>(8),
-                               update_JxW_values | update_normal_vectors);
-  double                               length = 0, area = 0;
+  FEFaceValues<2, 3>                   fe_face_values(
+    mapping, fe, QGauss<1>(8), update_JxW_values | update_quadrature_points);
+  FEValues<2, 3> fe_values(mapping,
+                           fe,
+                           QGauss<2>(8),
+                           update_JxW_values | update_normal_vectors);
+  double         length = 0, area = 0;
   for (const auto &cell : tria.active_cell_iterators())
     {
       fe_values.reinit(cell);
@@ -337,12 +329,12 @@ trimmed_disk()
         continue;
       // Edges of the cap on the rim: both vertices on the circle.
       for (const unsigned int f : cell->face_indices())
-        if (std::abs(cell->face(f)->vertex(0).distance(
-                       Point<3>(-half_length, 0, 0)) -
-                     R) < 1e-10 &&
-            std::abs(cell->face(f)->vertex(1).distance(
-                       Point<3>(-half_length, 0, 0)) -
-                     R) < 1e-10)
+        if (std::abs(
+              cell->face(f)->vertex(0).distance(Point<3>(-half_length, 0, 0)) -
+              R) < 1e-10 &&
+            std::abs(
+              cell->face(f)->vertex(1).distance(Point<3>(-half_length, 0, 0)) -
+              R) < 1e-10)
           {
             fe_face_values.reinit(cell, f);
             for (unsigned int q = 0; q < fe_face_values.n_quadrature_points;
@@ -377,10 +369,8 @@ parametric_interpolation()
   Triangulation<2, 3> tria;
   GridGenerator::extract_boundary_mesh(flat_volume, tria);
   const TopoDS_Shape shape =
-    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-half_length, 0, 0),
-                                    gp_Dir(1, 0, 0)),
-                             R,
-                             2 * half_length)
+    BRepPrimAPI_MakeCylinder(
+      gp_Ax2(gp_Pnt(-half_length, 0, 0), gp_Dir(1, 0, 0)), R, 2 * half_length)
       .Shape();
   OpenCASCADE::ShapeProjector<2> projection(shape), parametric(shape);
   parametric.set_parametric(true);

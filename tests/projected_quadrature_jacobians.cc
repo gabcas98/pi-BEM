@@ -41,11 +41,10 @@
 using namespace ExactGeometry;
 
 template <int dim, int spacedim>
-using Parametrization =
-  std::function<void(const Point<dim> &,
-                     Point<spacedim> &,
-                     DerivativeForm<1, dim, spacedim> &,
-                     DerivativeForm<2, dim, spacedim> &)>;
+using Parametrization = std::function<void(const Point<dim> &,
+                                           Point<spacedim> &,
+                                           DerivativeForm<1, dim, spacedim> &,
+                                           DerivativeForm<2, dim, spacedim> &)>;
 
 
 // The field d(x) = (I + s K)(x - c), K the rotation by a right angle about
@@ -142,8 +141,7 @@ check_closest_point(const std::string                    &name,
   const double error = (J - J_fd).norm() / J.norm();
   deallog << name << ": |J| = " << std::setprecision(6) << J.norm()
           << ", difference to central differences "
-          << (error < 1e-8 ? std::string("below 1e-8") :
-                             std::to_string(error))
+          << (error < 1e-8 ? std::string("below 1e-8") : std::to_string(error))
           << std::endl;
 
   if constexpr (dim + 1 == spacedim)
@@ -155,10 +153,9 @@ check_closest_point(const std::string                    &name,
       Tensor<2, spacedim>       I;
       for (unsigned int i = 0; i < spacedim; ++i)
         I[i][i] = 1;
-      const double residual =
-        ((I + rho * unit_normal_jacobian(dS, d2S)) * J - I +
-         outer_product(n, n))
-          .norm();
+      const double residual = ((I + rho * unit_normal_jacobian(dS, d2S)) * J -
+                               I + outer_product(n, n))
+                                .norm();
       deallog << name << ": [I + rho J_n] J = I - n n "
               << (residual < 1e-12 ? std::string("holds") :
                                      std::to_string(residual))
@@ -171,14 +168,14 @@ check_closest_point(const std::string                    &name,
 // coordinates at a point of a cell, J V, against central differences.
 template <int dim, int spacedim>
 void
-check_cell(const std::string                                    &name,
-           const Mapping<dim, spacedim>                         &mapping,
+check_cell(const std::string                                          &name,
+           const Mapping<dim, spacedim>                               &mapping,
            const typename Triangulation<dim, spacedim>::cell_iterator &cell,
-           const Projector<dim, spacedim>                       &projector,
-           const Point<dim>                                     &xi)
+           const Projector<dim, spacedim> &projector,
+           const Point<dim>               &xi)
 {
   const FE_Nothing<dim, spacedim> fe;
-  auto cache = projector.create_cache();
+  auto                            cache = projector.create_cache();
   projector.reinit(mapping, cell, *cache);
 
   const auto project = [&](const Point<dim> &p) {
@@ -193,8 +190,8 @@ check_cell(const std::string                                    &name,
     x.cell       = cell;
     x.unit_point = p;
     x.point      = fe_values.quadrature_point(0);
-    x.jacobian = fe_values.jacobian(0);
-    x.hessian  = fe_values.jacobian_grad(0);
+    x.jacobian   = fe_values.jacobian(0);
+    x.hessian    = fe_values.jacobian_grad(0);
     return std::make_pair(projector.project(x, *cache), x);
   };
 
@@ -216,8 +213,7 @@ check_cell(const std::string                                    &name,
       size  = std::max(size, JV.norm());
     }
   deallog << name << ": projected point " << std::setprecision(5)
-          << result.point
-          << ", difference of J V to central differences "
+          << result.point << ", difference of J V to central differences "
           << (error / size < 1e-8 ? std::string("below 1e-8") :
                                     std::to_string(error / size))
           << std::endl;
@@ -341,19 +337,14 @@ main()
     const SphericalProjector<2, 3> along_field(shifted,
                                                1.25,
                                                Direction<3>(field));
-    const CylindricalProjector     cylinder(center,
-                                        Tensor<1, 3>({0.2, 0.1, 1}),
-                                        1);
+    const CylindricalProjector cylinder(center, Tensor<1, 3>({0.2, 0.1, 1}), 1);
     check_cell<2, 3>("sphere, closest point", mapping, cell, closest, xi);
     check_cell<2, 3>("sphere, mesh normal", mapping, cell, along_normal, xi);
     check_cell<2, 3>("sphere, vector field", mapping, cell, along_field, xi);
     const SphericalProjector<2, 3> along_vertex_normal(
       shifted, 1.25, Direction<3>::interpolated_mesh_normal(tria, mapping));
-    check_cell<2, 3>("sphere, interpolated normal",
-                     mapping,
-                     cell,
-                     along_vertex_normal,
-                     xi);
+    check_cell<2, 3>(
+      "sphere, interpolated normal", mapping, cell, along_vertex_normal, xi);
     check_cell<2, 3>("cylinder, closest point", mapping, cell, cylinder, xi);
   }
   {
@@ -378,10 +369,7 @@ main()
     check_cell<1, 2>("circle, vector field", mapping, cell, along_field, xi);
     const SphericalProjector<1, 2> along_vertex_normal(
       shifted, 1.4, Direction<2>::interpolated_mesh_normal(tria, mapping));
-    check_cell<1, 2>("circle, interpolated normal",
-                     mapping,
-                     cell,
-                     along_vertex_normal,
-                     xi);
+    check_cell<1, 2>(
+      "circle, interpolated normal", mapping, cell, along_vertex_normal, xi);
   }
 }

@@ -19,18 +19,6 @@
 // the energy norm of the flux error. The mixed problem is in
 // bem_problem_mixed.cc.
 
-#include "../include/bem_problem.h"
-#include "../include/cellwise_function.h"
-#include "../include/galerkin_calderon_fmm_operator.h"
-#include "../include/galerkin_panel_pair_integrator.h"
-#include "../include/laplace_kernel.h"
-#include "../include/screened_kernel.h"
-#include "../include/quasi_singular_kernel_integral.h"
-#include "../include/singular_kernel_integral.h"
-#include "../include/surface_potential_evaluator.h"
-#include "bem_problem_helpers.h"
-#include "mapping_hanging_constraints.h"
-
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -40,6 +28,18 @@
 #include <numeric>
 #include <sstream>
 #include <vector>
+
+#include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
+#include "../include/galerkin_calderon_fmm_operator.h"
+#include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/laplace_kernel.h"
+#include "../include/quasi_singular_kernel_integral.h"
+#include "../include/screened_kernel.h"
+#include "../include/singular_kernel_integral.h"
+#include "../include/surface_potential_evaluator.h"
+#include "bem_problem_helpers.h"
+#include "mapping_hanging_constraints.h"
 
 using namespace std;
 using bem_problem_internal::createFiniteElementPointer;
@@ -51,8 +51,7 @@ BEMProblem<dim>::initialize_calderon_dual_space()
   AssertThrow(dim == 3, ExcNotImplemented());
   const unsigned int auxiliary_order = 1;
   calderon_fe =
-    createFiniteElementPointer<dim - 1, dim, false>("FEQ",
-                                                     auxiliary_order);
+    createFiniteElementPointer<dim - 1, dim, false>("FEQ", auxiliary_order);
   calderon_dh.distribute_dofs(*calderon_fe);
   DoFRenumbering::component_wise(calderon_dh);
   DoFRenumbering::subdomain_wise(calderon_dh);
@@ -70,7 +69,9 @@ BEMProblem<dim>::initialize_calderon_dual_space()
 
   calderon_constraints.clear();
   if (exact_geometry)
-    ExactGeometry::make_mapping_hanging_node_constraints(*mapping, calderon_dh, calderon_constraints);
+    ExactGeometry::make_mapping_hanging_node_constraints(*mapping,
+                                                         calderon_dh,
+                                                         calderon_constraints);
   else
     DoFTools::make_hanging_node_constraints(calderon_dh, calderon_constraints);
   if (preconditioner_type == "CalderonDual")
@@ -94,8 +95,7 @@ BEMProblem<dim>::initialize_calderon_dual_space()
   constexpr double duplicate_tolerance = 1e-10;
   for (types::global_dof_index i = 0; i < calderon_dh.n_dofs(); ++i)
     for (types::global_dof_index j = i + 1; j < calderon_dh.n_dofs(); ++j)
-      if (support_points[i].distance(support_points[j]) <
-          duplicate_tolerance)
+      if (support_points[i].distance(support_points[j]) < duplicate_tolerance)
         {
           const types::global_dof_index root_i = root(i);
           const types::global_dof_index root_j = root(j);
@@ -116,16 +116,15 @@ BEMProblem<dim>::initialize_calderon_dual_space()
     if (!calderon_constraints.is_constrained(i))
       {
         auto &representative = class_representative[class_root[i]];
-        if (representative == numbers::invalid_dof_index ||
-            i < representative)
+        if (representative == numbers::invalid_dof_index || i < representative)
           representative = i;
       }
   for (types::global_dof_index i = 0; i < master.size(); ++i)
     {
       const auto representative = class_representative[class_root[i]];
-      master[i] = representative != numbers::invalid_dof_index ?
-                    representative :
-                    class_root[i];
+      master[i]                 = representative != numbers::invalid_dof_index ?
+                                    representative :
+                                    class_root[i];
     }
   pcout << "Initializing the Calderon dual space: duplicate points matched"
         << std::endl;
@@ -145,14 +144,13 @@ BEMProblem<dim>::initialize_calderon_dual_space()
   std::vector<types::global_dof_index> primary_indices(fe->dofs_per_cell);
   std::vector<types::global_dof_index> vertex_indices(
     calderon_fe->dofs_per_cell);
-  const QGauss<dim - 1> area_quadrature(
-    std::max(2U, mapping_degree + 1));
+  const QGauss<dim - 1>  area_quadrature(std::max(2U, mapping_degree + 1));
   FEValues<dim - 1, dim> area_values(*mapping,
                                      *calderon_fe,
                                      area_quadrature,
                                      update_JxW_values);
-  auto primary_cell = dh.begin_active();
-  auto vertex_cell  = calderon_dh.begin_active();
+  auto                   primary_cell = dh.begin_active();
+  auto                   vertex_cell  = calderon_dh.begin_active();
   for (; primary_cell != dh.end(); ++primary_cell, ++vertex_cell)
     {
       AssertThrow(vertex_cell != calderon_dh.end(), ExcInternalError());
@@ -190,18 +188,16 @@ BEMProblem<dim>::initialize_calderon_dual_space()
   calderon_hypersingular_matrix.reinit(calderon_sparsity_pattern);
   calderon_mass_matrix.reinit(calderon_sparsity_pattern);
 
-  pcout << "CalderonDual auxiliary FEQ(1) space: "
-        << calderon_dh.n_dofs() << " algebraic vertices, "
-        << merged_vertices << " duplicate CAD vertices constrained"
-        << std::endl;
+  pcout << "CalderonDual auxiliary FEQ(1) space: " << calderon_dh.n_dofs()
+        << " algebraic vertices, " << merged_vertices
+        << " duplicate CAD vertices constrained" << std::endl;
 }
 
 template <int dim>
 void
 BEMProblem<dim>::assemble_galerkin_system()
 {
-  AssertThrow(boundary_integral_formulation == "galerkin",
-              ExcInternalError());
+  AssertThrow(boundary_integral_formulation == "galerkin", ExcInternalError());
   if constexpr (dim == 3)
     {
       pcout << "Assembling Galerkin boundary operators with order "
@@ -216,7 +212,8 @@ BEMProblem<dim>::assemble_galerkin_system()
 
       AffineConstraints<double> hanging_node_constraints;
       if (exact_geometry)
-        ExactGeometry::make_mapping_hanging_node_constraints(*mapping, dh, hanging_node_constraints);
+        ExactGeometry::make_mapping_hanging_node_constraints(
+          *mapping, dh, hanging_node_constraints);
       else
         DoFTools::make_hanging_node_constraints(dh, hanging_node_constraints);
       hanging_node_constraints.close();
@@ -248,8 +245,7 @@ BEMProblem<dim>::assemble_galerkin_system()
       integrator.set_kinked_singular_order(
         galerkin_kinked_singular_quadrature_order,
         galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
+      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
       galerkin_rhs_from_fused_assembly =
         galerkin_fused_rhs && galerkin_fused_dirichlet_function != nullptr;
       if (galerkin_rhs_from_fused_assembly)
@@ -300,51 +296,47 @@ BEMProblem<dim>::assemble_galerkin_system()
         }
       {
         const auto &profile = integrator.rhs_profile();
-        pcout << (galerkin_rhs_from_fused_assembly ?
-                    "Galerkin V and RHS" :
-                    "Galerkin V")
+        pcout << (galerkin_rhs_from_fused_assembly ? "Galerkin V and RHS" :
+                                                     "Galerkin V")
               << " time on the slowest process: far pairs "
               << Utilities::MPI::max(profile.far_seconds, mpi_communicator)
               << " s, near and singular pairs "
               << Utilities::MPI::max(profile.near_seconds, mpi_communicator)
               << " s, of which evaluating the Dirichlet datum "
-              << Utilities::MPI::max(profile.function_seconds,
-                                     mpi_communicator)
+              << Utilities::MPI::max(profile.function_seconds, mpi_communicator)
               << " s" << std::endl
               << "  rule construction for uncached pairs "
               << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
-              << " s (" << Utilities::MPI::sum(double(profile.uncached_pairs),
-                                               mpi_communicator)
+              << " s ("
+              << Utilities::MPI::sum(double(profile.uncached_pairs),
+                                     mpi_communicator)
               << " pairs), kernel loops "
               << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
               << " s" << std::endl;
         if (light)
-          pcout << "  direct path: "
-                << Utilities::MPI::sum(double(profile.singular_leaves),
-                                       mpi_communicator)
-                << " singular leaves ("
-                << Utilities::MPI::sum(double(profile.singular_points),
-                                       mpi_communicator)
-                << " points) "
-                << Utilities::MPI::max(profile.singular_seconds,
-                                       mpi_communicator)
-                << " s, "
-                << Utilities::MPI::sum(double(profile.regular_leaves),
-                                       mpi_communicator)
-                << " regular leaves "
-                << Utilities::MPI::max(profile.regular_seconds,
-                                       mpi_communicator)
-                << " s" << std::endl
-                << "  cell geometry at "
-                << Utilities::MPI::sum(double(profile.geometry_points),
-                                       mpi_communicator)
-                << " points "
-                << Utilities::MPI::max(profile.geometry_seconds,
-                                       mpi_communicator)
-                << " s, shape values "
-                << Utilities::MPI::max(profile.shape_seconds,
-                                       mpi_communicator)
-                << " s" << std::endl;
+          pcout
+            << "  direct path: "
+            << Utilities::MPI::sum(double(profile.singular_leaves),
+                                   mpi_communicator)
+            << " singular leaves ("
+            << Utilities::MPI::sum(double(profile.singular_points),
+                                   mpi_communicator)
+            << " points) "
+            << Utilities::MPI::max(profile.singular_seconds, mpi_communicator)
+            << " s, "
+            << Utilities::MPI::sum(double(profile.regular_leaves),
+                                   mpi_communicator)
+            << " regular leaves "
+            << Utilities::MPI::max(profile.regular_seconds, mpi_communicator)
+            << " s" << std::endl
+            << "  cell geometry at "
+            << Utilities::MPI::sum(double(profile.geometry_points),
+                                   mpi_communicator)
+            << " points "
+            << Utilities::MPI::max(profile.geometry_seconds, mpi_communicator)
+            << " s, shape values "
+            << Utilities::MPI::max(profile.shape_seconds, mpi_communicator)
+            << " s" << std::endl;
       }
       pcout << "Galerkin V near-singular adaptive pairs/leaves: "
             << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
@@ -357,12 +349,11 @@ BEMProblem<dim>::assemble_galerkin_system()
         {
           calderon_hypersingular_matrix = 0.0;
           calderon_mass_matrix          = 0.0;
-          integrator.assemble_weak_hypersingular(
-            dh,
-            hanging_node_constraints,
-            calderon_hypersingular_matrix,
-            galerkin_quadrature_order,
-            this_mpi_process);
+          integrator.assemble_weak_hypersingular(dh,
+                                                 hanging_node_constraints,
+                                                 calderon_hypersingular_matrix,
+                                                 galerkin_quadrature_order,
+                                                 this_mpi_process);
           integrator.assemble_mass_matrix(dh,
                                           hanging_node_constraints,
                                           calderon_mass_matrix,
@@ -371,14 +362,13 @@ BEMProblem<dim>::assemble_galerkin_system()
           calderon_hypersingular_matrix.compress(VectorOperation::add);
           calderon_mass_matrix.compress(VectorOperation::add);
           TrilinosWrappers::MPI::Vector constant_trace(this_cpu_set,
-                                                        mpi_communicator);
+                                                       mpi_communicator);
           TrilinosWrappers::MPI::Vector constant_image(this_cpu_set,
-                                                        mpi_communicator);
+                                                       mpi_communicator);
           for (const auto i : this_cpu_set)
             constant_trace[i] = 1.0;
           constant_trace.compress(VectorOperation::insert);
-          calderon_hypersingular_matrix.vmult(constant_image,
-                                              constant_trace);
+          calderon_hypersingular_matrix.vmult(constant_image, constant_trace);
           pcout << "Assembled weak hypersingular W and coupling mass M for "
                    "Calderon operator preconditioning"
                 << std::endl;
@@ -415,25 +405,23 @@ BEMProblem<dim>::assemble_galerkin_system()
             calderon_hypersingular_matrix,
             galerkin_quadrature_order,
             this_mpi_process);
-          auxiliary_integrator.assemble_mass_matrix(
-            calderon_dh,
-            calderon_constraints,
-            calderon_mass_matrix,
-            galerkin_quadrature_order,
-            this_mpi_process);
+          auxiliary_integrator.assemble_mass_matrix(calderon_dh,
+                                                    calderon_constraints,
+                                                    calderon_mass_matrix,
+                                                    galerkin_quadrature_order,
+                                                    this_mpi_process);
           calderon_hypersingular_matrix.compress(VectorOperation::add);
           calderon_mass_matrix.compress(VectorOperation::add);
 
           TrilinosWrappers::MPI::Vector constant_trace(calderon_cpu_set,
-                                                        mpi_communicator);
+                                                       mpi_communicator);
           TrilinosWrappers::MPI::Vector constant_image(calderon_cpu_set,
-                                                        mpi_communicator);
+                                                       mpi_communicator);
           for (const auto i : calderon_cpu_set)
             if (!calderon_constraints.is_constrained(i))
               constant_trace[i] = 1.0;
           constant_trace.compress(VectorOperation::insert);
-          calderon_hypersingular_matrix.vmult(constant_image,
-                                              constant_trace);
+          calderon_hypersingular_matrix.vmult(constant_image, constant_trace);
           pcout << "Assembled auxiliary weak hypersingular W and mass M for "
                    "P0/P1 CalderonDual"
                 << std::endl;
@@ -460,17 +448,16 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
   Teuchos::TimeMonitor LocalTimer(*AssembleTime);
   if constexpr (dim == 3)
     {
-      pcout << "Setting up the Galerkin FMM: order "
-            << fma.truncation_order() << ", opening criterion "
-            << fma.opening_criterion() << ", at most "
-            << fma.points_per_leaf()
-            << " points per leaf; quadrature order "
+      pcout << "Setting up the Galerkin FMM: order " << fma.truncation_order()
+            << ", opening criterion " << fma.opening_criterion() << ", at most "
+            << fma.points_per_leaf() << " points per leaf; quadrature order "
             << galerkin_quadrature_order << ", near field with singular order "
             << galerkin_singular_quadrature_order << " using "
             << galerkin_singular_quadrature << std::endl;
       AffineConstraints<double> hanging_node_constraints;
       if (exact_geometry)
-        ExactGeometry::make_mapping_hanging_node_constraints(*mapping, dh, hanging_node_constraints);
+        ExactGeometry::make_mapping_hanging_node_constraints(
+          *mapping, dh, hanging_node_constraints);
       else
         DoFTools::make_hanging_node_constraints(dh, hanging_node_constraints);
       hanging_node_constraints.close();
@@ -500,16 +487,15 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       integrator.set_kinked_singular_order(
         galerkin_kinked_singular_quadrature_order,
         galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
+      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
 
       GalerkinFMMOperator::AdditionalData data;
-      data.quadrature_order         = galerkin_quadrature_order;
-      data.near_distance_ratio      = std::max(galerkin_near_singular_distance_ratio,
-                                               galerkin_kinked_distance_ratio);
-      data.fmm.order                = fma.truncation_order();
-      data.fmm.theta                = fma.opening_criterion();
-      data.fmm.max_points_per_leaf  = fma.points_per_leaf();
+      data.quadrature_order    = galerkin_quadrature_order;
+      data.near_distance_ratio = std::max(galerkin_near_singular_distance_ratio,
+                                          galerkin_kinked_distance_ratio);
+      data.fmm.order           = fma.truncation_order();
+      data.fmm.theta           = fma.opening_criterion();
+      data.fmm.max_points_per_leaf = fma.points_per_leaf();
       // The near field of the right-hand sides is integrated together with
       // that of the operator: the double layer of the Dirichlet datum, and
       // the manufactured single layer when it is used.
@@ -533,37 +519,36 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       galerkin_fmm->print_statistics(pcout.get_stream());
       // Where the near field spends its time, as for the dense assembly.
       const auto &profile = integrator.rhs_profile();
-      pcout << "  near field on the slowest process: rule construction "
-            << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
-            << " s (" << Utilities::MPI::sum(double(profile.uncached_pairs),
-                                             mpi_communicator)
-            << " pairs), kernel loops "
-            << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
-            << " s, Dirichlet datum "
-            << Utilities::MPI::max(profile.function_seconds, mpi_communicator)
-            << " s (" << Utilities::MPI::sum(double(profile.function_calls),
-                                             mpi_communicator)
-            << " evaluations)" << std::endl
-            << "  singular leaves "
-            << Utilities::MPI::sum(double(profile.singular_leaves),
-                                   mpi_communicator)
-            << " ("
-            << Utilities::MPI::sum(double(profile.singular_points),
-                                   mpi_communicator)
-            << " points) "
-            << Utilities::MPI::max(profile.singular_seconds, mpi_communicator)
-            << " s, regular leaves "
-            << Utilities::MPI::sum(double(profile.regular_leaves),
-                                   mpi_communicator)
-            << ' '
-            << Utilities::MPI::max(profile.regular_seconds, mpi_communicator)
-            << " s; near-singular adaptive pairs/leaves "
-            << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
-                                   mpi_communicator)
-            << '/'
-            << Utilities::MPI::sum(integrator.n_near_singular_leaves(),
-                                   mpi_communicator)
-            << std::endl;
+      pcout
+        << "  near field on the slowest process: rule construction "
+        << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
+        << " s ("
+        << Utilities::MPI::sum(double(profile.uncached_pairs), mpi_communicator)
+        << " pairs), kernel loops "
+        << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
+        << " s, Dirichlet datum "
+        << Utilities::MPI::max(profile.function_seconds, mpi_communicator)
+        << " s ("
+        << Utilities::MPI::sum(double(profile.function_calls), mpi_communicator)
+        << " evaluations)" << std::endl
+        << "  singular leaves "
+        << Utilities::MPI::sum(double(profile.singular_leaves),
+                               mpi_communicator)
+        << " ("
+        << Utilities::MPI::sum(double(profile.singular_points),
+                               mpi_communicator)
+        << " points) "
+        << Utilities::MPI::max(profile.singular_seconds, mpi_communicator)
+        << " s, regular leaves "
+        << Utilities::MPI::sum(double(profile.regular_leaves), mpi_communicator)
+        << ' ' << Utilities::MPI::max(profile.regular_seconds, mpi_communicator)
+        << " s; near-singular adaptive pairs/leaves "
+        << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
+                               mpi_communicator)
+        << '/'
+        << Utilities::MPI::sum(integrator.n_near_singular_leaves(),
+                               mpi_communicator)
+        << std::endl;
     }
   else
     AssertThrow(false, ExcMessage("The Galerkin FMM supports 3D only."));
@@ -575,18 +560,18 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
   const Function<dim> &dirichlet_function,
   const Function<dim> *exact_gradient)
 {
-  AssertThrow(boundary_integral_formulation == "galerkin",
-              ExcInternalError());
+  AssertThrow(boundary_integral_formulation == "galerkin", ExcInternalError());
   if constexpr (dim == 3)
     {
       // The fused assembly has already added the double-layer part.
-      const bool from_fused = galerkin_rhs_from_fused_assembly;
+      const bool from_fused            = galerkin_rhs_from_fused_assembly;
       galerkin_rhs_from_fused_assembly = false;
       if (!from_fused)
         exact_regularized_dirichlet_rhs = 0.0;
       AffineConstraints<double> hanging_node_constraints;
       if (exact_geometry)
-        ExactGeometry::make_mapping_hanging_node_constraints(*mapping, dh, hanging_node_constraints);
+        ExactGeometry::make_mapping_hanging_node_constraints(
+          *mapping, dh, hanging_node_constraints);
       else
         DoFTools::make_hanging_node_constraints(dh, hanging_node_constraints);
       hanging_node_constraints.close();
@@ -617,10 +602,9 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
       integrator.set_kinked_singular_order(
         galerkin_kinked_singular_quadrature_order,
         galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
+      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
       const QGauss<2> mass_quadrature(galerkin_quadrature_order);
-      FEValues<2, 3> mass_values(*mapping,
+      FEValues<2, 3>  mass_values(*mapping,
                                  *fe,
                                  mass_quadrature,
                                  update_values | update_quadrature_points |
@@ -628,48 +612,49 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
       if (galerkin_fmm)
         galerkin_fmm->double_layer_rhs(exact_regularized_dirichlet_rhs);
       else if (!from_fused)
-      {
-      integrator.assemble_double_layer_rhs(dh,
-                                           hanging_node_constraints,
-                                           exact_regularized_dirichlet_rhs,
-                                           galerkin_quadrature_order,
-                                           dirichlet_function,
-                                           this_mpi_process,
-                                           dirichlet_rhs_treatment !=
-                                             "nodal");
-      {
-        const auto &profile = integrator.rhs_profile();
-        pcout << "Galerkin RHS time on the slowest process: far pairs "
+        {
+          integrator.assemble_double_layer_rhs(dh,
+                                               hanging_node_constraints,
+                                               exact_regularized_dirichlet_rhs,
+                                               galerkin_quadrature_order,
+                                               dirichlet_function,
+                                               this_mpi_process,
+                                               dirichlet_rhs_treatment !=
+                                                 "nodal");
+          {
+            const auto &profile = integrator.rhs_profile();
+            pcout
+              << "Galerkin RHS time on the slowest process: far pairs "
               << Utilities::MPI::max(profile.far_seconds, mpi_communicator)
               << " s, near and singular pairs "
               << Utilities::MPI::max(profile.near_seconds, mpi_communicator)
               << " s, of which evaluating the Dirichlet datum "
-              << Utilities::MPI::max(profile.function_seconds,
+              << Utilities::MPI::max(profile.function_seconds, mpi_communicator)
+              << " s ("
+              << Utilities::MPI::sum(double(profile.function_calls),
                                      mpi_communicator)
-              << " s (" << Utilities::MPI::sum(double(profile.function_calls),
-                                               mpi_communicator)
               << " evaluations)" << std::endl
               << "  rule construction for uncached pairs "
               << Utilities::MPI::max(profile.setup_seconds, mpi_communicator)
-              << " s (" << Utilities::MPI::sum(double(profile.uncached_pairs),
-                                               mpi_communicator)
+              << " s ("
+              << Utilities::MPI::sum(double(profile.uncached_pairs),
+                                     mpi_communicator)
               << " pairs), kernel loops "
               << Utilities::MPI::max(profile.kernel_seconds, mpi_communicator)
               << " s" << std::endl;
-      }
-      pcout << "Galerkin RHS near-singular adaptive pairs/leaves: "
-            << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
-                                   mpi_communicator)
-            << '/'
-            << Utilities::MPI::sum(integrator.n_near_singular_leaves(),
-                                   mpi_communicator)
-            << std::endl;
-      }
+          }
+          pcout << "Galerkin RHS near-singular adaptive pairs/leaves: "
+                << Utilities::MPI::sum(integrator.n_near_singular_pairs(),
+                                       mpi_communicator)
+                << '/'
+                << Utilities::MPI::sum(integrator.n_near_singular_leaves(),
+                                       mpi_communicator)
+                << std::endl;
+        }
 
       if (dirichlet_rhs_treatment == "nodal")
         {
-          std::vector<types::global_dof_index> test_indices(
-            fe->dofs_per_cell);
+          std::vector<types::global_dof_index> test_indices(fe->dofs_per_cell);
           for (const auto &test_cell : dh.active_cell_iterators())
             {
               if (test_cell->subdomain_id() != this_mpi_process)
@@ -679,11 +664,10 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
               mass_values.reinit(test_cell);
               for (unsigned int q = 0; q < mass_quadrature.size(); ++q)
                 for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                  local_rhs[i] +=
-                    0.5 * mass_values.shape_value(i, q) *
-                    on_cell(dirichlet_function, test_cell)
-                      .value(mass_values.quadrature_point(q)) *
-                    mass_values.JxW(q);
+                  local_rhs[i] += 0.5 * mass_values.shape_value(i, q) *
+                                  on_cell(dirichlet_function, test_cell)
+                                    .value(mass_values.quadrature_point(q)) *
+                                  mass_values.JxW(q);
 
               local_rhs *= -1.0;
               test_cell->get_dof_indices(test_indices);
@@ -698,8 +682,8 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
         // With the FMM the matrix is not formed.
         const auto   old_precision = pcout.get_stream().precision();
         const double rhs_norm      = exact_regularized_dirichlet_rhs.l2_norm();
-        pcout << std::setprecision(16)
-              << "Galerkin assembly check: |b| " << rhs_norm << ", |V|_F ";
+        pcout << std::setprecision(16) << "Galerkin assembly check: |b| "
+              << rhs_norm << ", |V|_F ";
         if (galerkin_fmm)
           pcout << "not formed (FMM)";
         else
@@ -721,13 +705,12 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
           if (galerkin_fmm)
             galerkin_fmm->manufactured_rhs(manufactured_rhs);
           else
-            integrator.assemble_single_layer_flux_rhs(
-              dh,
-              hanging_node_constraints,
-              manufactured_rhs,
-              galerkin_quadrature_order,
-              *exact_gradient,
-              this_mpi_process);
+            integrator.assemble_single_layer_flux_rhs(dh,
+                                                      hanging_node_constraints,
+                                                      manufactured_rhs,
+                                                      galerkin_quadrature_order,
+                                                      *exact_gradient,
+                                                      this_mpi_process);
           manufactured_rhs.compress(VectorOperation::add);
           // The regularized assembly carries an overall sign, so compare the
           // two on the same footing before reporting their distance.
@@ -804,8 +787,7 @@ BEMProblem<dim>::compute_energy_norm_error(
       integrator.set_kinked_singular_order(
         galerkin_kinked_singular_quadrature_order,
         galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
+      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
       const double kappa = galerkin_screening();
 
       // Per-cell quadrature data, computed once. The overwhelming majority of
@@ -821,16 +803,16 @@ BEMProblem<dim>::compute_energy_norm_error(
                                     update_values | update_normal_vectors |
                                       update_quadrature_points |
                                       update_JxW_values);
-      const Vector<double>                 localized(dphi_dn);
+      const Vector<double>   localized(dphi_dn);
       std::vector<types::global_dof_index> indices(fe->dofs_per_cell);
 
-      std::vector<cell_it>                      cells;
-      std::vector<std::vector<double>>          coefficients;
-      std::vector<std::vector<Point<dim>>>      points;
-      std::vector<std::vector<double>>          jxw;
-      std::vector<std::vector<double>>          error_values;
-      std::vector<std::vector<double>>          discrete_values;
-      Vector<double>                            gradient(dim);
+      std::vector<cell_it>                 cells;
+      std::vector<std::vector<double>>     coefficients;
+      std::vector<std::vector<Point<dim>>> points;
+      std::vector<std::vector<double>>     jxw;
+      std::vector<std::vector<double>>     error_values;
+      std::vector<std::vector<double>>     discrete_values;
+      Vector<double>                       gradient(dim);
       for (const auto &cell : dh.active_cell_iterators())
         {
           values.reinit(cell);
@@ -847,8 +829,8 @@ BEMProblem<dim>::compute_energy_norm_error(
             {
               cell_points[q] = values.quadrature_point(q);
               cell_jxw[q]    = values.JxW(q);
-              on_cell(exact_gradient, cell).vector_value(cell_points[q],
-                                                         gradient);
+              on_cell(exact_gradient, cell)
+                .vector_value(cell_points[q], gradient);
               Tensor<1, dim> normal = values.normal_vector(q);
               const double   norm   = normal.norm();
               AssertThrow(norm > 1e-14,
@@ -896,9 +878,13 @@ BEMProblem<dim>::compute_energy_norm_error(
             {
               if (cells[i]->subdomain_id() != this_mpi_process)
                 continue;
-              local_diagonal += integrator.integrate_error_energy(
-                cells[i], cells[i], galerkin_quadrature_order, field,
-                coefficients[i], coefficients[i]);
+              local_diagonal +=
+                integrator.integrate_error_energy(cells[i],
+                                                  cells[i],
+                                                  galerkin_quadrature_order,
+                                                  field,
+                                                  coefficients[i],
+                                                  coefficients[i]);
               for (std::size_t j = i + 1; j < cells.size(); ++j)
                 {
                   if (integrator.is_far_regular_pair(cells[i], cells[j]))
@@ -906,8 +892,7 @@ BEMProblem<dim>::compute_energy_norm_error(
                       double pair_sum = 0.0;
                       for (unsigned int qx = 0; qx < n_q; ++qx)
                         {
-                          const double left =
-                            values_at_q[i][qx] * jxw[i][qx];
+                          const double left = values_at_q[i][qx] * jxw[i][qx];
                           if (left == 0.0)
                             continue;
                           for (unsigned int qy = 0; qy < n_q; ++qy)
@@ -925,8 +910,12 @@ BEMProblem<dim>::compute_energy_norm_error(
                     }
                   else
                     local_near += 2.0 * integrator.integrate_error_energy(
-                      cells[i], cells[j], galerkin_quadrature_order, field,
-                      coefficients[i], coefficients[j]);
+                                          cells[i],
+                                          cells[j],
+                                          galerkin_quadrature_order,
+                                          field,
+                                          coefficients[i],
+                                          coefficients[j]);
                 }
             }
           diagonal = Utilities::MPI::sum(local_diagonal, mpi_communicator);
@@ -965,10 +954,10 @@ template void
 BEMProblem<3>::assemble_galerkin_system();
 template void
 BEMProblem<2>::setup_galerkin_fmm(const Function<2> *dirichlet_function,
-                                    const Function<2> *exact_gradient);
+                                  const Function<2> *exact_gradient);
 template void
 BEMProblem<3>::setup_galerkin_fmm(const Function<3> *dirichlet_function,
-                                    const Function<3> *exact_gradient);
+                                  const Function<3> *exact_gradient);
 template void
 BEMProblem<2>::assemble_exact_galerkin_dirichlet_rhs(
   const Function<2> &dirichlet_function,
@@ -980,8 +969,8 @@ BEMProblem<3>::assemble_exact_galerkin_dirichlet_rhs(
 template double
 BEMProblem<2>::compute_energy_norm_error(
   const TrilinosWrappers::MPI::Vector &dphi_dn,
-  const Function<2>                 &exact_gradient) const;
+  const Function<2>                   &exact_gradient) const;
 template double
 BEMProblem<3>::compute_energy_norm_error(
   const TrilinosWrappers::MPI::Vector &dphi_dn,
-  const Function<3>                 &exact_gradient) const;
+  const Function<3>                   &exact_gradient) const;

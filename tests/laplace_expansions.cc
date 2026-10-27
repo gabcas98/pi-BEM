@@ -17,9 +17,10 @@
 // dipoles against the direct sum and against the original classes
 // MultipoleExpansion and LocalExpansion.
 
+#include "laplace_expansions.h"
+
 #include <random>
 
-#include "laplace_expansions.h"
 #include "local_expansion.h"
 #include "multipole_expansion.h"
 #include "tests.h"
@@ -41,8 +42,8 @@ main()
     double sum = 0;
     for (unsigned int n = 0; n <= p; ++n)
       for (int m = -int(n); m <= int(n); ++m)
-        sum += (std::conj(LE::get(R.data(), n, m)) * LE::get(I.data(), n, m))
-                 .real();
+        sum +=
+          (std::conj(LE::get(R.data(), n, m)) * LE::get(I.data(), n, m)).real();
     deallog << "addition theorem, relative error below 1e-13: "
             << (std::abs(sum * (x - y).norm() - 1.) < 1e-13 ? "yes" : "no")
             << std::endl;
@@ -102,14 +103,14 @@ main()
               {
                 const Tensor<1, 3> r    = t - y[i];
                 const double       dist = r.norm();
-                exact += dipoles ? (r * d[i]) / (dist * dist * dist) :
-                                   q[i] / dist;
+                exact +=
+                  dipoles ? (r * d[i]) / (dist * dist * dist) : q[i] / dist;
               }
-            error = std::max(error,
-                             std::abs(LE::evaluate_local(w,
-                                                         L.data(),
-                                                         t - target_leaf) -
-                                      exact));
+            error =
+              std::max(error,
+                       std::abs(
+                         LE::evaluate_local(w, L.data(), t - target_leaf) -
+                         exact));
             scale = std::max(scale, std::abs(exact));
           }
         // Loose bound on the accuracy at this offset, from the convergence
@@ -142,13 +143,11 @@ main()
             for (const auto &t : x)
               difference =
                 std::max(difference,
-                         std::abs(l_old.Evaluate(t) -
-                                  LE::evaluate_local(w,
-                                                     L.data(),
-                                                     t - target_leaf)));
+                         std::abs(
+                           l_old.Evaluate(t) -
+                           LE::evaluate_local(w, L.data(), t - target_leaf)));
             deallog << "  same as the original classes to 1e-12: "
-                    << (difference < 1e-12 * scale ? "yes" : "no")
-                    << std::endl;
+                    << (difference < 1e-12 * scale ? "yes" : "no") << std::endl;
           }
       }
 }

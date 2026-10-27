@@ -77,7 +77,7 @@ CachedNormalToMeshProjectionManifold::project_to_manifold(
                          u[0] * v[1] - u[1] * v[0]};
     return Tensor<1, 3>(c);
   };
-  const auto unit = [](const Tensor<1, 3> &n) { return n / n.norm(); };
+  const auto   unit = [](const Tensor<1, 3> &n) { return n / n.norm(); };
   Tensor<1, 3> average_normal;
   const auto  &p = surrounding_points;
   switch (p.size())
@@ -147,7 +147,8 @@ CachedNormalToMeshProjectionManifold::project_to_manifold(
     }
   const gp_Pnt P0(candidate[0], candidate[1], candidate[2]);
   const gp_Lin line(
-    gp_Ax1(P0, gp_Dir(average_normal[0], average_normal[1], average_normal[2])));
+    gp_Ax1(P0,
+           gp_Dir(average_normal[0], average_normal[1], average_normal[2])));
   intersector->Perform(line, -RealLast(), +RealLast());
   AssertThrow(intersector->IsDone(), ExcMessage("Could not project point."));
   double   minimum = 1e7;

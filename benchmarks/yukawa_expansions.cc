@@ -24,6 +24,8 @@
 //
 // ---------------------------------------------------------------------
 
+#include "yukawa_expansions.h"
+
 #include <deal.II/base/point.h>
 #include <deal.II/base/tensor.h>
 
@@ -33,8 +35,6 @@
 #include <iostream>
 #include <random>
 #include <vector>
-
-#include "yukawa_expansions.h"
 
 using namespace dealii;
 namespace YE = YukawaExpansions;
@@ -80,10 +80,8 @@ main()
         YE::bessel_i<double>(N, z, i.data());
         YE::bessel_k<double>(N, z, k.data());
         for (unsigned int n = 0; n < N; ++n)
-          worst = std::max(worst,
-                           std::abs((i[n] * k[n + 1] + i[n + 1] * k[n]) * z *
-                                      z -
-                                    1.));
+          worst = std::max(
+            worst, std::abs((i[n] * k[n + 1] + i[n + 1] * k[n]) * z * z - 1.));
       }
     std::cout << "Wronskian, largest relative error: " << worst << std::endl;
   }
@@ -105,10 +103,8 @@ main()
           sum += 4 * M_PI * kappa * i[n] * k[n] * Yx[YE::index(n, m)] *
                  Yy[YE::index(n, m)];
       const double r = (x - y).norm();
-      std::cout << "addition theorem, kappa " << kappa
-                << ", relative error: "
-                << std::abs(sum / (std::exp(-kappa * r) / r) - 1.)
-                << std::endl;
+      std::cout << "addition theorem, kappa " << kappa << ", relative error: "
+                << std::abs(sum / (std::exp(-kappa * r) / r) - 1.) << std::endl;
     }
 
   const double rho_leaf = std::sqrt(3.) / 2, rho_parent = std::sqrt(3.);
@@ -215,7 +211,7 @@ main()
        {Tensor<1, 3>({4., 4., 2.}), Tensor<1, 3>({6., 4., 3.})})
     {
       const Point<3> target_parent = source_parent + offset;
-      const Point<3> target_leaf = target_parent + Point<3>(0.5, 0.5, 0.5);
+      const Point<3> target_leaf   = target_parent + Point<3>(0.5, 0.5, 0.5);
       std::vector<Point<3>> x(20);
       for (auto &t : x)
         t = target_leaf + Point<3>(u(rng), u(rng), u(rng));
@@ -275,8 +271,8 @@ main()
                         const double       g  = std::exp(-kappa * rn) / rn;
                         laplace += dipoles ? d[j].norm() / (rn * rn) :
                                              std::abs(q[j]) / rn;
-                        direct += dipoles ? g * (1 + kappa * rn) /
-                                              (rn * rn) * (d[j] * r) :
+                        direct += dipoles ? g * (1 + kappa * rn) / (rn * rn) *
+                                              (d[j] * r) :
                                             q[j] * g;
                       }
                     const double fmm = YE::evaluate_local(
@@ -297,9 +293,9 @@ main()
   // 5. Cost of the translations
   for (const unsigned int p : {8u, 10u, 12u})
     {
-      const unsigned int  nc = YE::n_coefficients(p);
-      const YE::Operators operators(p);
-      std::vector<double> Tz(operators.z_translation_size()), T(nc * nc);
+      const unsigned int     nc = YE::n_coefficients(p);
+      const YE::Operators    operators(p);
+      std::vector<double>    Tz(operators.z_translation_size()), T(nc * nc);
       constexpr unsigned int B = 8;
       std::vector<double>    X(nc * B, 1.), Y(nc * B, 0.), work(nc * B);
       YE::Operators::Angles  angles;

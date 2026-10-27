@@ -98,7 +98,7 @@ namespace
           {
             const Point<3>    &p = quadrature.get_points()[q];
             const Tensor<1, 3> m = sigma * quadrature.get_normal_vectors()[q];
-            const double  data_u = u(p), data_dudn = grad_u(p) * m;
+            const double       data_u = u(p), data_dudn = grad_u(p) * m;
             const Point<3>    &y =
               surface_data ? quadrature.get_mesh_points()[q] : p;
             const Tensor<1, 3> n =
@@ -175,13 +175,13 @@ main(int argc, char **argv)
                 std::make_pair(std::string("analytic"), &analytic)})
             for (const unsigned int n : {16u, 24u})
               {
-                const Results r = integrate(domain.tria,
+                const Results r     = integrate(domain.tria,
                                             mapping,
                                             *projector,
                                             n,
                                             sigma,
                                             name == "mesh_surface_data");
-                double gauss = 0, representation = 0;
+                double        gauss = 0, representation = 0;
                 for (unsigned int k = 0; k < targets.size(); ++k)
                   {
                     gauss = std::max(gauss, std::abs(r.gauss[k] + 1));

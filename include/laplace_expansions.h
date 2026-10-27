@@ -112,10 +112,9 @@ namespace LaplaceExpansions
         if (m + 1 <= p)
           out[index(m + 1, m)] = r[2] * diagonal;
         for (unsigned int n = m + 2; n <= p; ++n)
-          out[index(n, m)] =
-            ((2. * n - 1.) * r[2] * out[index(n - 1, m)] -
-             r2 * out[index(n - 2, m)]) /
-            double((n - m) * (n + m));
+          out[index(n, m)] = ((2. * n - 1.) * r[2] * out[index(n - 1, m)] -
+                              r2 * out[index(n - 2, m)]) /
+                             double((n - m) * (n + m));
       }
   }
 
@@ -225,10 +224,10 @@ namespace LaplaceExpansions
       return;
     regular_harmonics(w.p - 1, y_minus_z, w.harmonics.data());
     // R_1^0(d) = d_z, R_1^1(d) = (d_x + i d_y) / 2, R_1^{-1} = -conj(R_1^1)
-    const complex r10(d[2], 0.);
-    const complex r11(0.5 * d[0], 0.5 * d[1]);
-    const complex r1m1 = -std::conj(r11);
-    const complex *R   = w.harmonics.data();
+    const complex  r10(d[2], 0.);
+    const complex  r11(0.5 * d[0], 0.5 * d[1]);
+    const complex  r1m1 = -std::conj(r11);
+    const complex *R    = w.harmonics.data();
     for (unsigned int n = 1; n <= w.p; ++n)
       for (int m = 0; m <= int(n); ++m)
         {
@@ -270,8 +269,8 @@ namespace LaplaceExpansions
       {
         psi += (L[index(n, 0)] * std::conj(w.harmonics[index(n, 0)])).real();
         for (unsigned int m = 1; m <= n; ++m)
-          psi += 2. *
-                 (L[index(n, m)] * std::conj(w.harmonics[index(n, m)])).real();
+          psi +=
+            2. * (L[index(n, m)] * std::conj(w.harmonics[index(n, m)])).real();
       }
     return psi;
   }
@@ -473,8 +472,8 @@ namespace LaplaceExpansions
           for (unsigned int n = 0; n <= p; ++n)
             {
               const unsigned int nk = n + k;
-              const double *hr = w.harmonics_re.data() + nk * nk + nk + l;
-              const double *hi = w.harmonics_im.data() + nk * nk + nk + l;
+              const double      *hr = w.harmonics_re.data() + nk * nk + nk + l;
+              const double      *hi = w.harmonics_im.data() + nk * nk + nk + l;
               for (int m = -int(n); m <= int(n); ++m)
                 {
                   tr[n * n + n + m] = sign * hr[m];
@@ -506,11 +505,11 @@ namespace LaplaceExpansions
     for (unsigned int r = 0; r < rows; ++r)
       {
         double        yr[B] = {}, yi[B] = {};
-        const double *tr    = T_re + r * columns;
-        const double *ti    = T_im + r * columns;
+        const double *tr = T_re + r * columns;
+        const double *ti = T_im + r * columns;
         for (unsigned int c = 0; c < columns; ++c)
           {
-            const double  a  = tr[c], b = ti[c];
+            const double  a = tr[c], b = ti[c];
             const double *xr = X_re + c * B;
             const double *xi = X_im + c * B;
 #pragma omp simd
@@ -559,10 +558,9 @@ namespace LaplaceExpansions
       for (unsigned int n = 0; n <= p; ++n)
         for (unsigned int m = 0; m <= n; ++m)
           {
-            const double norm =
-              (m > 0 ? std::sqrt(2.) : 1.) *
-              std::sqrt((2. * n + 1.) / (4. * M_PI) * factorial[n - m] /
-                        factorial[n + m]);
+            const double norm = (m > 0 ? std::sqrt(2.) : 1.) *
+                                std::sqrt((2. * n + 1.) / (4. * M_PI) *
+                                          factorial[n - m] / factorial[n + m]);
             const double sign = (m & 1) ? -1. : 1.;
             outgoing[index(n, m)] =
               (m > 0 ? 2. : 1.) * sign * factorial[n - m] / norm;

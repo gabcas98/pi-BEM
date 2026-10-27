@@ -71,13 +71,13 @@ public:
    * masses.
    */
   MixedCalderonPreconditioner(
-    const std::vector<Kind>                                   &kind,
-    const std::vector<types::global_dof_index>                &master,
-    const std::vector<unsigned int>                           &piece,
-    const SparseMatrix<double>                                &mass,
+    const std::vector<Kind>                                     &kind,
+    const std::vector<types::global_dof_index>                  &master,
+    const std::vector<unsigned int>                             &piece,
+    const SparseMatrix<double>                                  &mass,
     const std::function<Vector<double>(const Vector<double> &)> &single_layer,
-    Products                                                   products,
-    const bool                                                 lumped = false);
+    Products                                                     products,
+    const bool lumped = false);
 
   /// y = P r.
   void
@@ -119,16 +119,16 @@ private:
   Vector<double>
   inverse_master_mass(const Vector<double> &r) const;
 
-  const types::global_dof_index        n;
-  const std::vector<Kind>              kind;
+  const types::global_dof_index              n;
+  const std::vector<Kind>                    kind;
   const std::vector<types::global_dof_index> master;
-  const std::vector<unsigned int>      piece;
-  const Products                       products;
-  const bool                           lumped;
+  const std::vector<unsigned int>            piece;
+  const Products                             products;
+  const bool                                 lumped;
   /// The scale of the rank-one term of each piece, 1 / (1^T V 1).
   std::vector<double> alpha;
   /// The lumped masses of all indices, and summed onto the masters.
-  Vector<double> lumped_mass, master_mass;
+  Vector<double>                       lumped_mass, master_mass;
   std::vector<types::global_dof_index> flux_index, master_index;
   types::global_dof_index              n_flux = 0, n_masters = 0;
   SparsityPattern                      flux_pattern, master_pattern;

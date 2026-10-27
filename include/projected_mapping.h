@@ -18,7 +18,6 @@
 #include <deal.II/base/config.h>
 
 #include <deal.II/base/mpi.h>
-
 #include <deal.II/base/mutex.h>
 
 #include <deal.II/fe/mapping_q.h>
@@ -96,8 +95,9 @@ namespace ExactGeometry
       const ArrayView<Point<dim>> &unit_points) const override;
 
     virtual Point<spacedim>
-    get_center(const typename Triangulation<dim, spacedim>::cell_iterator &cell,
-               const bool map_barycenter_of_reference_cell = true) const override;
+    get_center(
+      const typename Triangulation<dim, spacedim>::cell_iterator &cell,
+      const bool map_barycenter_of_reference_cell = true) const override;
 
     /// A box that contains the exact cell: that of the mapping of the mesh
     /// and of the projections of a grid of points, enlarged by a percent.
@@ -147,7 +147,7 @@ namespace ExactGeometry
               DerivativeForm<1, dim, spacedim>       &D) const;
 
     private:
-      static constexpr unsigned int n_slots = 4;
+      static constexpr unsigned int          n_slots = 4;
       const ProjectedMapping<dim, spacedim> &mapping;
       std::array<std::unique_ptr<typename Projector<dim, spacedim>::Cache>,
                  n_slots>
@@ -178,9 +178,9 @@ namespace ExactGeometry
     virtual CellSimilarity::Similarity
     fill_fe_values(
       const typename Triangulation<dim, spacedim>::cell_iterator &cell,
-      const CellSimilarity::Similarity                            cell_similarity,
-      const Quadrature<dim>                                      &quadrature,
-      const typename Mapping<dim, spacedim>::InternalDataBase    &internal_data,
+      const CellSimilarity::Similarity                         cell_similarity,
+      const Quadrature<dim>                                   &quadrature,
+      const typename Mapping<dim, spacedim>::InternalDataBase &internal_data,
       internal::FEValuesImplementation::MappingRelatedData<dim, spacedim>
         &output_data) const override;
 
@@ -235,17 +235,17 @@ namespace ExactGeometry
     /// a cache that has been reinit for it.
     void
     evaluate(const typename Triangulation<dim, spacedim>::cell_iterator &cell,
-             const std::vector<Point<dim>>                    &unit_points,
-             typename Projector<dim, spacedim>::Cache         &cache,
-             std::vector<Point<spacedim>>                     &points,
-             std::vector<DerivativeForm<1, dim, spacedim>>    &jacobians) const;
+             const std::vector<Point<dim>>                 &unit_points,
+             typename Projector<dim, spacedim>::Cache      &cache,
+             std::vector<Point<spacedim>>                  &points,
+             std::vector<DerivativeForm<1, dim, spacedim>> &jacobians) const;
 
     const Projector<dim, spacedim>                *projector;
     std::unique_ptr<const MappingQ<dim, spacedim>> mesh_mapping;
 
     /// The cache of the functions without internal data.
     mutable std::unique_ptr<typename Projector<dim, spacedim>::Cache>
-                          shared_cache;
+                           shared_cache;
     mutable Threads::Mutex shared_cache_mutex;
   };
 

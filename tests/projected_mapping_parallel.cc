@@ -74,15 +74,14 @@ main(int argc, char **argv)
           a.reinit(cell);
           b.reinit(cell);
           for (unsigned int q = 0; q < quadrature.size(); ++q)
-            difference = std::max(difference,
-                                  a.quadrature_point(q).distance(
-                                    b.quadrature_point(q)));
+            difference =
+              std::max(difference,
+                       a.quadrature_point(q).distance(b.quadrature_point(q)));
         }
       difference = Utilities::MPI::max(difference, MPI_COMM_WORLD);
       deallog << "degree " << degree << ": largest difference of the points "
               << difference << ", deviations "
-              << (deviation_together == deviation_alone ? "equal" :
-                                                           "different")
+              << (deviation_together == deviation_alone ? "equal" : "different")
               << std::endl;
     }
 }

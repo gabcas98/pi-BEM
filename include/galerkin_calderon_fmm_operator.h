@@ -16,8 +16,11 @@
 #define galerkin_calderon_fmm_operator_h
 
 #include <deal.II/base/tensor.h>
+
 #include <deal.II/dofs/dof_handler.h>
+
 #include <deal.II/fe/mapping.h>
+
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/sparse_matrix.h>
@@ -145,11 +148,13 @@ public:
          const AffineConstraints<double>                         &constraints,
          const GalerkinPanelPairIntegrator<3>                    &integrator,
          const AdditionalData                                    &data,
-         NearFieldCache                                          *cache = nullptr);
+         NearFieldCache *cache = nullptr);
 
   /// dst = A src, whole vectors on every process; collective.
   void
-  vmult(const Operator op, Vector<double> &dst, const Vector<double> &src) const;
+  vmult(const Operator        op,
+        Vector<double>       &dst,
+        const Vector<double> &src) const;
 
   /// dst = V src or W src through the expansions of the preconditioner
   /// (AdditionalData::preconditioner_order), with the exact near field: a
@@ -258,25 +263,25 @@ private:
   bool       separate_preconditioner = false, separate_relaxed = false;
   /// The dipole sums use the expansions of the charges: the rows of the
   /// mixed problem then come from one pass, LaplaceFMM::evaluate_mixed().
-  bool       fused_rows = false;
+  bool fused_rows = false;
 
   /// Corrections of the near pairs of this process, condensed.
   SparsityPattern      near_sparsity;
   SparseMatrix<double> near_single, near_double, near_hypersingular;
   Vector<double>       single_diagonal, hypersingular_diagonal;
 
-  unsigned long  n_near_pairs = 0;
+  unsigned long n_near_pairs = 0;
   /// Near pairs whose blocks came from the cache, and those integrated.
-  unsigned long  n_cached_pairs = 0, n_integrated_pairs = 0;
+  unsigned long n_cached_pairs = 0, n_integrated_pairs = 0;
   /// Near pairs whose blocks are those of a congruent pair (a translate).
-  unsigned long  n_congruent_pairs = 0;
+  unsigned long n_congruent_pairs = 0;
   /// With PIBEM_NEAR_PROFILE: the time of the exact blocks of the near
   /// pairs by type, summed over the processes (coincident, common edge,
   /// non-conforming edge, common vertex, close regular, other regular), the
   /// time of the corrections of the point sums, and the numbers of pairs.
   std::array<double, 7>        near_profile_seconds = {{0, 0, 0, 0, 0, 0, 0}};
   std::array<unsigned long, 6> near_profile_count   = {{0, 0, 0, 0, 0, 0}};
-  double         setup_geometry = 0, setup_tree = 0, setup_near = 0,
+  double setup_geometry = 0, setup_tree = 0, setup_near = 0,
          setup_near_imbalance = 0;
   /// Times and counts of the products by operator, of the rows, of the
   /// products of the preconditioner and of the relaxed rows.

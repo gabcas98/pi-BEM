@@ -141,7 +141,7 @@ protected:
   std::set<unsigned int> complex_problems;
 
   /// build the mesh, report its cost and stop before allocating the matrix
-  bool mesh_only;
+  bool         mesh_only;
   unsigned int initial_level = 0;
 
   const unsigned int n_mpi_processes;

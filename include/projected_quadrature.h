@@ -335,7 +335,7 @@ namespace ExactGeometry
                        const Direction<spacedim> &direction = {});
 
     virtual ProjectionResult<spacedim>
-    project(const MeshPoint<dim, spacedim>               &x,
+    project(const MeshPoint<dim, spacedim>           &x,
             typename Projector<dim, spacedim>::Cache &cache) const override;
 
     virtual UpdateFlags
@@ -384,7 +384,7 @@ namespace ExactGeometry
   {
   public:
     void
-    add(const types::manifold_id manifold_id,
+    add(const types::manifold_id        manifold_id,
         const Projector<dim, spacedim> &projector);
 
     virtual std::unique_ptr<typename Projector<dim, spacedim>::Cache>

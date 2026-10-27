@@ -134,10 +134,9 @@ namespace ExactGeometry
                        const DerivativeForm<2, dim, spacedim> &d2S)
   {
     const Tensor<2, dim> G_inverse = invert(gram(dS, dS));
-    return push_forward(dS,
-                        Tensor<2, dim>(-G_inverse *
-                                       contract(unit_normal(dS), d2S) *
-                                       G_inverse));
+    return push_forward(
+      dS,
+      Tensor<2, dim>(-G_inverse * contract(unit_normal(dS), d2S) * G_inverse));
   }
 
 
@@ -236,15 +235,14 @@ namespace ExactGeometry
     // refined face is the mean of those at its ends.
     if constexpr (dim == 2)
       for (unsigned int level = 0; level < triangulation.n_levels(); ++level)
-        for (const auto &cell : triangulation.active_cell_iterators_on_level(
-               level))
+        for (const auto &cell :
+             triangulation.active_cell_iterators_on_level(level))
           for (const unsigned int f : cell->face_indices())
             if (!cell->at_boundary(f) && cell->face(f)->has_children())
               {
-                const auto face = cell->face(f);
-                Tensor<1, spacedim> mean =
-                  normals[face->vertex_index(0)] +
-                  normals[face->vertex_index(1)];
+                const auto          face = cell->face(f);
+                Tensor<1, spacedim> mean = normals[face->vertex_index(0)] +
+                                           normals[face->vertex_index(1)];
                 normals[face->child(0)->vertex_index(1)] = mean / mean.norm();
               }
     for (const auto &n : normals)
@@ -371,10 +369,10 @@ namespace ExactGeometry
         // z = x + zeta d with |z - c| = R: a zeta^2 + 2 b zeta + c0 = 0. The
         // root of smaller magnitude is c0/q, with q/a the other one,
         // computed without cancellation.
-        const auto [d, J_d] = direction.evaluate(x);
-        const double a      = d * d;
-        const double b      = d * r;
-        const double c0     = (distance - radius) * (distance + radius);
+        const auto [d, J_d]       = direction.evaluate(x);
+        const double a            = d * d;
+        const double b            = d * r;
+        const double c0           = (distance - radius) * (distance + radius);
         const double discriminant = b * b - a * c0;
         if (discriminant >= 0.)
           {
@@ -432,12 +430,12 @@ namespace ExactGeometry
     const Tensor<1, 3> e = r / distance;
 
     ProjectionResult<3> result;
-    result.point    = point_on_axis + height * axis + radius * e;
-    result.normal   = e;
-    result.jacobian = outer_product(axis, axis) +
-                      (radius / distance) * (identity<3>() -
-                                             outer_product(axis, axis) -
-                                             outer_product(e, e));
+    result.point  = point_on_axis + height * axis + radius * e;
+    result.normal = e;
+    result.jacobian =
+      outer_product(axis, axis) +
+      (radius / distance) *
+        (identity<3>() - outer_product(axis, axis) - outer_product(e, e));
     return result;
   }
 
@@ -491,7 +489,7 @@ namespace ExactGeometry
     const typename Triangulation<dim, spacedim>::cell_iterator &cell,
     typename Projector<dim, spacedim>::Cache                   &cache) const
   {
-    auto &data = static_cast<CollectionCache<dim, spacedim> &>(cache);
+    auto      &data  = static_cast<CollectionCache<dim, spacedim> &>(cache);
     const auto found = index.find(cell->manifold_id());
     data.current     = (found == index.end()) ? data.none : found->second;
     if (data.current != data.none)
@@ -579,7 +577,7 @@ namespace ExactGeometry
         x.cell       = cell;
         x.unit_point = quadrature.point(q);
         x.point      = fe_values.quadrature_point(q);
-        x.jacobian = fe_values.jacobian(q);
+        x.jacobian   = fe_values.jacobian(q);
         if (with_hessians)
           x.hessian = fe_values.jacobian_grad(q);
 

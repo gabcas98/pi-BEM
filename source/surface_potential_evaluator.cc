@@ -1,10 +1,8 @@
 #include "../include/surface_potential_evaluator.h"
 
-#include "../include/cellwise_function.h"
-#include "../include/tensor_map_kernel.h"
-
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/quadrature_lib.h>
+
 #include <deal.II/fe/fe_values.h>
 
 #include <algorithm>
@@ -12,10 +10,13 @@
 #include <limits>
 #include <memory>
 
+#include "../include/cellwise_function.h"
+#include "../include/tensor_map_kernel.h"
+
 namespace
 {
   constexpr unsigned int maximum_nodes = 12;
-  using Basis = std::array<double, maximum_nodes>;
+  using Basis                          = std::array<double, maximum_nodes>;
 
   // Values, first and second derivatives of the Lagrange basis through the
   // given nodes, at t.
@@ -97,11 +98,11 @@ namespace
   // prefix and suffix products and their derivatives.
   void
   fast_basis(const std::vector<double> &data,
-               const unsigned int         n,
-               const double               t,
-               Basis                     *value,
-               Basis                     *first,
-               Basis                     *second)
+             const unsigned int         n,
+             const double               t,
+             Basis                     *value,
+             Basis                     *first,
+             Basis                     *second)
   {
     const double *x = data.data(), *w = data.data() + n;
     Basis         P, dP, d2P, S, dS, d2S;
@@ -201,8 +202,8 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
           nodes.push_back(point[0]);
       std::sort(nodes.begin(), nodes.end());
       const unsigned int n1 = nodes.size();
-      bool tensor = n1 * n1 == support.size() && n1 <= maximum_nodes;
-      const auto position = [&](const double x) {
+      bool       tensor     = n1 * n1 == support.size() && n1 <= maximum_nodes;
+      const auto position   = [&](const double x) {
         for (unsigned int a = 0; a < n1; ++a)
           if (std::abs(nodes[a] - x) < 1e-12)
             return a;
@@ -223,7 +224,7 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
       if (tensor)
         {
           const Point<2> probe(0.3141, 0.7182);
-          Basis v0, d0, s0, v1, d1, s1;
+          Basis          v0, d0, s0, v1, d1, s1;
           lagrange_basis(nodes, probe[0], v0, d0, s0);
           lagrange_basis(nodes, probe[1], v1, d1, s1);
           for (unsigned int k = 0; tensor && k < support.size(); ++k)
@@ -241,7 +242,7 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
 
   // Far-field rules, from the coarsest to the finest; evaluate() picks one
   // by the separation of the panel.
-  const std::array<unsigned int, 5> far_orders{{3, 4, 6, 8, 12}};
+  const std::array<unsigned int, 5>            far_orders{{3, 4, 6, 8, 12}};
   std::vector<std::unique_ptr<FEValues<2, 3>>> far_values;
   for (const unsigned int order : far_orders)
     far_values.push_back(std::make_unique<FEValues<2, 3>>(
@@ -266,7 +267,7 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
       CellData data;
-      data.cell = cell;
+      data.cell            = cell;
       const unsigned int n = lagrange_nodes.size();
       data.nodes.resize(n * n);
       const Mapping<2, 3> &nodal_mapping =
@@ -299,15 +300,15 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
         }
 
       // A generous bounding sphere: curved cells bulge between the nodes.
-      data.centre = geometry(data, Point<2>(0.5, 0.5)).point;
+      data.centre   = geometry(data, Point<2>(0.5, 0.5)).point;
       double radius = 0.0;
       for (unsigned int j = 0; j <= 4; ++j)
         for (unsigned int i = 0; i <= 4; ++i)
-          radius = std::max(radius,
-                            (geometry(data, Point<2>(0.25 * i, 0.25 * j))
-                               .point -
-                             data.centre)
-                              .norm());
+          radius =
+            std::max(radius,
+                     (geometry(data, Point<2>(0.25 * i, 0.25 * j)).point -
+                      data.centre)
+                       .norm());
       data.radius   = 1.05 * radius;
       data.diameter = 2.0 * data.radius;
 
@@ -367,9 +368,8 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
               // The reconstructed map must reproduce the library's.
               if (r + 1 == far_orders.size())
                 {
-                  const Geometry g =
-                    geometry(data, rule.point(q));
-                  const double deviation =
+                  const Geometry g = geometry(data, rule.point(q));
+                  const double   deviation =
                     std::max((g.point - s.point).norm() / data.diameter,
                              std::max((g.normal - s.normal).norm(),
                                       std::abs(g.jacobian * rule.weight(q) -
@@ -428,10 +428,18 @@ SurfacePotentialEvaluator::geometry(const CellData &data,
 {
   const unsigned int n = lagrange_nodes.size();
   Basis              v0, d0, s0, v1, d1, s1;
-  fast_basis(lagrange_coefficients, n, reference[0], &v0, &d0,
-               with_curvature ? &s0 : nullptr);
-  fast_basis(lagrange_coefficients, n, reference[1], &v1, &d1,
-               with_curvature ? &s1 : nullptr);
+  fast_basis(lagrange_coefficients,
+             n,
+             reference[0],
+             &v0,
+             &d0,
+             with_curvature ? &s0 : nullptr);
+  fast_basis(lagrange_coefficients,
+             n,
+             reference[1],
+             &v1,
+             &d1,
+             with_curvature ? &s1 : nullptr);
 
   Tensor<1, 3> x, x1, x2, x11, x12, x22;
   for (unsigned int j = 0; j < n; ++j)
@@ -450,7 +458,7 @@ SurfacePotentialEvaluator::geometry(const CellData &data,
       }
 
   Geometry g;
-  g.point            = Point<3>(x);
+  g.point = Point<3>(x);
   if (exact_evaluator)
     {
       // The point of the mesh mapping and its tangents, projected onto the
@@ -480,7 +488,7 @@ SurfacePotentialEvaluator::geometry(const CellData &data,
       project(reference, x, x1, x2, g.point, x1, x2);
       if (with_curvature)
         {
-          const double h = 1e-4;
+          const double                               h = 1e-4;
           std::array<std::array<Tensor<1, 3>, 2>, 2> tangent_plus,
             tangent_minus;
           for (unsigned int b = 0; b < 2; ++b)
@@ -501,23 +509,23 @@ SurfacePotentialEvaluator::geometry(const CellData &data,
               }
           x11 = (tangent_plus[0][0] - tangent_minus[0][0]) / (2 * h);
           x22 = (tangent_plus[1][1] - tangent_minus[1][1]) / (2 * h);
-          x12 = 0.5 * ((tangent_plus[1][0] - tangent_minus[1][0]) +
-                       (tangent_plus[0][1] - tangent_minus[0][1])) /
+          x12 = 0.5 *
+                ((tangent_plus[1][0] - tangent_minus[1][0]) +
+                 (tangent_plus[0][1] - tangent_minus[0][1])) /
                 (2 * h);
         }
     }
-  g.tangents         = {{x1, x2}};
+  g.tangents           = {{x1, x2}};
   const Tensor<1, 3> N = cross_product_3d(x1, x2);
-  g.jacobian         = N.norm();
-  g.normal           = data.orientation * N / g.jacobian;
+  g.jacobian           = N.norm();
+  g.normal             = data.orientation * N / g.jacobian;
   if (!with_curvature)
     return g;
 
   // div_S n = -tr(G^{-1} II), with II_ab = n . x_ab (Weingarten).
   const double g11 = x1 * x1, g12 = x1 * x2, g22 = x2 * x2;
   const double det = g11 * g22 - g12 * g12;
-  const double h11 = g.normal * x11, h12 = g.normal * x12,
-               h22 = g.normal * x22;
+  const double h11 = g.normal * x11, h12 = g.normal * x12, h22 = g.normal * x22;
   g.curvature = -(g22 * h11 - 2.0 * g12 * h12 + g11 * h22) / det;
   return g;
 }
@@ -563,7 +571,7 @@ SurfacePotentialEvaluator::sources(const CellData              &data,
     m,
     [&](const unsigned int begin,
         const unsigned int count,
-        const double (&s)[9][4]) {
+        const double(&s)[9][4]) {
       for (unsigned int q = 0; q < count; ++q)
         {
           Source &y = out[begin + q];
@@ -596,17 +604,17 @@ SurfacePotentialEvaluator::complete_source(const CellData &data,
       const unsigned int n1 = shape_nodes.size();
       if (n1 > 0)
         {
-          fast_basis(shape_coefficients, n1, reference[0], &v0, nullptr,
-                       nullptr);
-          fast_basis(shape_coefficients, n1, reference[1], &v1, nullptr,
-                       nullptr);
+          fast_basis(
+            shape_coefficients, n1, reference[0], &v0, nullptr, nullptr);
+          fast_basis(
+            shape_coefficients, n1, reference[1], &v1, nullptr, nullptr);
         }
       double flux = 0.0, trace = 0.0;
       for (unsigned int k = 0; k < fe.dofs_per_cell; ++k)
         {
-          const double shape =
-            n1 > 0 ? v0[shape_tensor_index[k][0]] * v1[shape_tensor_index[k][1]] :
-                     fe.shape_value(k, reference);
+          const double shape = n1 > 0 ? v0[shape_tensor_index[k][0]] *
+                                          v1[shape_tensor_index[k][1]] :
+                                        fe.shape_value(k, reference);
           if (!data.flux_local.empty())
             flux += data.flux_local[k] * shape;
           if (!data.trace_local.empty())
@@ -648,9 +656,9 @@ SurfacePotentialEvaluator::add(const Point<3>     &x,
   const double       distance = r.norm();
   if (distance <= 0.0)
     return;
-  const double decay =
-    screening == 0.0 ? 1.0 : std::exp(-screening * distance);
-  const double E  = screening == 0.0 ? 1.0 : (1.0 + screening * distance) * decay;
+  const double decay = screening == 0.0 ? 1.0 : std::exp(-screening * distance);
+  const double E =
+    screening == 0.0 ? 1.0 : (1.0 + screening * distance) * decay;
   const double g0 = y.weight / (4.0 * numbers::PI * distance);
   const double g  = g0 * decay;
   const double g3 = g0 / (distance * distance);
@@ -690,18 +698,18 @@ SurfacePotentialEvaluator::closest_point(const CellData &data,
   Point<2> xi = best;
   for (unsigned int iteration = 0; iteration < 60; ++iteration)
     {
-      const Geometry     g  = geometry(data, xi, false);
-      const Tensor<1, 3> r  = g.point - x;
-      const double       a  = g.tangents[0] * g.tangents[0];
-      const double       b  = g.tangents[0] * g.tangents[1];
-      const double       c  = g.tangents[1] * g.tangents[1];
-      const double       r0 = g.tangents[0] * r;
-      const double       r1 = g.tangents[1] * r;
+      const Geometry     g   = geometry(data, xi, false);
+      const Tensor<1, 3> r   = g.point - x;
+      const double       a   = g.tangents[0] * g.tangents[0];
+      const double       b   = g.tangents[0] * g.tangents[1];
+      const double       c   = g.tangents[1] * g.tangents[1];
+      const double       r0  = g.tangents[0] * r;
+      const double       r1  = g.tangents[1] * r;
       const double       det = a * c - b * b;
       Point<2>           next(xi[0] - (c * r0 - b * r1) / det,
                     xi[1] - (a * r1 - b * r0) / det);
-      next[0] = std::min(1.0, std::max(0.0, next[0]));
-      next[1] = std::min(1.0, std::max(0.0, next[1]));
+      next[0]           = std::min(1.0, std::max(0.0, next[0]));
+      next[1]           = std::min(1.0, std::max(0.0, next[1]));
       const double step = (next - xi).norm();
       xi                = next;
       if (step < 1e-15)
@@ -753,20 +761,20 @@ SurfacePotentialEvaluator::integrate_near(const CellData     &data,
     {
       if (heights[side] < tolerance)
         continue;
-      const Point<2>     &A      = corners[side];
-      const Point<2>     &B      = corners[(side + 1) % 4];
-      const Tensor<1, 2>  base   = B - A;
-      const Tensor<1, 2>  leg    = A - apex;
-      const double        factor = heights[side] * base.norm();
+      const Point<2>    &A      = corners[side];
+      const Point<2>    &B      = corners[(side + 1) % 4];
+      const Tensor<1, 2> base   = B - A;
+      const Tensor<1, 2> leg    = A - apex;
+      const double       factor = heights[side] * base.norm();
 
       // Foot of the perpendicular in the physical metric, and the width of
       // the minimum of L(t) around it.
-      const Tensor<1, 3> base_x = physical(base);
-      const Tensor<1, 3> leg_x  = physical(leg);
+      const Tensor<1, 3> base_x      = physical(base);
+      const Tensor<1, 3> leg_x       = physical(leg);
       const double       base_length = base_x.norm();
-      const double       foot = std::min(
+      const double       foot        = std::min(
         1.0, std::max(0.0, -(leg_x * base_x) / (base_length * base_length)));
-      const double width = (leg_x + foot * base_x).norm() / base_length;
+      const double width     = (leg_x + foot * base_x).norm() / base_length;
       const bool   stretch_t = width < 0.5;
       const double u0 = stretch_t ? std::asinh((0.0 - foot) / width) : 0.0;
       const double u1 = stretch_t ? std::asinh((1.0 - foot) / width) : 1.0;
@@ -797,8 +805,8 @@ SurfacePotentialEvaluator::integrate_near(const CellData     &data,
                   ds = delta * span * std::cosh(tau * span);
                 }
               batch_points.push_back(apex + s * ray);
-              batch_weights.push_back(rule.weight(i) * rule.weight(j) * s *
-                                      ds * dt * factor);
+              batch_weights.push_back(rule.weight(i) * rule.weight(j) * s * ds *
+                                      dt * factor);
             }
         }
       sources(data, batch_points, batch_weights, batch_sources);
@@ -816,7 +824,7 @@ SurfacePotentialEvaluator::integrate_patch(const CellData     &data,
                                            const Point<3>     &x,
                                            const Tensor<1, 3> &normal,
                                            const double        trace_at_x,
-                                           Values &values) const
+                                           Values             &values) const
 {
   const Point<2> middle((lower[0] + upper[0]) / 2, (lower[1] + upper[1]) / 2);
   const Point<3> centre = geometry(data, middle).point;
@@ -838,16 +846,16 @@ SurfacePotentialEvaluator::integrate_patch(const CellData     &data,
     {
       ++n_leaves;
       const QGauss<1> &rule = gauss_rule(depth >= maximum_depth ? 12 : 8);
-      const double     area =
-        (upper[0] - lower[0]) * (upper[1] - lower[1]);
+      const double     area = (upper[0] - lower[0]) * (upper[1] - lower[1]);
       batch_points.clear();
       batch_weights.clear();
       for (unsigned int j = 0; j < rule.size(); ++j)
         for (unsigned int i = 0; i < rule.size(); ++i)
           {
-            batch_points.emplace_back(
-              lower[0] + rule.point(i)[0] * (upper[0] - lower[0]),
-              lower[1] + rule.point(j)[0] * (upper[1] - lower[1]));
+            batch_points.emplace_back(lower[0] + rule.point(i)[0] *
+                                                   (upper[0] - lower[0]),
+                                      lower[1] + rule.point(j)[0] *
+                                                   (upper[1] - lower[1]));
             batch_weights.push_back(rule.weight(i) * rule.weight(j) * area);
           }
       sources(data, batch_points, batch_weights, batch_sources);
@@ -860,40 +868,60 @@ SurfacePotentialEvaluator::integrate_patch(const CellData     &data,
   // elongated, so that the pieces tend to be square in space and the
   // separation criterion, which sees the longest side, is not met by
   // needlessly thin leaves.
-  const double extent0 =
-    (geometry(data, Point<2>(upper[0], middle[1])).point -
-     geometry(data, Point<2>(lower[0], middle[1])).point)
-      .norm();
-  const double extent1 =
-    (geometry(data, Point<2>(middle[0], upper[1])).point -
-     geometry(data, Point<2>(middle[0], lower[1])).point)
-      .norm();
+  const double extent0 = (geometry(data, Point<2>(upper[0], middle[1])).point -
+                          geometry(data, Point<2>(lower[0], middle[1])).point)
+                           .norm();
+  const double extent1 = (geometry(data, Point<2>(middle[0], upper[1])).point -
+                          geometry(data, Point<2>(middle[0], lower[1])).point)
+                           .norm();
   if (extent0 > 2.0 * extent1)
     {
-      integrate_patch(data, lower, Point<2>(middle[0], upper[1]), depth + 1,
-                      x, normal, trace_at_x, values);
-      integrate_patch(data, Point<2>(middle[0], lower[1]), upper, depth + 1,
-                      x, normal, trace_at_x, values);
+      integrate_patch(data,
+                      lower,
+                      Point<2>(middle[0], upper[1]),
+                      depth + 1,
+                      x,
+                      normal,
+                      trace_at_x,
+                      values);
+      integrate_patch(data,
+                      Point<2>(middle[0], lower[1]),
+                      upper,
+                      depth + 1,
+                      x,
+                      normal,
+                      trace_at_x,
+                      values);
       return;
     }
   if (extent1 > 2.0 * extent0)
     {
-      integrate_patch(data, lower, Point<2>(upper[0], middle[1]), depth + 1,
-                      x, normal, trace_at_x, values);
-      integrate_patch(data, Point<2>(lower[0], middle[1]), upper, depth + 1,
-                      x, normal, trace_at_x, values);
+      integrate_patch(data,
+                      lower,
+                      Point<2>(upper[0], middle[1]),
+                      depth + 1,
+                      x,
+                      normal,
+                      trace_at_x,
+                      values);
+      integrate_patch(data,
+                      Point<2>(lower[0], middle[1]),
+                      upper,
+                      depth + 1,
+                      x,
+                      normal,
+                      trace_at_x,
+                      values);
       return;
     }
-  const std::array<Point<2>, 4> lowers{
-    {lower,
-     Point<2>(middle[0], lower[1]),
-     Point<2>(lower[0], middle[1]),
-     middle}};
-  const std::array<Point<2>, 4> uppers{
-    {middle,
-     Point<2>(upper[0], middle[1]),
-     Point<2>(middle[0], upper[1]),
-     upper}};
+  const std::array<Point<2>, 4> lowers{{lower,
+                                        Point<2>(middle[0], lower[1]),
+                                        Point<2>(lower[0], middle[1]),
+                                        middle}};
+  const std::array<Point<2>, 4> uppers{{middle,
+                                        Point<2>(upper[0], middle[1]),
+                                        Point<2>(middle[0], upper[1]),
+                                        upper}};
   for (unsigned int k = 0; k < 4; ++k)
     integrate_patch(
       data, lowers[k], uppers[k], depth + 1, x, normal, trace_at_x, values);

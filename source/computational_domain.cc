@@ -1,12 +1,13 @@
 
 
 #include "../include/computational_domain.h"
-#include "../include/cached_normal_projection_manifold.h"
-
-#include <atomic>
-#include "planar_mesh_quality.h"
 
 #include <deal.II/grid/grid_tools.h>
+
+#include <atomic>
+
+#include "../include/cached_normal_projection_manifold.h"
+#include "planar_mesh_quality.h"
 
 using namespace std;
 
@@ -160,9 +161,12 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
   prm.declare_entry("Curvature refinement angle",
                     "20",
                     Patterns::Double(0., 180.));
-  prm.declare_entry("Planar mesh smoothing material ids", "",
+  prm.declare_entry("Planar mesh smoothing material ids",
+                    "",
                     Patterns::List(Patterns::Integer(0)));
-  prm.declare_entry("Planar mesh smoothing iterations", "0", Patterns::Integer(0));
+  prm.declare_entry("Planar mesh smoothing iterations",
+                    "0",
+                    Patterns::Integer(0));
 
   prm.declare_entry(
     "Number of global refinement to be executed before local refinement cycle",
@@ -186,9 +190,7 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
                     "",
                     Patterns::List(Patterns::Integer(0)));
 
-  prm.declare_entry("Additional refinement cycles",
-                    "0",
-                    Patterns::Integer(0));
+  prm.declare_entry("Additional refinement cycles", "0", Patterns::Integer(0));
 
   // Graded refinement drives the cell size by distance from a focus point
   // rather than refining uniformly, so that the far field, where the flux is
@@ -295,7 +297,8 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
       extra_refinement_material_ids.insert(
         static_cast<types::material_id>(Utilities::string_to_int(id)));
 
-  additional_refinement_cycles = prm.get_integer("Additional refinement cycles");
+  additional_refinement_cycles =
+    prm.get_integer("Additional refinement cycles");
   additional_refinement_material_ids.clear();
   for (const auto &id : Utilities::split_string_list(
          prm.get("Additional refinement material ids")))
@@ -349,12 +352,12 @@ ComputationalDomain<dim>::parse_parameters(ParameterHandler &prm)
     prm.get_double("Curvature refinement grading ratio");
   aspect_ratio_after_curvature_refinement =
     prm.get_bool("Aspect ratio reduction after curvature refinement");
-  remove_hanging_nodes = prm.get_bool("Remove hanging nodes");
-  edge_refinement_cycles = prm.get_integer("Edge refinement cycles");
-  curvature_refinement_cycles =
-    prm.get_integer("Curvature refinement cycles");
-  curvature_refinement_angle = prm.get_double("Curvature refinement angle");
-  planar_smoothing_iterations = prm.get_integer("Planar mesh smoothing iterations");
+  remove_hanging_nodes        = prm.get_bool("Remove hanging nodes");
+  edge_refinement_cycles      = prm.get_integer("Edge refinement cycles");
+  curvature_refinement_cycles = prm.get_integer("Curvature refinement cycles");
+  curvature_refinement_angle  = prm.get_double("Curvature refinement angle");
+  planar_smoothing_iterations =
+    prm.get_integer("Planar mesh smoothing iterations");
   planar_smoothing_material_ids.clear();
   for (const auto &id : Utilities::split_string_list(
          prm.get("Planar mesh smoothing material ids")))
@@ -881,8 +884,9 @@ CheckedArclengthProjectionLineManifold::checked(
   // The closest point of the curve to the average is near the right
   // point, and the average lies within a sagitta of the curve; a candidate
   // on the other branch is far from it.
-  const Point<3> closest = OpenCASCADE::closest_point(shape, average, tolerance);
-  const double   sagitta = closest.distance(average);
+  const Point<3> closest =
+    OpenCASCADE::closest_point(shape, average, tolerance);
+  const double sagitta = closest.distance(average);
   if (candidate.distance(closest) <= 0.05 * scale + 2. * sagitta)
     return candidate;
   ++checked_arclength_corrections;
@@ -1228,9 +1232,9 @@ ComputationalDomain<3>::refine_and_resize_by_cad_projections(double max_tol)
                         (std::get<1>(lower).norm() * std::get<1>(upper).norm());
                       const double angle =
                         std::acos(std::max(-1., std::min(1., cosine)));
-                      cut[a] = (angle > 2 * dealii::numbers::PI /
-                                          cells_per_circle) &&
-                               (cell->extent_in_direction(a) > 10 * tolerance);
+                      cut[a] =
+                        (angle > 2 * dealii::numbers::PI / cells_per_circle) &&
+                        (cell->extent_in_direction(a) > 10 * tolerance);
                     }
                   if (cut[0] && cut[1])
                     cell->set_refine_flag();
@@ -1396,11 +1400,11 @@ ComputationalDomain<3>::refine_and_resize_by_cad_projections(double max_tol)
                   bool cut[2] = {false, false};
                   for (unsigned int f = 0; f < 4; ++f)
                     {
-                      const Point<3>     a      = cell->face(f)->vertex(0);
-                      const Point<3>     b      = cell->face(f)->vertex(1);
-                      const Tensor<1, 3> ab     = b - a;
-                      const double       length = ab.norm();
-                      const double tolerance_f = 1e-6 * length;
+                      const Point<3>     a           = cell->face(f)->vertex(0);
+                      const Point<3>     b           = cell->face(f)->vertex(1);
+                      const Tensor<1, 3> ab          = b - a;
+                      const double       length      = ab.norm();
+                      const double       tolerance_f = 1e-6 * length;
                       for (const auto &other : cells)
                         {
                           if (other == cell ||
@@ -1420,8 +1424,10 @@ ComputationalDomain<3>::refine_and_resize_by_cad_projections(double max_tol)
                               if (off_line(c) || off_line(d))
                                 continue;
                               // Overlapping with a positive length.
-                              const double tc = (c - a) * ab / (length * length);
-                              const double td = (d - a) * ab / (length * length);
+                              const double tc =
+                                (c - a) * ab / (length * length);
+                              const double td =
+                                (d - a) * ab / (length * length);
                               const double overlap =
                                 std::min(1., std::max(tc, td)) -
                                 std::max(0., std::min(tc, td));
@@ -1486,9 +1492,9 @@ template <>
 void
 ComputationalDomain<2>::refine_and_resize_by_level(const unsigned int)
 {
-  AssertThrow(
-    false,
-    ExcMessage("refine_and_resize_by_level is not implemented for dim != 3"));
+  AssertThrow(false,
+              ExcMessage(
+                "refine_and_resize_by_level is not implemented for dim != 3"));
 }
 
 template <int dim>
@@ -1527,84 +1533,92 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
         make_edges_conformal();
       }
 
-  if( input_grid_name == "../grids/sphere_box_flipped" ||
+  if (input_grid_name == "../grids/sphere_box_flipped" ||
       input_grid_name == "../grids/sphere_box_flipped_double_nodes" ||
       input_grid_name == "../grids/sphere_box_flipped_new")
-  {
-    // These grids describe a unit sphere and planar box faces.  Analytical
-    // manifolds make high-order mappings exact here and avoid repeated IGES
-    // projections inside the adaptive quadrature.
-    static const SphericalManifold<dim - 1, dim> sphere_manifold{Point<dim>()};
-    static const FlatManifold<dim - 1, dim>      flat_manifold;
-    tria.set_manifold(1, sphere_manifold);
-    tria.set_manifold(2, flat_manifold);
-    tria.set_manifold(3, flat_manifold);
-    pcout << "Using analytical sphere-box manifolds" << std::endl;
-
-    if (pre_global_refinements > 0)
     {
-      pcout << "Applying " << pre_global_refinements
-            << " global refinement cycle(s) before local gap refinement"
-            << std::endl;
-      tria.refine_global(pre_global_refinements);
-      make_edges_conformal();
-      pcout << "Cells after global refinement: "
-            << tria.n_active_cells() << std::endl;
-    }
+      // These grids describe a unit sphere and planar box faces.  Analytical
+      // manifolds make high-order mappings exact here and avoid repeated IGES
+      // projections inside the adaptive quadrature.
+      static const SphericalManifold<dim - 1, dim> sphere_manifold{
+        Point<dim>()};
+      static const FlatManifold<dim - 1, dim> flat_manifold;
+      tria.set_manifold(1, sphere_manifold);
+      tria.set_manifold(2, flat_manifold);
+      tria.set_manifold(3, flat_manifold);
+      pcout << "Using analytical sphere-box manifolds" << std::endl;
 
-    //////////  
-    // if you want to refine around a point
-    // first do one pass of global refinement
-    //tria.refine_global(1);
-    
-    // refine only bottom face of the box around (0,0,-1.003)
-    const Point<dim> refinement_center(0, 0, -1);
-    for (unsigned int step = 0; step < (refinement_level > 0 ? 4 : 0); ++step)
-    {
-      Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
-      Triangulation<2, 3>::active_cell_iterator endc = tria.end();
-      for (; cell != endc; ++cell)
-      {
-        for (unsigned int v = 0; v < GeometryInfo<dim - 1>::vertices_per_cell; ++v)
+      if (pre_global_refinements > 0)
         {
-          const double distance_from_center = refinement_center.distance(cell->vertex(v));
-          if((int(cell->material_id()) == 3) && (distance_from_center < 0.2))
-            cell->set_refine_flag();
+          pcout << "Applying " << pre_global_refinements
+                << " global refinement cycle(s) before local gap refinement"
+                << std::endl;
+          tria.refine_global(pre_global_refinements);
+          make_edges_conformal();
+          pcout << "Cells after global refinement: " << tria.n_active_cells()
+                << std::endl;
         }
-      }
-      tria.prepare_coarsening_and_refinement();
-      tria.execute_coarsening_and_refinement();
-      make_edges_conformal();
-    }
-    
-    // refine everything around (0,0,-1.003)
-    for (unsigned int step = 0; step < refinement_level; ++step)
-    {
-      Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
-      Triangulation<2, 3>::active_cell_iterator endc = tria.end();
-      for (; cell != endc; ++cell)
-      {
-        for (unsigned int v = 0; v < GeometryInfo<dim - 1>::vertices_per_cell; ++v)
-        {
-          const double distance_from_center = refinement_center.distance(cell->vertex(v));
-          if (distance_from_center < 0.1)
-          {
-            cell->set_refine_flag();
-            break;
-          }
-        }
-      }
-      tria.prepare_coarsening_and_refinement();
-      tria.execute_coarsening_and_refinement();
-      make_edges_conformal();
-    }
 
-    //////////
-  }
+      //////////
+      // if you want to refine around a point
+      // first do one pass of global refinement
+      // tria.refine_global(1);
+
+      // refine only bottom face of the box around (0,0,-1.003)
+      const Point<dim> refinement_center(0, 0, -1);
+      for (unsigned int step = 0; step < (refinement_level > 0 ? 4 : 0); ++step)
+        {
+          Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
+          Triangulation<2, 3>::active_cell_iterator endc = tria.end();
+          for (; cell != endc; ++cell)
+            {
+              for (unsigned int v = 0;
+                   v < GeometryInfo<dim - 1>::vertices_per_cell;
+                   ++v)
+                {
+                  const double distance_from_center =
+                    refinement_center.distance(cell->vertex(v));
+                  if ((int(cell->material_id()) == 3) &&
+                      (distance_from_center < 0.2))
+                    cell->set_refine_flag();
+                }
+            }
+          tria.prepare_coarsening_and_refinement();
+          tria.execute_coarsening_and_refinement();
+          make_edges_conformal();
+        }
+
+      // refine everything around (0,0,-1.003)
+      for (unsigned int step = 0; step < refinement_level; ++step)
+        {
+          Triangulation<2, 3>::active_cell_iterator cell = tria.begin_active();
+          Triangulation<2, 3>::active_cell_iterator endc = tria.end();
+          for (; cell != endc; ++cell)
+            {
+              for (unsigned int v = 0;
+                   v < GeometryInfo<dim - 1>::vertices_per_cell;
+                   ++v)
+                {
+                  const double distance_from_center =
+                    refinement_center.distance(cell->vertex(v));
+                  if (distance_from_center < 0.1)
+                    {
+                      cell->set_refine_flag();
+                      break;
+                    }
+                }
+            }
+          tria.prepare_coarsening_and_refinement();
+          tria.execute_coarsening_and_refinement();
+          make_edges_conformal();
+        }
+
+      //////////
+    }
   else
-  {
-    tria.refine_global(refinement_level);
-  }
+    {
+      tria.refine_global(refinement_level);
+    }
 
   for (unsigned int cycle = 0; cycle < edge_refinement_cycles; ++cycle)
     {
@@ -1619,7 +1633,8 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
         for (const auto &[a, b] : edges)
           {
             const Tensor<1, dim> ab = b - a;
-            const double t = std::clamp((x - a) * ab / ab.norm_square(), 0., 1.);
+            const double         t =
+              std::clamp((x - a) * ab / ab.norm_square(), 0., 1.);
             d = std::min(d, x.distance(a + t * ab));
           }
         return d;
@@ -1634,58 +1649,59 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
               break;
             }
       pcout << "Refinement towards the edges of the surface, cycle " << cycle
-            << " (" << flagged << " of " << tria.n_active_cells()
-            << " cells)" << std::endl;
-      tria.prepare_coarsening_and_refinement();
-      tria.execute_coarsening_and_refinement();
-      make_edges_conformal();
-    }
-  
-  if constexpr (dim == 3)
-  for (unsigned int cycle = 0; cycle < curvature_refinement_cycles; ++cycle)
-    {
-      // The turning of an edge from the midpoint on its manifold: an arc of
-      // chord L and sagitta s turns by 4 atan(2 s / L).
-      const auto turning = [](const auto &line) {
-        const Point<dim> a = line->vertex(0), b = line->vertex(1);
-        const double     L = a.distance(b);
-        if (L == 0.)
-          return 0.;
-        const double sagitta = line->center(true).distance(Point<dim>(0.5 * (a + b)));
-        return 4. * std::atan(2. * sagitta / L);
-      };
-      const double limit    = curvature_refinement_angle * M_PI / 180.;
-      unsigned int flagged  = 0;
-      for (const auto &cell : tria.active_cell_iterators())
-        {
-          // Faces 2 and 3 run along the first reference direction, 0 and 1
-          // along the second.
-          const double along_x = std::max(turning(cell->face(2)),
-                                          turning(cell->face(3)));
-          const double along_y = std::max(turning(cell->face(0)),
-                                          turning(cell->face(1)));
-          const bool cut_x = along_x > limit, cut_y = along_y > limit;
-          if (cut_x || cut_y)
-            {
-              cell->set_refine_flag(
-                cut_x && cut_y ?
-                  RefinementCase<2>(RefinementCase<2>::isotropic_refinement) :
-                  RefinementCase<2>::cut_axis(cut_x ? 0 : 1));
-              ++flagged;
-            }
-        }
-      pcout << "Refinement by the curvature of the surface, cycle " << cycle
-            << " (" << flagged << " of " << tria.n_active_cells()
-            << " cells)" << std::endl;
-      if (flagged == 0)
-        break;
+            << " (" << flagged << " of " << tria.n_active_cells() << " cells)"
+            << std::endl;
       tria.prepare_coarsening_and_refinement();
       tria.execute_coarsening_and_refinement();
       make_edges_conformal();
     }
 
-  //else just do the global refinement
-  //tria.refine_global(refinement_level);
+  if constexpr (dim == 3)
+    for (unsigned int cycle = 0; cycle < curvature_refinement_cycles; ++cycle)
+      {
+        // The turning of an edge from the midpoint on its manifold: an arc of
+        // chord L and sagitta s turns by 4 atan(2 s / L).
+        const auto turning = [](const auto &line) {
+          const Point<dim> a = line->vertex(0), b = line->vertex(1);
+          const double     L = a.distance(b);
+          if (L == 0.)
+            return 0.;
+          const double sagitta =
+            line->center(true).distance(Point<dim>(0.5 * (a + b)));
+          return 4. * std::atan(2. * sagitta / L);
+        };
+        const double limit   = curvature_refinement_angle * M_PI / 180.;
+        unsigned int flagged = 0;
+        for (const auto &cell : tria.active_cell_iterators())
+          {
+            // Faces 2 and 3 run along the first reference direction, 0 and 1
+            // along the second.
+            const double along_x =
+              std::max(turning(cell->face(2)), turning(cell->face(3)));
+            const double along_y =
+              std::max(turning(cell->face(0)), turning(cell->face(1)));
+            const bool cut_x = along_x > limit, cut_y = along_y > limit;
+            if (cut_x || cut_y)
+              {
+                cell->set_refine_flag(
+                  cut_x && cut_y ?
+                    RefinementCase<2>(RefinementCase<2>::isotropic_refinement) :
+                    RefinementCase<2>::cut_axis(cut_x ? 0 : 1));
+                ++flagged;
+              }
+          }
+        pcout << "Refinement by the curvature of the surface, cycle " << cycle
+              << " (" << flagged << " of " << tria.n_active_cells() << " cells)"
+              << std::endl;
+        if (flagged == 0)
+          break;
+        tria.prepare_coarsening_and_refinement();
+        tria.execute_coarsening_and_refinement();
+        make_edges_conformal();
+      }
+
+  // else just do the global refinement
+  // tria.refine_global(refinement_level);
 
   // Bring the selected material ids up to a finer resolution than the global
   // level. Conformity is deliberately not restored afterwards:
@@ -1713,8 +1729,7 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
       std::map<types::material_id, unsigned int> cells_per_material;
       for (const auto &cell : tria.active_cell_iterators())
         ++cells_per_material[cell->material_id()];
-      pcout << name << " refinement: " << cycles
-            << " cycle(s) on material ids";
+      pcout << name << " refinement: " << cycles << " cycle(s) on material ids";
       for (const auto id : material_ids)
         pcout << " " << static_cast<unsigned int>(id);
       pcout << "; cells per material:";
@@ -1746,10 +1761,11 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
       // anisotropic refinement levels of unrelated surface directions,
       // which can turn a local NACA refinement into a global cascade.
       const auto previous_smoothing = tria.get_mesh_smoothing();
-      bool isotropic_history = true;
+      bool       isotropic_history  = true;
       for (const auto &cell : tria.cell_iterators())
         if (cell->has_children() &&
-            cell->refinement_case() != RefinementCase<dim - 1>::isotropic_refinement)
+            cell->refinement_case() !=
+              RefinementCase<dim - 1>::isotropic_refinement)
           isotropic_history = false;
       if (isotropic_history)
         tria.set_mesh_smoothing(
@@ -1767,10 +1783,11 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
               {
                 const double distance =
                   graded_refinement_focus.distance(cell->center());
-                const double target = std::max(
-                  graded_refinement_minimum_size,
-                  graded_refinement_size_ratio *
-                    std::pow(distance, graded_refinement_growth_exponent));
+                const double target =
+                  std::max(graded_refinement_minimum_size,
+                           graded_refinement_size_ratio *
+                             std::pow(distance,
+                                      graded_refinement_growth_exponent));
                 if (cell->diameter() > target)
                   {
                     cell->set_refine_flag();
@@ -1819,10 +1836,11 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
       // anisotropic refinement levels of unrelated surface directions,
       // which can turn a local NACA refinement into a global cascade.
       const auto previous_smoothing = tria.get_mesh_smoothing();
-      bool isotropic_history = true;
+      bool       isotropic_history  = true;
       for (const auto &cell : tria.cell_iterators())
         if (cell->has_children() &&
-            cell->refinement_case() != RefinementCase<dim - 1>::isotropic_refinement)
+            cell->refinement_case() !=
+              RefinementCase<dim - 1>::isotropic_refinement)
           isotropic_history = false;
       if (isotropic_history)
         tria.set_mesh_smoothing(
@@ -1868,11 +1886,10 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
           ++cells_per_material[cell->material_id()];
           smallest = std::min(smallest, cell->diameter());
         }
-      pcout << "Exponential refinement: " << cycle << " cycle(s), decay "
-            << k << ", minimum size "
-            << exponential_refinement_minimum_size << ", grading "
-            << exponential_refinement_grading << "; smallest cell "
-            << smallest << "; cells per material:";
+      pcout << "Exponential refinement: " << cycle << " cycle(s), decay " << k
+            << ", minimum size " << exponential_refinement_minimum_size
+            << ", grading " << exponential_refinement_grading
+            << "; smallest cell " << smallest << "; cells per material:";
       for (const auto &entry : cells_per_material)
         pcout << " " << static_cast<unsigned int>(entry.first) << "="
               << entry.second;
@@ -1882,13 +1899,15 @@ ComputationalDomain<dim>::refine_and_resize_by_level(
 
   if (planar_smoothing_iterations > 0 && !planar_smoothing_material_ids.empty())
     {
-      const auto quality = PlanarMeshQuality::smooth(
-        tria, planar_smoothing_material_ids, planar_smoothing_iterations);
+      const auto quality =
+        PlanarMeshQuality::smooth(tria,
+                                  planar_smoothing_material_ids,
+                                  planar_smoothing_iterations);
       pcout << "Planar mesh quality: " << quality.accepted_moves
             << " accepted vertex moves; minimum corner mean ratio "
             << quality.minimum_before << " -> " << quality.minimum_after
-            << ", mean cell quality " << quality.mean_before
-            << " -> " << quality.mean_after << std::endl;
+            << ", mean cell quality " << quality.mean_before << " -> "
+            << quality.mean_after << std::endl;
     }
 
   if (CheckedArclengthProjectionLineManifold::n_corrected() > 0)

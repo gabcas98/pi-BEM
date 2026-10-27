@@ -353,11 +353,11 @@ protected:
   unsigned int trunc_order;
 
   /// Parameters of the octree of the Galerkin FMM (class LaplaceFMM).
-  double       galerkin_opening_criterion = 0.5;
-  unsigned int galerkin_points_per_leaf   = 64;
-  unsigned int galerkin_dipole_order_increase = 2;
-  unsigned int galerkin_preconditioner_order  = 0;
-  double       galerkin_preconditioner_theta  = 0.;
+  double       galerkin_opening_criterion              = 0.5;
+  unsigned int galerkin_points_per_leaf                = 64;
+  unsigned int galerkin_dipole_order_increase          = 2;
+  unsigned int galerkin_preconditioner_order           = 0;
+  double       galerkin_preconditioner_theta           = 0.;
   unsigned int galerkin_preconditioner_points_per_leaf = 0;
   unsigned int galerkin_relaxed_order                  = 0;
   double       galerkin_relaxed_theta                  = 0.;

@@ -1,20 +1,21 @@
 #include "../include/galerkin_panel_pair_integrator.h"
-#include "../include/cellwise_function.h"
-#include "../include/tensor_map_kernel.h"
-
-#include <sstream>
-#include <chrono>
 
 #include <deal.II/base/geometry_info.h>
 #include <deal.II/base/quadrature_lib.h>
+
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/mapping_q.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <tuple>
+
+#include "../include/cellwise_function.h"
+#include "../include/tensor_map_kernel.h"
 
 namespace
 {
@@ -86,83 +87,83 @@ namespace
   // mapping them from either side.
   // Normal trace of a vector-valued function at a point.
   namespace
-{
-  /**
-   * C[r * ldc + j] += sum_k A[r * lda + k] B[j * ldb + k] for r < R, j < J,
-   * k < m: a small product of matrices with rows of points, in register
-   * blocks of three rows of A by three of B, which read six values for nine
-   * products.
-   */
-  void
-  add_row_products(const double      *A,
-                   const unsigned int lda,
-                   const unsigned int R,
-                   const double      *B,
-                   const unsigned int ldb,
-                   const unsigned int J,
-                   const unsigned int m,
-                   double            *C,
-                   const unsigned int ldc)
   {
-    unsigned int r = 0;
-    for (; r + 3 <= R; r += 3)
-      {
-        const double *a0 = A + r * lda, *a1 = a0 + lda, *a2 = a1 + lda;
-        unsigned int  j = 0;
-        for (; j + 3 <= J; j += 3)
-          {
-            const double *b0 = B + j * ldb, *b1 = b0 + ldb, *b2 = b1 + ldb;
-            double        c00 = 0, c01 = 0, c02 = 0, c10 = 0, c11 = 0, c12 = 0,
-                   c20 = 0, c21 = 0, c22 = 0;
-#pragma omp simd reduction(+ : c00, c01, c02, c10, c11, c12, c20, c21, c22)
-            for (unsigned int k = 0; k < m; ++k)
-              {
-                c00 += a0[k] * b0[k];
-                c01 += a0[k] * b1[k];
-                c02 += a0[k] * b2[k];
-                c10 += a1[k] * b0[k];
-                c11 += a1[k] * b1[k];
-                c12 += a1[k] * b2[k];
-                c20 += a2[k] * b0[k];
-                c21 += a2[k] * b1[k];
-                c22 += a2[k] * b2[k];
-              }
-            double *c = C + r * ldc + j;
-            c[0] += c00, c[1] += c01, c[2] += c02;
-            c[ldc] += c10, c[ldc + 1] += c11, c[ldc + 2] += c12;
-            c[2 * ldc] += c20, c[2 * ldc + 1] += c21, c[2 * ldc + 2] += c22;
-          }
-        for (; j < J; ++j)
-          {
-            const double *b0 = B + j * ldb;
-            double        c0 = 0, c1 = 0, c2 = 0;
-#pragma omp simd reduction(+ : c0, c1, c2)
-            for (unsigned int k = 0; k < m; ++k)
-              {
-                c0 += a0[k] * b0[k];
-                c1 += a1[k] * b0[k];
-                c2 += a2[k] * b0[k];
-              }
-            C[r * ldc + j] += c0;
-            C[(r + 1) * ldc + j] += c1;
-            C[(r + 2) * ldc + j] += c2;
-          }
-      }
-    for (; r < R; ++r)
-      for (unsigned int j = 0; j < J; ++j)
+    /**
+     * C[r * ldc + j] += sum_k A[r * lda + k] B[j * ldb + k] for r < R, j < J,
+     * k < m: a small product of matrices with rows of points, in register
+     * blocks of three rows of A by three of B, which read six values for nine
+     * products.
+     */
+    void
+    add_row_products(const double      *A,
+                     const unsigned int lda,
+                     const unsigned int R,
+                     const double      *B,
+                     const unsigned int ldb,
+                     const unsigned int J,
+                     const unsigned int m,
+                     double            *C,
+                     const unsigned int ldc)
+    {
+      unsigned int r = 0;
+      for (; r + 3 <= R; r += 3)
         {
-          const double *a0 = A + r * lda, *b0 = B + j * ldb;
-          double        c0 = 0;
-#pragma omp simd reduction(+ : c0)
-          for (unsigned int k = 0; k < m; ++k)
-            c0 += a0[k] * b0[k];
-          C[r * ldc + j] += c0;
+          const double *a0 = A + r * lda, *a1 = a0 + lda, *a2 = a1 + lda;
+          unsigned int  j = 0;
+          for (; j + 3 <= J; j += 3)
+            {
+              const double *b0 = B + j * ldb, *b1 = b0 + ldb, *b2 = b1 + ldb;
+              double c00 = 0, c01 = 0, c02 = 0, c10 = 0, c11 = 0, c12 = 0,
+                     c20 = 0, c21 = 0, c22 = 0;
+#pragma omp simd reduction(+ : c00, c01, c02, c10, c11, c12, c20, c21, c22)
+              for (unsigned int k = 0; k < m; ++k)
+                {
+                  c00 += a0[k] * b0[k];
+                  c01 += a0[k] * b1[k];
+                  c02 += a0[k] * b2[k];
+                  c10 += a1[k] * b0[k];
+                  c11 += a1[k] * b1[k];
+                  c12 += a1[k] * b2[k];
+                  c20 += a2[k] * b0[k];
+                  c21 += a2[k] * b1[k];
+                  c22 += a2[k] * b2[k];
+                }
+              double *c = C + r * ldc + j;
+              c[0] += c00, c[1] += c01, c[2] += c02;
+              c[ldc] += c10, c[ldc + 1] += c11, c[ldc + 2] += c12;
+              c[2 * ldc] += c20, c[2 * ldc + 1] += c21, c[2 * ldc + 2] += c22;
+            }
+          for (; j < J; ++j)
+            {
+              const double *b0 = B + j * ldb;
+              double        c0 = 0, c1 = 0, c2 = 0;
+#pragma omp simd reduction(+ : c0, c1, c2)
+              for (unsigned int k = 0; k < m; ++k)
+                {
+                  c0 += a0[k] * b0[k];
+                  c1 += a1[k] * b0[k];
+                  c2 += a2[k] * b0[k];
+                }
+              C[r * ldc + j] += c0;
+              C[(r + 1) * ldc + j] += c1;
+              C[(r + 2) * ldc + j] += c2;
+            }
         }
-  }
-} // namespace
+      for (; r < R; ++r)
+        for (unsigned int j = 0; j < J; ++j)
+          {
+            const double *a0 = A + r * lda, *b0 = B + j * ldb;
+            double        c0 = 0;
+#pragma omp simd reduction(+ : c0)
+            for (unsigned int k = 0; k < m; ++k)
+              c0 += a0[k] * b0[k];
+            C[r * ldc + j] += c0;
+          }
+    }
+  } // namespace
 
 
-template <int spacedim>
+  template <int spacedim>
   double
   normal_trace(const Function<spacedim>  &gradient,
                const Point<spacedim>     &point,
@@ -343,11 +344,10 @@ GalerkinPanelPairIntegrator<spacedim>::nonconforming_contact(
   // The edges in the reference orientation of the cell: from the vertex of
   // smaller to the one of larger coordinate along the face.
   const auto edge = [](const CellIterator &cell, const unsigned int face) {
-    return std::make_pair(
-      Point<spacedim>(
-        cell->vertex(GeometryInfo<2>::face_to_cell_vertices(face, 0))),
-      Point<spacedim>(
-        cell->vertex(GeometryInfo<2>::face_to_cell_vertices(face, 1))));
+    return std::make_pair(Point<spacedim>(cell->vertex(
+                            GeometryInfo<2>::face_to_cell_vertices(face, 0))),
+                          Point<spacedim>(cell->vertex(
+                            GeometryInfo<2>::face_to_cell_vertices(face, 1))));
   };
   // A point on face f at the reference coordinate t along it.
   const auto on_face = [](const unsigned int f, const double t) {
@@ -359,9 +359,9 @@ GalerkinPanelPairIntegrator<spacedim>::nonconforming_contact(
       const CellIterator &inner = test_contains ? trial_cell : test_cell;
       for (unsigned int f = 0; f < GeometryInfo<2>::faces_per_cell; ++f)
         {
-          const auto [a, b]       = edge(outer, f);
-          const Tensor<1, spacedim> ab = b - a;
-          const double length2    = ab.norm_square();
+          const auto [a, b]                 = edge(outer, f);
+          const Tensor<1, spacedim> ab      = b - a;
+          const double              length2 = ab.norm_square();
           if (length2 == 0)
             continue;
           const double length = std::sqrt(length2);
@@ -382,7 +382,7 @@ GalerkinPanelPairIntegrator<spacedim>::nonconforming_contact(
                 const double next =
                   std::clamp(t + (p - x) * dx / dx.norm_square(), -0.05, 1.05);
                 const bool done = std::abs(next - t) < 1e-14;
-                t = next;
+                t               = next;
                 if (done)
                   break;
               }
@@ -399,8 +399,8 @@ GalerkinPanelPairIntegrator<spacedim>::nonconforming_contact(
               const Tensor<1, spacedim> cd = d - c;
               if (std::abs(cd * ab) < 0.5 * cd.norm() * length)
                 continue;
-              double tc = (c - a) * ab / length2;
-              double td = (d - a) * ab / length2;
+              double       tc    = (c - a) * ab / length2;
+              double       td    = (d - a) * ab / length2;
               const double loose = 0.5 * length;
               if ((c - a - tc * ab).norm() > loose ||
                   (d - a - td * ab).norm() > loose ||
@@ -427,8 +427,8 @@ GalerkinPanelPairIntegrator<spacedim>::nonconforming_contact(
               contact.found         = true;
               contact.test_contains = test_contains;
               contact.face          = f;
-              contact.begin = std::clamp(std::min(tc, td), 0., 1.);
-              contact.end   = std::clamp(std::max(tc, td), 0., 1.);
+              contact.begin         = std::clamp(std::min(tc, td), 0., 1.);
+              contact.end           = std::clamp(std::max(tc, td), 0., 1.);
               return contact;
             }
         }
@@ -464,15 +464,16 @@ GalerkinPanelPairIntegrator<spacedim>::singular_order_for(
       // cyclic order 0 1 3 2.
       const auto smallest_angle = [](const CellIterator &cell) {
         static constexpr unsigned int around[4] = {0, 1, 3, 2};
-        double smallest = M_PI;
+        double                        smallest  = M_PI;
         for (unsigned int k = 0; k < 4; ++k)
           {
-            const Point<spacedim> &p = cell->vertex(around[k]);
+            const Point<spacedim>    &p = cell->vertex(around[k]);
             const Tensor<1, spacedim> u = cell->vertex(around[(k + 3) % 4]) - p;
             const Tensor<1, spacedim> w = cell->vertex(around[(k + 1) % 4]) - p;
-            smallest = std::min(
-              smallest,
-              std::acos(std::clamp(u * w / (u.norm() * w.norm()), -1., 1.)));
+            smallest =
+              std::min(smallest,
+                       std::acos(
+                         std::clamp(u * w / (u.norm() * w.norm()), -1., 1.)));
           }
         return smallest;
       };
@@ -497,9 +498,8 @@ GalerkinPanelPairIntegrator<spacedim>::normal_cosine(
 {
   // The normals of the cells from their vertices, oriented as the cells.
   const auto normal = [](const CellIterator &cell) {
-    Tensor<1, spacedim> n =
-      cross_product_3d(cell->vertex(3) - cell->vertex(0),
-                       cell->vertex(2) - cell->vertex(1));
+    Tensor<1, spacedim> n = cross_product_3d(cell->vertex(3) - cell->vertex(0),
+                                             cell->vertex(2) - cell->vertex(1));
     n /= n.norm();
     return cell->direction_flag() ? n : Tensor<1, spacedim>(-n);
   };
@@ -515,10 +515,10 @@ GalerkinPanelPairIntegrator<spacedim>::separation_ratio(
   const CellIterator   &trial_cell,
   const ReferencePatch &trial_patch) const
 {
-  const auto test_points  = patch_sample_points(test_cell, test_patch);
-  const auto trial_points = patch_sample_points(trial_cell, trial_patch);
+  const auto test_points   = patch_sample_points(test_cell, test_patch);
+  const auto trial_points  = patch_sample_points(trial_cell, trial_patch);
   double     test_diameter = 0.0, trial_diameter = 0.0;
-  double     distance      = std::numeric_limits<double>::max();
+  double     distance = std::numeric_limits<double>::max();
   for (const auto &left : test_points)
     for (const auto &right : test_points)
       test_diameter = std::max(test_diameter, left.distance(right));
@@ -574,9 +574,9 @@ GalerkinPanelPairIntegrator<spacedim>::contact_strips(
 {
   // Faces 0 and 1 run along the second reference coordinate, 2 and 3 along
   // the first.
-  const unsigned int along = contact.face < 2 ? 1 : 0;
+  const unsigned int          along = contact.face < 2 ? 1 : 0;
   std::vector<ReferencePatch> strips;
-  const double cuts[4] = {0., contact.begin, contact.end, 1.};
+  const double                cuts[4] = {0., contact.begin, contact.end, 1.};
   for (unsigned int i = 0; i < 3; ++i)
     if (cuts[i + 1] - cuts[i] > 1e-12)
       {
@@ -597,9 +597,9 @@ GalerkinPanelPairIntegrator<spacedim>::classify(
   const CellIterator   &trial_cell,
   const ReferencePatch &trial_patch) const
 {
-  const bool identical_patches =
-    test_cell == trial_cell && test_patch.lower == trial_patch.lower &&
-    test_patch.upper == trial_patch.upper;
+  const bool identical_patches = test_cell == trial_cell &&
+                                 test_patch.lower == trial_patch.lower &&
+                                 test_patch.upper == trial_patch.upper;
   if (identical_patches)
     return GalerkinPanelPairType::same_panel;
 
@@ -653,16 +653,15 @@ GalerkinPanelPairIntegrator<spacedim>::uniform_subpatches(
 {
   AssertThrow(refinement_levels < 16,
               ExcMessage("Excessive nonconforming refinement difference."));
-  const unsigned int subdivisions = 1U << refinement_levels;
+  const unsigned int          subdivisions = 1U << refinement_levels;
   std::vector<ReferencePatch> patches;
   patches.reserve(subdivisions * subdivisions);
   for (unsigned int i = 0; i < subdivisions; ++i)
     for (unsigned int j = 0; j < subdivisions; ++j)
-      patches.push_back(
-        {Point<2>(static_cast<double>(i) / subdivisions,
-                  static_cast<double>(j) / subdivisions),
-         Point<2>(static_cast<double>(i + 1) / subdivisions,
-                  static_cast<double>(j + 1) / subdivisions)});
+      patches.push_back({Point<2>(static_cast<double>(i) / subdivisions,
+                                  static_cast<double>(j) / subdivisions),
+                         Point<2>(static_cast<double>(i + 1) / subdivisions,
+                                  static_cast<double>(j + 1) / subdivisions)});
   return patches;
 }
 
@@ -694,11 +693,10 @@ GalerkinPanelPairIntegrator<spacedim>::patch_sample_points(
   for (unsigned int i = 0; i < 3; ++i)
     for (unsigned int j = 0; j < 3; ++j)
       {
-        const Point<2> reference(
-          patch.lower[0] +
-            0.5 * i * (patch.upper[0] - patch.lower[0]),
-          patch.lower[1] +
-            0.5 * j * (patch.upper[1] - patch.lower[1]));
+        const Point<2> reference(patch.lower[0] +
+                                   0.5 * i * (patch.upper[0] - patch.lower[0]),
+                                 patch.lower[1] +
+                                   0.5 * j * (patch.upper[1] - patch.lower[1]));
         points.push_back(map_to_real_cell(cell, reference));
       }
   return points;
@@ -759,8 +757,7 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
   const CellIterator   &trial_cell,
   const ReferencePatch &trial_patch) const
 {
-  if (near_singular_distance_ratio <= 0.0 ||
-      near_singular_maximum_depth == 0)
+  if (near_singular_distance_ratio <= 0.0 || near_singular_maximum_depth == 0)
     return false;
   double ratio = near_singular_distance_ratio;
   if (kinked_distance_ratio > ratio && test_cell != trial_cell &&
@@ -774,10 +771,9 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
     {
       const CellGeometry &test  = full_patch_geometry(test_cell);
       const CellGeometry &trial = full_patch_geometry(trial_cell);
-      const double        threshold =
-        ratio * std::max(test.diameter, trial.diameter);
-      const double separation = test.centre.distance(trial.centre) -
-                                test.radius - trial.radius;
+      const double threshold = ratio * std::max(test.diameter, trial.diameter);
+      const double separation =
+        test.centre.distance(trial.centre) - test.radius - trial.radius;
       if (separation >= threshold)
         return false;
 
@@ -788,11 +784,11 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
       return distance < threshold;
     }
 
-  const auto test_points = patch_sample_points(test_cell, test_patch);
-  const auto trial_points = patch_sample_points(trial_cell, trial_patch);
-  double test_diameter  = 0.0;
-  double trial_diameter = 0.0;
-  double distance       = std::numeric_limits<double>::max();
+  const auto test_points    = patch_sample_points(test_cell, test_patch);
+  const auto trial_points   = patch_sample_points(trial_cell, trial_patch);
+  double     test_diameter  = 0.0;
+  double     trial_diameter = 0.0;
+  double     distance       = std::numeric_limits<double>::max();
   for (const auto &left : test_points)
     for (const auto &right : test_points)
       test_diameter = std::max(test_diameter, left.distance(right));
@@ -810,7 +806,8 @@ GalerkinPanelPairIntegrator<spacedim>::is_near_singular(
 template <int spacedim>
 std::array<double, 2>
 GalerkinPanelPairIntegrator<spacedim>::patch_extents(
-  const CellIterator &cell, const ReferencePatch &patch) const
+  const CellIterator   &cell,
+  const ReferencePatch &patch) const
 {
   // patch_sample_points lays out a 3x3 grid as index i * 3 + j, with i along
   // the first reference direction and j along the second.
@@ -822,10 +819,10 @@ GalerkinPanelPairIntegrator<spacedim>::patch_extents(
 template <int spacedim>
 std::array<typename GalerkinPanelPairIntegrator<spacedim>::ReferencePatch, 2>
 GalerkinPanelPairIntegrator<spacedim>::split_patch_direction(
-  const ReferencePatch &patch, const unsigned int direction) const
+  const ReferencePatch &patch,
+  const unsigned int    direction) const
 {
-  const double middle =
-    0.5 * (patch.lower[direction] + patch.upper[direction]);
+  const double middle = 0.5 * (patch.lower[direction] + patch.upper[direction]);
   ReferencePatch low  = patch;
   ReferencePatch high = patch;
   low.upper[direction]  = middle;
@@ -837,12 +834,12 @@ GalerkinPanelPairIntegrator<spacedim>::split_patch_direction(
 template <int spacedim>
 FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
-  const CellIterator   &test_cell,
-  const ReferencePatch &test_patch,
-  const CellIterator   &trial_cell,
-  const ReferencePatch &trial_patch,
-  const unsigned int    order,
-  const OperatorType    operator_type,
+  const CellIterator       &test_cell,
+  const ReferencePatch     &test_patch,
+  const CellIterator       &trial_cell,
+  const ReferencePatch     &trial_patch,
+  const unsigned int        order,
+  const OperatorType        operator_type,
   const Function<spacedim> *trial_function,
   const bool                regularize_trial_function,
   const unsigned int        depth) const
@@ -853,15 +850,20 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
   // A subpatch that no longer touches is an ordinary regular pair, and it is
   // usually close enough to need the near-singular subdivision.
   if (type == GalerkinPanelPairType::regular)
-    return integrate_adaptive_regular(test_cell, test_patch, trial_cell,
-                                      trial_patch, order, operator_type,
+    return integrate_adaptive_regular(test_cell,
+                                      test_patch,
+                                      trial_cell,
+                                      trial_patch,
+                                      order,
+                                      operator_type,
                                       trial_function,
-                                      regularize_trial_function, 0);
+                                      regularize_trial_function,
+                                      0);
 
   const unsigned int effective_order =
     singular_order_for(test_cell, trial_cell, order);
-  const auto test_size  = patch_extents(test_cell, test_patch);
-  const auto trial_size = patch_extents(trial_cell, trial_patch);
+  const auto   test_size  = patch_extents(test_cell, test_patch);
+  const auto   trial_size = patch_extents(trial_cell, trial_patch);
   const double target =
     std::min({test_size[0], test_size[1], trial_size[0], trial_size[1]});
 
@@ -875,15 +877,15 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
     {
       if (test_size[d] > worst_extent)
         {
-          worst_extent  = test_size[d];
+          worst_extent    = test_size[d];
           worst_direction = d;
-          worst_is_test = true;
+          worst_is_test   = true;
         }
       if (trial_size[d] > worst_extent)
         {
-          worst_extent  = trial_size[d];
+          worst_extent    = trial_size[d];
           worst_direction = d;
-          worst_is_test = false;
+          worst_is_test   = false;
         }
     }
 
@@ -894,14 +896,12 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
   // edge (at depths 2:1 it needs fourteen points per variable instead of
   // ten), so the deeper patch is halved parallel to the edge until the
   // depths are within folded_balance_ratio; its far half no longer touches.
-  if (type == GalerkinPanelPairType::common_edge && folded_singular_order != 0 &&
-      depth < singular_balance_maximum_depth &&
+  if (type == GalerkinPanelPairType::common_edge &&
+      folded_singular_order != 0 && depth < singular_balance_maximum_depth &&
       is_folded_pair(test_cell, trial_cell))
     {
-      const auto   along = common_edge_directions(test_cell,
-                                                test_patch,
-                                                trial_cell,
-                                                trial_patch);
+      const auto along =
+        common_edge_directions(test_cell, test_patch, trial_cell, trial_patch);
       const double test_depth  = test_size[1 - along[0]];
       const double trial_depth = trial_size[1 - along[1]];
       if (std::max(test_depth, trial_depth) >
@@ -939,8 +939,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
 
   if (depth >= singular_balance_maximum_depth || target <= 0.0 ||
       worst_extent <= singular_balance_ratio * target)
-    return integrate(test_cell, test_patch, trial_cell, trial_patch,
-                     effective_order, operator_type, trial_function,
+    return integrate(test_cell,
+                     test_patch,
+                     trial_cell,
+                     trial_patch,
+                     effective_order,
+                     operator_type,
+                     trial_function,
                      regularize_trial_function);
 
   // An elongated panel with itself: both copies are halved across the long
@@ -955,7 +960,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
           // The pair of the two halves in the other order is its mirror
           // image: V and W transposed, K and K the other way exchanged and
           // transposed; the latter is computed for it in any case.
-          const unsigned int dpc  = finite_element.dofs_per_cell;
+          const unsigned int dpc = finite_element.dofs_per_cell;
           const bool         both =
             operator_type == OperatorType::single_double_hypersingular_both;
           for (unsigned int c = 0; c < 2; ++c)
@@ -1013,10 +1018,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
   // two pairs with a common edge and two with a common vertex.
   if (type == GalerkinPanelPairType::common_edge)
     {
-      const auto along = common_edge_directions(test_cell,
-                                                test_patch,
-                                                trial_cell,
-                                                trial_patch);
+      const auto along =
+        common_edge_directions(test_cell, test_patch, trial_cell, trial_patch);
       if (worst_direction == along[worst_is_test ? 0 : 1])
         {
           for (const auto &test_child :
@@ -1037,21 +1040,28 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_balanced_singular(
         }
     }
   if (worst_is_test)
-    for (const auto &child :
-         split_patch_direction(test_patch, worst_direction))
+    for (const auto &child : split_patch_direction(test_patch, worst_direction))
       result.add(1.0,
-                 integrate_balanced_singular(test_cell, child, trial_cell,
-                                             trial_patch, order,
-                                             operator_type, trial_function,
+                 integrate_balanced_singular(test_cell,
+                                             child,
+                                             trial_cell,
+                                             trial_patch,
+                                             order,
+                                             operator_type,
+                                             trial_function,
                                              regularize_trial_function,
                                              depth + 1));
   else
     for (const auto &child :
          split_patch_direction(trial_patch, worst_direction))
       result.add(1.0,
-                 integrate_balanced_singular(test_cell, test_patch,
-                                             trial_cell, child, order,
-                                             operator_type, trial_function,
+                 integrate_balanced_singular(test_cell,
+                                             test_patch,
+                                             trial_cell,
+                                             child,
+                                             order,
+                                             operator_type,
+                                             trial_function,
                                              regularize_trial_function,
                                              depth + 1));
   return result;
@@ -1075,9 +1085,15 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
     classify(test_cell, test_patch, trial_cell, trial_patch);
 
   if (type == GalerkinPanelPairType::regular)
-    return error_energy_adaptive(test_cell, test_patch, trial_cell,
-                                 trial_patch, order, exact_gradient,
-                                 test_coefficients, trial_coefficients, 0);
+    return error_energy_adaptive(test_cell,
+                                 test_patch,
+                                 trial_cell,
+                                 trial_patch,
+                                 order,
+                                 exact_gradient,
+                                 test_coefficients,
+                                 trial_coefficients,
+                                 0);
 
   const unsigned int effective_order =
     singular_order_for(test_cell, trial_cell, order);
@@ -1108,14 +1124,12 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
   double total = 0.0;
   // As integrate_balanced_singular(): the deeper patch of a folded pair is
   // halved parallel to the common edge.
-  if (type == GalerkinPanelPairType::common_edge && folded_singular_order != 0 &&
-      depth < singular_balance_maximum_depth &&
+  if (type == GalerkinPanelPairType::common_edge &&
+      folded_singular_order != 0 && depth < singular_balance_maximum_depth &&
       is_folded_pair(test_cell, trial_cell))
     {
-      const auto   along = common_edge_directions(test_cell,
-                                                test_patch,
-                                                trial_cell,
-                                                trial_patch);
+      const auto along =
+        common_edge_directions(test_cell, test_patch, trial_cell, trial_patch);
       const double test_depth  = test_size[1 - along[0]];
       const double trial_depth = trial_size[1 - along[1]];
       if (std::max(test_depth, trial_depth) >
@@ -1124,28 +1138,41 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
           if (test_depth > trial_depth)
             for (const auto &child :
                  split_patch_direction(test_patch, 1 - along[0]))
-              total += error_energy_balanced(test_cell, child, trial_cell,
-                                             trial_patch, order,
+              total += error_energy_balanced(test_cell,
+                                             child,
+                                             trial_cell,
+                                             trial_patch,
+                                             order,
                                              exact_gradient,
                                              test_coefficients,
-                                             trial_coefficients, depth + 1);
+                                             trial_coefficients,
+                                             depth + 1);
           else
             for (const auto &child :
                  split_patch_direction(trial_patch, 1 - along[1]))
-              total += error_energy_balanced(test_cell, test_patch,
-                                             trial_cell, child, order,
+              total += error_energy_balanced(test_cell,
+                                             test_patch,
+                                             trial_cell,
+                                             child,
+                                             order,
                                              exact_gradient,
                                              test_coefficients,
-                                             trial_coefficients, depth + 1);
+                                             trial_coefficients,
+                                             depth + 1);
           return total;
         }
     }
 
   if (depth >= singular_balance_maximum_depth || target <= 0.0 ||
       worst_extent <= singular_balance_ratio * target)
-    return error_energy_leaf(test_cell, test_patch, trial_cell, trial_patch,
-                             effective_order, exact_gradient,
-                             test_coefficients, trial_coefficients);
+    return error_energy_leaf(test_cell,
+                             test_patch,
+                             trial_cell,
+                             trial_patch,
+                             effective_order,
+                             exact_gradient,
+                             test_coefficients,
+                             trial_coefficients);
 
   // As integrate_balanced_singular(): an elongated panel with itself is
   // halved across its long direction in both copies.
@@ -1155,47 +1182,63 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
            split_patch_direction(test_patch, worst_direction))
         for (const auto &trial_child :
              split_patch_direction(trial_patch, worst_direction))
-          total += error_energy_balanced(test_cell, test_child, trial_cell,
-                                         trial_child, order, exact_gradient,
+          total += error_energy_balanced(test_cell,
+                                         test_child,
+                                         trial_cell,
+                                         trial_child,
+                                         order,
+                                         exact_gradient,
                                          test_coefficients,
-                                         trial_coefficients, depth + 1);
+                                         trial_coefficients,
+                                         depth + 1);
       return total;
     }
   // As integrate_balanced_singular(): both patches across the middle of a
   // common edge.
   if (type == GalerkinPanelPairType::common_edge)
     {
-      const auto along = common_edge_directions(test_cell,
-                                                test_patch,
-                                                trial_cell,
-                                                trial_patch);
+      const auto along =
+        common_edge_directions(test_cell, test_patch, trial_cell, trial_patch);
       if (worst_direction == along[worst_is_test ? 0 : 1])
         {
           for (const auto &test_child :
                split_patch_direction(test_patch, along[0]))
             for (const auto &trial_child :
                  split_patch_direction(trial_patch, along[1]))
-              total += error_energy_balanced(test_cell, test_child, trial_cell,
-                                             trial_child, order,
+              total += error_energy_balanced(test_cell,
+                                             test_child,
+                                             trial_cell,
+                                             trial_child,
+                                             order,
                                              exact_gradient,
                                              test_coefficients,
-                                             trial_coefficients, depth + 1);
+                                             trial_coefficients,
+                                             depth + 1);
           return total;
         }
     }
   if (worst_is_test)
-    for (const auto &child :
-         split_patch_direction(test_patch, worst_direction))
-      total += error_energy_balanced(test_cell, child, trial_cell,
-                                     trial_patch, order, exact_gradient,
-                                     test_coefficients, trial_coefficients,
+    for (const auto &child : split_patch_direction(test_patch, worst_direction))
+      total += error_energy_balanced(test_cell,
+                                     child,
+                                     trial_cell,
+                                     trial_patch,
+                                     order,
+                                     exact_gradient,
+                                     test_coefficients,
+                                     trial_coefficients,
                                      depth + 1);
   else
     for (const auto &child :
          split_patch_direction(trial_patch, worst_direction))
-      total += error_energy_balanced(test_cell, test_patch, trial_cell,
-                                     child, order, exact_gradient,
-                                     test_coefficients, trial_coefficients,
+      total += error_energy_balanced(test_cell,
+                                     test_patch,
+                                     trial_cell,
+                                     child,
+                                     order,
+                                     exact_gradient,
+                                     test_coefficients,
+                                     trial_coefficients,
                                      depth + 1);
   return total;
 }
@@ -1204,20 +1247,17 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_balanced(
 template <int spacedim>
 FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_regular(
-  const CellIterator   &test_cell,
-  const ReferencePatch &test_patch,
-  const CellIterator   &trial_cell,
-  const ReferencePatch &trial_patch,
-  const unsigned int    order,
-  const OperatorType    operator_type,
+  const CellIterator       &test_cell,
+  const ReferencePatch     &test_patch,
+  const CellIterator       &trial_cell,
+  const ReferencePatch     &trial_patch,
+  const unsigned int        order,
+  const OperatorType        operator_type,
   const Function<spacedim> *trial_function,
-  const bool regularize_trial_function,
-  const unsigned int depth) const
+  const bool                regularize_trial_function,
+  const unsigned int        depth) const
 {
-  if (!is_near_singular(test_cell,
-                        test_patch,
-                        trial_cell,
-                        trial_patch))
+  if (!is_near_singular(test_cell, test_patch, trial_cell, trial_patch))
     {
       ++near_singular_leaves;
       return integrate(test_cell,
@@ -1278,10 +1318,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_regular(
         }
     }
 
-  const auto test_points = patch_sample_points(test_cell, test_patch);
-  const auto trial_points = patch_sample_points(trial_cell, trial_patch);
-  const double test_diameter =
-    test_points.front().distance(test_points.back());
+  const auto   test_points   = patch_sample_points(test_cell, test_patch);
+  const auto   trial_points  = patch_sample_points(trial_cell, trial_patch);
+  const double test_diameter = test_points.front().distance(test_points.back());
   const double trial_diameter =
     trial_points.front().distance(trial_points.back());
   const bool split_test =
@@ -1323,7 +1362,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_regular(
 template <int spacedim>
 Point<2>
 GalerkinPanelPairIntegrator<spacedim>::orient_from_canonical_vertex(
-  const Point<2>   &point,
+  const Point<2>    &point,
   const unsigned int local_vertex) const
 {
   const Point<2> canonical_origin(0.0, 0.0);
@@ -1339,7 +1378,7 @@ GalerkinPanelPairIntegrator<spacedim>::orient_from_canonical_vertex(
 template <int spacedim>
 Point<2>
 GalerkinPanelPairIntegrator<spacedim>::orient_from_canonical_edge(
-  const Point<2>   &point,
+  const Point<2>    &point,
   const unsigned int first_local_vertex,
   const unsigned int second_local_vertex) const
 {
@@ -1364,7 +1403,7 @@ GalerkinPanelPairIntegrator<spacedim>::orient_from_canonical_edge(
 template <int spacedim>
 Point<2>
 GalerkinPanelPairIntegrator<spacedim>::orient_to_canonical_edge(
-  const Point<2>   &point,
+  const Point<2>    &point,
   const unsigned int first_local_vertex,
   const unsigned int second_local_vertex) const
 {
@@ -1393,16 +1432,18 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_layer(
   const CellIterator &trial_cell,
   const unsigned int  order) const
 {
-  FullMatrix<double> result = integrate_operator(
-    test_cell, trial_cell, order, OperatorType::single_layer);
+  FullMatrix<double> result = integrate_operator(test_cell,
+                                                 trial_cell,
+                                                 order,
+                                                 OperatorType::single_layer);
   if (singular_quadrature == GalerkinSingularQuadrature::iterated_duffy &&
       test_cell == trial_cell)
     for (unsigned int i = 0; i < result.m(); ++i)
       for (unsigned int j = i + 1; j < result.n(); ++j)
         {
           const double symmetric_value = 0.5 * (result(i, j) + result(j, i));
-          result(i, j) = symmetric_value;
-          result(j, i) = symmetric_value;
+          result(i, j)                 = symmetric_value;
+          result(j, i)                 = symmetric_value;
         }
   return result;
 }
@@ -1415,8 +1456,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_double_layer(
   const CellIterator &trial_cell,
   const unsigned int  order) const
 {
-  return integrate_operator(
-    test_cell, trial_cell, order, OperatorType::double_layer);
+  return integrate_operator(test_cell,
+                            trial_cell,
+                            order,
+                            OperatorType::double_layer);
 }
 
 
@@ -1444,8 +1487,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_and_double_layer(
       for (unsigned int j = i + 1; j < finite_element.dofs_per_cell; ++j)
         {
           const double symmetric_value = 0.5 * (result(i, j) + result(j, i));
-          result(i, j) = symmetric_value;
-          result(j, i) = symmetric_value;
+          result(i, j)                 = symmetric_value;
+          result(j, i)                 = symmetric_value;
         }
   return result;
 }
@@ -1481,8 +1524,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adjoint_double_layer(
   const CellIterator &trial_cell,
   const unsigned int  order) const
 {
-  return integrate_operator(
-    test_cell, trial_cell, order, OperatorType::adjoint_double_layer);
+  return integrate_operator(test_cell,
+                            trial_cell,
+                            order,
+                            OperatorType::adjoint_double_layer);
 }
 
 
@@ -1495,7 +1540,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adjoint_double_layer_flux(
   const Function<spacedim> &gradient) const
 {
   AssertDimension(gradient.n_components, spacedim);
-  const auto column = integrate_operator(test_cell,
+  const auto     column = integrate_operator(test_cell,
                                          trial_cell,
                                          order,
                                          OperatorType::adjoint_double_layer,
@@ -1517,17 +1562,19 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_weak_hypersingular(
 {
   static_assert(spacedim == 3,
                 "The surface-curl weak form is implemented in 3D only.");
-  return integrate_operator(
-    test_cell, trial_cell, order, OperatorType::weak_hypersingular);
+  return integrate_operator(test_cell,
+                            trial_cell,
+                            order,
+                            OperatorType::weak_hypersingular);
 }
 
 
 template <int spacedim>
 FullMatrix<double>
-GalerkinPanelPairIntegrator<spacedim>::integrate_single_double_hypersingular_both(
-  const CellIterator &test_cell,
-  const CellIterator &trial_cell,
-  const unsigned int  order) const
+GalerkinPanelPairIntegrator<spacedim>::
+  integrate_single_double_hypersingular_both(const CellIterator &test_cell,
+                                             const CellIterator &trial_cell,
+                                             const unsigned int  order) const
 {
   static_assert(spacedim == 3,
                 "The surface-curl weak form is implemented in 3D only.");
@@ -1553,8 +1600,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_double_hypersingular(
   AssertThrow(screening == 0.0,
               ExcMessage("V, K and W together are implemented for the "
                          "Laplace kernel only."));
-  return integrate_operator(
-    test_cell, trial_cell, order, OperatorType::single_double_hypersingular);
+  return integrate_operator(test_cell,
+                            trial_cell,
+                            order,
+                            OperatorType::single_double_hypersingular);
 }
 
 
@@ -1580,24 +1629,14 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
       return result;
     }
   const ReferencePatch full_patch{Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)};
-  if (is_near_singular(test_cell,
-                       full_patch,
-                       trial_cell,
-                       full_patch))
+  if (is_near_singular(test_cell, full_patch, trial_cell, full_patch))
     {
       ++near_singular_pairs;
-      return integrate_adaptive_cross_layers(test_cell,
-                                             full_patch,
-                                             trial_cell,
-                                             full_patch,
-                                             order,
-                                             0);
+      return integrate_adaptive_cross_layers(
+        test_cell, full_patch, trial_cell, full_patch, order, 0);
     }
-  return integrate_cross_layers(test_cell,
-                                full_patch,
-                                trial_cell,
-                                full_patch,
-                                order);
+  return integrate_cross_layers(
+    test_cell, full_patch, trial_cell, full_patch, order);
 }
 
 
@@ -1611,7 +1650,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
   const unsigned int    order) const
 {
   const QGauss<2> base_quadrature(order);
-  const double test_patch_jacobian =
+  const double    test_patch_jacobian =
     (test_patch.upper[0] - test_patch.lower[0]) *
     (test_patch.upper[1] - test_patch.lower[1]);
   const double trial_patch_jacobian =
@@ -1619,8 +1658,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
     (trial_patch.upper[1] - trial_patch.lower[1]);
   std::vector<Point<2>> test_points;
   std::vector<Point<2>> trial_points;
-  std::vector<double> test_weights;
-  std::vector<double> trial_weights;
+  std::vector<double>   test_weights;
+  std::vector<double>   trial_weights;
   test_points.reserve(base_quadrature.size());
   trial_points.reserve(base_quadrature.size());
   test_weights.reserve(base_quadrature.size());
@@ -1633,14 +1672,12 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
       trial_points.push_back(transform_patch_point(base_quadrature.point(q),
                                                    trial_patch.lower,
                                                    trial_patch.upper));
-      test_weights.push_back(base_quadrature.weight(q) *
-                             test_patch_jacobian);
-      trial_weights.push_back(base_quadrature.weight(q) *
-                              trial_patch_jacobian);
+      test_weights.push_back(base_quadrature.weight(q) * test_patch_jacobian);
+      trial_weights.push_back(base_quadrature.weight(q) * trial_patch_jacobian);
     }
 
-  const Quadrature<2> test_quadrature(test_points, test_weights);
-  const Quadrature<2> trial_quadrature(trial_points, trial_weights);
+  const Quadrature<2>   test_quadrature(test_points, test_weights);
+  const Quadrature<2>   trial_quadrature(trial_points, trial_weights);
   FEValues<2, spacedim> test_values(mapping,
                                     finite_element,
                                     test_quadrature,
@@ -1650,31 +1687,27 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
   FEValues<2, spacedim> trial_values(mapping,
                                      finite_element,
                                      trial_quadrature,
-                                     update_values |
-                                       update_quadrature_points |
+                                     update_values | update_quadrature_points |
                                        update_JxW_values);
   test_values.reinit(test_cell);
   trial_values.reinit(trial_cell);
 
-  CrossLayerMatrices result{
-    FullMatrix<double>(finite_element.dofs_per_cell,
-                       finite_element.dofs_per_cell),
-    FullMatrix<double>(finite_element.dofs_per_cell,
-                       finite_element.dofs_per_cell)};
+  CrossLayerMatrices result{FullMatrix<double>(finite_element.dofs_per_cell,
+                                               finite_element.dofs_per_cell),
+                            FullMatrix<double>(finite_element.dofs_per_cell,
+                                               finite_element.dofs_per_cell)};
   for (unsigned int qx = 0; qx < test_quadrature.size(); ++qx)
     for (unsigned int qy = 0; qy < trial_quadrature.size(); ++qy)
       {
         const Tensor<1, spacedim> displacement =
-          trial_values.quadrature_point(qy) -
-          test_values.quadrature_point(qx);
-        const double distance = displacement.norm();
+          trial_values.quadrature_point(qy) - test_values.quadrature_point(qx);
+        const double distance      = displacement.norm();
         const double common_factor = test_values.JxW(qx) *
                                      trial_values.JxW(qy) *
                                      single_layer_kernel(distance);
         const double adjoint_factor =
-          (displacement * test_values.normal_vector(qx)) *
-          test_values.JxW(qx) * trial_values.JxW(qy) *
-          screening_factor(distance) /
+          (displacement * test_values.normal_vector(qx)) * test_values.JxW(qx) *
+          trial_values.JxW(qy) * screening_factor(distance) /
           (4.0 * numbers::PI * distance * distance * distance);
         AssertThrow(std::isfinite(common_factor) &&
                       std::isfinite(adjoint_factor),
@@ -1682,11 +1715,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_cross_layers(
         for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
           for (unsigned int j = 0; j < finite_element.dofs_per_cell; ++j)
             {
-              const double shape_product =
-                test_values.shape_value(i, qx) *
-                trial_values.shape_value(j, qy);
-              result.single_layer(i, j) +=
-                shape_product * common_factor;
+              const double shape_product = test_values.shape_value(i, qx) *
+                                           trial_values.shape_value(j, qy);
+              result.single_layer(i, j) += shape_product * common_factor;
               result.adjoint_double_layer(i, j) +=
                 shape_product * adjoint_factor;
             }
@@ -1705,33 +1736,26 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_cross_layers(
   const unsigned int    order,
   const unsigned int    depth) const
 {
-  if (!is_near_singular(test_cell,
-                        test_patch,
-                        trial_cell,
-                        trial_patch))
+  if (!is_near_singular(test_cell, test_patch, trial_cell, trial_patch))
+    {
+      ++near_singular_leaves;
+      return integrate_cross_layers(
+        test_cell, test_patch, trial_cell, trial_patch, order);
+    }
+  if (depth >= near_singular_maximum_depth)
     {
       ++near_singular_leaves;
       return integrate_cross_layers(test_cell,
                                     test_patch,
                                     trial_cell,
                                     trial_patch,
-                                    order);
-    }
-  if (depth >= near_singular_maximum_depth)
-    {
-      ++near_singular_leaves;
-      return integrate_cross_layers(
-        test_cell,
-        test_patch,
-        trial_cell,
-        trial_patch,
-        std::max(order, near_singular_quadrature_order));
+                                    std::max(order,
+                                             near_singular_quadrature_order));
     }
 
-  const auto test_points = patch_sample_points(test_cell, test_patch);
-  const auto trial_points = patch_sample_points(trial_cell, trial_patch);
-  const double test_diameter =
-    test_points.front().distance(test_points.back());
+  const auto   test_points   = patch_sample_points(test_cell, test_patch);
+  const auto   trial_points  = patch_sample_points(trial_cell, trial_patch);
+  const double test_diameter = test_points.front().distance(test_points.back());
   const double trial_diameter =
     trial_points.front().distance(trial_points.back());
   const bool split_test =
@@ -1740,31 +1764,22 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_adaptive_cross_layers(
        1e-12 * std::max({1.0, test_diameter, trial_diameter}) &&
      test_cell->active_cell_index() < trial_cell->active_cell_index());
 
-  CrossLayerMatrices result{
-    FullMatrix<double>(finite_element.dofs_per_cell,
-                       finite_element.dofs_per_cell),
-    FullMatrix<double>(finite_element.dofs_per_cell,
-                       finite_element.dofs_per_cell)};
-  const auto patches = split_test ? split_patch(test_patch) :
-                                    split_patch(trial_patch);
+  CrossLayerMatrices result{FullMatrix<double>(finite_element.dofs_per_cell,
+                                               finite_element.dofs_per_cell),
+                            FullMatrix<double>(finite_element.dofs_per_cell,
+                                               finite_element.dofs_per_cell)};
+  const auto         patches =
+    split_test ? split_patch(test_patch) : split_patch(trial_patch);
   for (const auto &child : patches)
     {
-      const CrossLayerMatrices contribution = split_test ?
-        integrate_adaptive_cross_layers(test_cell,
-                                        child,
-                                        trial_cell,
-                                        trial_patch,
-                                        order,
-                                        depth + 1) :
-        integrate_adaptive_cross_layers(test_cell,
-                                        test_patch,
-                                        trial_cell,
-                                        child,
-                                        order,
-                                        depth + 1);
+      const CrossLayerMatrices contribution =
+        split_test ?
+          integrate_adaptive_cross_layers(
+            test_cell, child, trial_cell, trial_patch, order, depth + 1) :
+          integrate_adaptive_cross_layers(
+            test_cell, test_patch, trial_cell, child, order, depth + 1);
       result.single_layer.add(1.0, contribution.single_layer);
-      result.adjoint_double_layer.add(
-        1.0, contribution.adjoint_double_layer);
+      result.adjoint_double_layer.add(1.0, contribution.adjoint_double_layer);
     }
   return result;
 }
@@ -1779,13 +1794,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_double_layer(
   const Function<spacedim> &trial_function,
   const bool                regularize_trial_function) const
 {
-  const FullMatrix<double> local_column = integrate_operator(
-    test_cell,
-    trial_cell,
-    order,
-    OperatorType::double_layer,
-    &trial_function,
-    regularize_trial_function);
+  const FullMatrix<double> local_column =
+    integrate_operator(test_cell,
+                       trial_cell,
+                       order,
+                       OperatorType::double_layer,
+                       &trial_function,
+                       regularize_trial_function);
   Vector<double> result(local_column.m());
   for (unsigned int i = 0; i < local_column.m(); ++i)
     result[i] = local_column(i, 0);
@@ -1796,12 +1811,12 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_double_layer(
 template <int spacedim>
 FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate_operator(
-  const CellIterator &test_cell,
-  const CellIterator &trial_cell,
-  const unsigned int  order,
-  const OperatorType  operator_type,
+  const CellIterator       &test_cell,
+  const CellIterator       &trial_cell,
+  const unsigned int        order,
+  const OperatorType        operator_type,
   const Function<spacedim> *trial_function,
-  const bool regularize_trial_function) const
+  const bool                regularize_trial_function) const
 {
   AssertThrow(order > 0, ExcMessage("Quadrature order must be positive."));
   const unsigned int effective_order =
@@ -1811,10 +1826,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_operator(
       singular_order;
   const ReferencePatch full_patch{Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)};
   if (classify(test_cell, trial_cell) == GalerkinPanelPairType::regular &&
-      is_near_singular(test_cell,
-                       full_patch,
-                       trial_cell,
-                       full_patch))
+      is_near_singular(test_cell, full_patch, trial_cell, full_patch))
     {
       ++near_singular_pairs;
       return integrate_adaptive_regular(test_cell,
@@ -1843,20 +1855,30 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_operator(
   // treats each strip as the pair it is (common edge, common vertex or a
   // close regular pair).
   (void)effective_order;
-  const EdgeContact contact = nonconforming_contact(test_cell, trial_cell);
+  const EdgeContact  contact = nonconforming_contact(test_cell, trial_cell);
   FullMatrix<double> result(finite_element.dofs_per_cell,
                             n_result_columns(operator_type, trial_function));
   for (const ReferencePatch &strip : contact_strips(contact))
     result.add(1.0,
                contact.test_contains ?
-                 integrate_balanced_singular(test_cell, strip, trial_cell,
-                                             full_patch, order, operator_type,
+                 integrate_balanced_singular(test_cell,
+                                             strip,
+                                             trial_cell,
+                                             full_patch,
+                                             order,
+                                             operator_type,
                                              trial_function,
-                                             regularize_trial_function, 0) :
-                 integrate_balanced_singular(test_cell, full_patch,
-                                             trial_cell, strip, order,
-                                             operator_type, trial_function,
-                                             regularize_trial_function, 0));
+                                             regularize_trial_function,
+                                             0) :
+                 integrate_balanced_singular(test_cell,
+                                             full_patch,
+                                             trial_cell,
+                                             strip,
+                                             order,
+                                             operator_type,
+                                             trial_function,
+                                             regularize_trial_function,
+                                             0));
   return result;
 }
 
@@ -1881,17 +1903,14 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
   test_reference_points.clear();
   trial_reference_points.clear();
   pair_weights.clear();
-  if (singular_quadrature ==
-           GalerkinSingularQuadrature::iterated_duffy)
+  if (singular_quadrature == GalerkinSingularQuadrature::iterated_duffy)
     {
       AssertThrow(!half, ExcMessage("No half rule for iterated Duffy."));
       Quadrature<2> outer_quadrature;
       if (type == GalerkinPanelPairType::same_panel)
-        outer_quadrature =
-          QIterated<2>(QGauss<1>(4), duffy_outer_subdivisions);
+        outer_quadrature = QIterated<2>(QGauss<1>(4), duffy_outer_subdivisions);
       else
-        outer_quadrature =
-          QIterated<2>(QGauss<1>(2), duffy_outer_subdivisions);
+        outer_quadrature = QIterated<2>(QGauss<1>(2), duffy_outer_subdivisions);
 
       for (unsigned int qx = 0; qx < outer_quadrature.size(); ++qx)
         {
@@ -1900,21 +1919,20 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
             split_point = outer_quadrature.point(qx);
           else if (type == GalerkinPanelPairType::common_edge)
             {
-              const Point<2> canonical_test = orient_to_canonical_edge(
-                outer_quadrature.point(qx),
-                shared[0].test_index,
-                shared[1].test_index);
-              split_point = orient_from_canonical_edge(
-                Point<2>(canonical_test[0], 0.0),
-                shared[0].trial_index,
-                shared[1].trial_index);
+              const Point<2> canonical_test =
+                orient_to_canonical_edge(outer_quadrature.point(qx),
+                                         shared[0].test_index,
+                                         shared[1].test_index);
+              split_point =
+                orient_from_canonical_edge(Point<2>(canonical_test[0], 0.0),
+                                           shared[0].trial_index,
+                                           shared[1].trial_index);
             }
           else
             split_point =
               GeometryInfo<2>::unit_cell_vertex(shared[0].trial_index);
 
-          const QSplit<2> inner_quadrature(
-            QDuffy(order, 1.0), split_point);
+          const QSplit<2> inner_quadrature(QDuffy(order, 1.0), split_point);
           for (unsigned int qy = 0; qy < inner_quadrature.size(); ++qy)
             {
               test_reference_points.push_back(outer_quadrature.point(qx));
@@ -1926,10 +1944,10 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
     }
   else
     {
-      const QGauss<1> one_dimensional_quadrature(order);
+      const QGauss<1>       one_dimensional_quadrature(order);
       std::vector<Point<4>> parametric_points;
       std::vector<double>   parametric_weights;
-      const unsigned int n_1d = one_dimensional_quadrature.size();
+      const unsigned int    n_1d = one_dimensional_quadrature.size();
       parametric_points.reserve(n_1d * n_1d * n_1d * n_1d);
       parametric_weights.reserve(n_1d * n_1d * n_1d * n_1d);
       for (unsigned int q0 = 0; q0 < n_1d; ++q0)
@@ -1950,8 +1968,9 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
                   one_dimensional_quadrature.weight(q3));
               }
       const unsigned int n_regions =
-        type == GalerkinPanelPairType::same_panel ? (half ? 4 : 8) :
-        type == GalerkinPanelPairType::common_edge ? 6 : 4;
+        type == GalerkinPanelPairType::same_panel  ? (half ? 4 : 8) :
+        type == GalerkinPanelPairType::common_edge ? 6 :
+                                                     4;
       test_reference_points.reserve(n_regions * parametric_points.size());
       trial_reference_points.reserve(n_regions * parametric_points.size());
       pair_weights.reserve(n_regions * parametric_points.size());
@@ -1967,76 +1986,69 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
 
               if (type == GalerkinPanelPairType::same_panel)
                 {
-                  const std::array<double, 4> z = {{
-                    (1.0 - p[0]) * p[3],
-                    (1.0 - p[0] * p[1]) * p[2],
-                    p[0] + (1.0 - p[0]) * p[3],
-                    p[0] * p[1] + (1.0 - p[0] * p[1]) * p[2]}};
-                  const std::array<std::array<unsigned int, 4>, 8> indices = {{
-                    {{0, 1, 2, 3}},
-                    {{1, 0, 3, 2}},
-                    {{0, 3, 2, 1}},
-                    {{1, 2, 3, 0}},
-                    {{2, 1, 0, 3}},
-                    {{3, 0, 1, 2}},
-                    {{2, 3, 0, 1}},
-                    {{3, 2, 1, 0}}
-                  }};
-                  x = Point<2>(z[indices[region][0]],
-                               z[indices[region][1]]);
-                  y = Point<2>(z[indices[region][2]],
-                               z[indices[region][3]]);
+                  const std::array<double, 4> z = {
+                    {(1.0 - p[0]) * p[3],
+                     (1.0 - p[0] * p[1]) * p[2],
+                     p[0] + (1.0 - p[0]) * p[3],
+                     p[0] * p[1] + (1.0 - p[0] * p[1]) * p[2]}};
+                  const std::array<std::array<unsigned int, 4>, 8> indices = {
+                    {{{0, 1, 2, 3}},
+                     {{1, 0, 3, 2}},
+                     {{0, 3, 2, 1}},
+                     {{1, 2, 3, 0}},
+                     {{2, 1, 0, 3}},
+                     {{3, 0, 1, 2}},
+                     {{2, 3, 0, 1}},
+                     {{3, 2, 1, 0}}}};
+                  x = Point<2>(z[indices[region][0]], z[indices[region][1]]);
+                  y = Point<2>(z[indices[region][2]], z[indices[region][3]]);
                   transformation_jacobian =
                     p[0] * (1.0 - p[0]) * (1.0 - p[0] * p[1]);
                 }
               else if (type == GalerkinPanelPairType::common_edge)
                 {
-                  const std::array<double, 4> z1 = {{
-                    (1.0 - p[0]) * p[3] + p[0],
-                    p[0] * p[2],
-                    (1.0 - p[0]) * p[3],
-                    p[0] * p[1]}};
-                  const std::array<double, 4> z2 = {{
-                    (1.0 - p[0] * p[1]) * p[3] + p[0] * p[1],
-                    p[0] * p[2],
-                    (1.0 - p[0] * p[1]) * p[3],
-                    p[0]}};
-                  const std::array<std::array<unsigned int, 4>, 2> first = {{
-                    {{0, 1, 2, 3}}, {{2, 1, 0, 3}}
-                  }};
-                  const std::array<std::array<unsigned int, 4>, 4> second = {{
-                    {{0, 1, 2, 3}},
-                    {{0, 3, 2, 1}},
-                    {{2, 1, 0, 3}},
-                    {{2, 3, 0, 1}}
-                  }};
+                  const std::array<double, 4> z1 = {{(1.0 - p[0]) * p[3] + p[0],
+                                                     p[0] * p[2],
+                                                     (1.0 - p[0]) * p[3],
+                                                     p[0] * p[1]}};
+                  const std::array<double, 4> z2 = {
+                    {(1.0 - p[0] * p[1]) * p[3] + p[0] * p[1],
+                     p[0] * p[2],
+                     (1.0 - p[0] * p[1]) * p[3],
+                     p[0]}};
+                  const std::array<std::array<unsigned int, 4>, 2> first = {
+                    {{{0, 1, 2, 3}}, {{2, 1, 0, 3}}}};
+                  const std::array<std::array<unsigned int, 4>, 4> second = {
+                    {{{0, 1, 2, 3}},
+                     {{0, 3, 2, 1}},
+                     {{2, 1, 0, 3}},
+                     {{2, 3, 0, 1}}}};
                   const auto &z = region < 2 ? z1 : z2;
                   const auto &idx =
                     region < 2 ? first[region] : second[region - 2];
-                  x = Point<2>(z[idx[0]], z[idx[1]]);
-                  y = Point<2>(z[idx[2]], z[idx[3]]);
-                  transformation_jacobian =
-                    region < 2 ? p[0] * p[0] * (1.0 - p[0]) :
-                                 p[0] * p[0] * (1.0 - p[0] * p[1]);
-                  x = orient_from_canonical_edge(
-                    x, shared[0].test_index, shared[1].test_index);
-                  y = orient_from_canonical_edge(
-                    y, shared[0].trial_index, shared[1].trial_index);
+                  x                       = Point<2>(z[idx[0]], z[idx[1]]);
+                  y                       = Point<2>(z[idx[2]], z[idx[3]]);
+                  transformation_jacobian = region < 2 ?
+                                              p[0] * p[0] * (1.0 - p[0]) :
+                                              p[0] * p[0] * (1.0 - p[0] * p[1]);
+                  x                       = orient_from_canonical_edge(x,
+                                                 shared[0].test_index,
+                                                 shared[1].test_index);
+                  y                       = orient_from_canonical_edge(y,
+                                                 shared[0].trial_index,
+                                                 shared[1].trial_index);
                 }
               else
                 {
-                  const std::array<double, 4> z = {{
-                    p[0], p[0] * p[1], p[0] * p[2], p[0] * p[3]}};
-                  const std::array<std::array<unsigned int, 4>, 4> indices = {{
-                    {{0, 1, 2, 3}},
-                    {{1, 0, 2, 3}},
-                    {{1, 2, 0, 3}},
-                    {{1, 2, 3, 0}}
-                  }};
-                  x = Point<2>(z[indices[region][0]],
-                               z[indices[region][1]]);
-                  y = Point<2>(z[indices[region][2]],
-                               z[indices[region][3]]);
+                  const std::array<double, 4> z = {
+                    {p[0], p[0] * p[1], p[0] * p[2], p[0] * p[3]}};
+                  const std::array<std::array<unsigned int, 4>, 4> indices = {
+                    {{{0, 1, 2, 3}},
+                     {{1, 0, 2, 3}},
+                     {{1, 2, 0, 3}},
+                     {{1, 2, 3, 0}}}};
+                  x = Point<2>(z[indices[region][0]], z[indices[region][1]]);
+                  y = Point<2>(z[indices[region][2]], z[indices[region][3]]);
                   transformation_jacobian = p[0] * p[0] * p[0];
                   x = orient_from_canonical_vertex(x, shared[0].test_index);
                   y = orient_from_canonical_vertex(y, shared[0].trial_index);
@@ -2049,22 +2061,21 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
             }
         }
     }
-
 }
 
 
 template <int spacedim>
 void
 GalerkinPanelPairIntegrator<spacedim>::pair_quadrature(
-  const CellIterator   &test_cell,
-  const ReferencePatch &test_patch,
-  const CellIterator   &trial_cell,
-  const ReferencePatch &trial_patch,
-  const unsigned int    order,
-  std::vector<Point<2>> &test_reference_points,
-  std::vector<Point<2>> &trial_reference_points,
+  const CellIterator                       &test_cell,
+  const ReferencePatch                     &test_patch,
+  const CellIterator                       &trial_cell,
+  const ReferencePatch                     &trial_patch,
+  const unsigned int                        order,
+  std::vector<Point<2>>                    &test_reference_points,
+  std::vector<Point<2>>                    &trial_reference_points,
   std::vector<std::array<unsigned int, 2>> &pair_indices,
-  std::vector<double>   &pair_weights) const
+  std::vector<double>                      &pair_weights) const
 {
   test_reference_points.clear();
   trial_reference_points.clear();
@@ -2082,7 +2093,7 @@ GalerkinPanelPairIntegrator<spacedim>::pair_quadrature(
       // `order^2` distinct points each even though the pair has `order^4`
       // entries. Storing the points once and pairing them by index keeps the
       // mapping and shape-function evaluations down by that same factor.
-      const QGauss<2> quadrature(order);
+      const QGauss<2>    quadrature(order);
       const unsigned int n = quadrature.size();
       test_reference_points.reserve(n);
       trial_reference_points.reserve(n);
@@ -2144,14 +2155,14 @@ GalerkinPanelPairIntegrator<spacedim>::pair_quadrature(
 template <int spacedim>
 FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate(
-  const CellIterator   &test_cell,
-  const ReferencePatch &test_patch,
-  const CellIterator   &trial_cell,
-  const ReferencePatch &trial_patch,
-  const unsigned int    order,
-  const OperatorType    operator_type,
+  const CellIterator       &test_cell,
+  const ReferencePatch     &test_patch,
+  const CellIterator       &trial_cell,
+  const ReferencePatch     &trial_patch,
+  const unsigned int        order,
+  const OperatorType        operator_type,
   const Function<spacedim> *trial_function,
-  const bool regularize_trial_function) const
+  const bool                regularize_trial_function) const
 {
   if (takes_light_path(operator_type, trial_function))
     return integrate_light(test_cell,
@@ -2179,8 +2190,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
   // on the same machine and the same load.
   static const bool cache_disabled =
     std::getenv("PIBEM_NO_PAIR_CACHE") != nullptr;
-  const bool cacheable = !cache_disabled && is_full_patch(test_patch) &&
-                         is_full_patch(trial_patch);
+  const bool cacheable =
+    !cache_disabled && is_full_patch(test_patch) && is_full_patch(trial_patch);
   std::array<int, 7> key{{-1, -1, -1, -1, -1, -1, -1}};
   if (cacheable)
     {
@@ -2222,8 +2233,14 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
   std::vector<Point<2>>                    trial_reference_points;
   std::vector<std::array<unsigned int, 2>> pair_indices;
   std::vector<double>                      pair_weights;
-  pair_quadrature(test_cell, test_patch, trial_cell, trial_patch, order,
-                  test_reference_points, trial_reference_points, pair_indices,
+  pair_quadrature(test_cell,
+                  test_patch,
+                  trial_cell,
+                  trial_patch,
+                  order,
+                  test_reference_points,
+                  trial_reference_points,
+                  pair_indices,
                   pair_weights);
 
 
@@ -2236,18 +2253,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
   // twice, for a quantity the single- and double-layer kernels never touch.
   const UpdateFlags flags =
     update_values | update_normal_vectors | update_quadrature_points |
-    update_JxW_values |
-    (wants_gradients ? update_gradients : UpdateFlags());
-  auto test_values_owned =
-    std::make_unique<FEValues<2, spacedim>>(mapping,
-                                            finite_element,
-                                            test_quadrature,
-                                            flags);
-  auto trial_values_owned =
-    std::make_unique<FEValues<2, spacedim>>(mapping,
-                                            finite_element,
-                                            trial_quadrature,
-                                            flags);
+    update_JxW_values | (wants_gradients ? update_gradients : UpdateFlags());
+  auto test_values_owned = std::make_unique<FEValues<2, spacedim>>(
+    mapping, finite_element, test_quadrature, flags);
+  auto trial_values_owned = std::make_unique<FEValues<2, spacedim>>(
+    mapping, finite_element, trial_quadrature, flags);
   test_values_owned->reinit(test_cell);
   trial_values_owned->reinit(trial_cell);
   profile.setup_seconds += std::chrono::duration<double>(
@@ -2261,8 +2271,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
       rule.weights      = pair_weights;
       rule.test_values  = std::move(test_values_owned);
       rule.trial_values = std::move(trial_values_owned);
-      CachedPairRule &stored = pair_rule_cache.emplace(key, std::move(rule))
-                                 .first->second;
+      CachedPairRule &stored =
+        pair_rule_cache.emplace(key, std::move(rule)).first->second;
       return integrate_pairs(*stored.test_values,
                              *stored.trial_values,
                              stored.indices,
@@ -2303,21 +2313,23 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
                 screening == 0.0,
               ExcMessage("The weak hypersingular operator is implemented for "
                          "the Laplace kernel only."));
-  const auto kernel_start = std::chrono::steady_clock::now();
-  const unsigned int n_test_points  = test_values.get_quadrature().size();
-  const unsigned int n_trial_points = trial_values.get_quadrature().size();
-  std::vector<double>              trial_scalar;
-  std::vector<double>              test_scalar;
-  std::vector<double>              trial_flux;
+  const auto          kernel_start   = std::chrono::steady_clock::now();
+  const unsigned int  n_test_points  = test_values.get_quadrature().size();
+  const unsigned int  n_trial_points = trial_values.get_quadrature().size();
+  std::vector<double> trial_scalar;
+  std::vector<double> test_scalar;
+  std::vector<double> trial_flux;
   std::vector<Tensor<1, spacedim>> trial_gradient;
   const auto function_start = std::chrono::steady_clock::now();
   if (trial_function != nullptr)
     {
       // The datum at the points of each cell: the function of its slot.
-      const auto                trial_cell  = trial_values.get_cell();
-      const auto                test_cell   = test_values.get_cell();
-      const Function<spacedim> &trial_piece = on_cell(*trial_function, trial_cell);
-      const Function<spacedim> &test_piece  = on_cell(*trial_function, test_cell);
+      const auto                trial_cell = trial_values.get_cell();
+      const auto                test_cell  = test_values.get_cell();
+      const Function<spacedim> &trial_piece =
+        on_cell(*trial_function, trial_cell);
+      const Function<spacedim> &test_piece =
+        on_cell(*trial_function, test_cell);
       profile.function_calls +=
         n_trial_points + (regularize_trial_function ? n_test_points : 0);
       if (operator_type == OperatorType::double_layer ||
@@ -2358,10 +2370,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
         }
     }
 
-  profile.function_seconds += std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() -
-                                function_start)
-                                .count();
+  profile.function_seconds +=
+    std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                  function_start)
+      .count();
 
   const bool fused = operator_type == OperatorType::single_and_double_layer;
   FullMatrix<double> local_matrix(finite_element.dofs_per_cell,
@@ -2374,7 +2386,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
       const Tensor<1, spacedim> displacement =
         trial_values.quadrature_point(qt) - test_values.quadrature_point(q);
       const double distance = displacement.norm();
-      const double single = single_layer_kernel(distance);
+      const double single   = single_layer_kernel(distance);
       // For the Laplace kernel dG/dn_y = -(y - x).n_y / (4 pi r^3) for the
       // double layer and dG/dn_x = (y - x).n_x / (4 pi r^3) for its adjoint;
       // the screened kernel multiplies both by E(r).
@@ -2391,8 +2403,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
           (displacement * test_values.normal_vector(q)) * factor /
             (4.0 * numbers::PI * distance * distance * distance) :
           single;
-      const double weight = pair_weights[p] * test_values.JxW(q) *
-                            trial_values.JxW(qt);
+      const double weight =
+        pair_weights[p] * test_values.JxW(q) * trial_values.JxW(qt);
       AssertThrow(std::isfinite(kernel) && std::isfinite(weight),
                   ExcMessage("Non-finite Galerkin panel-pair integrand."));
       if (is_joint(operator_type))
@@ -2403,8 +2415,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
             (4.0 * numbers::PI * distance * distance * distance);
           // K of the pair the other way round: the trial point as test
           // point, (y - x) . n_x / (4 pi r^3).
-          const bool   both = operator_type ==
-                            OperatorType::single_double_hypersingular_both;
+          const bool both =
+            operator_type == OperatorType::single_double_hypersingular_both;
           const double back_kernel =
             both ? (displacement * test_values.normal_vector(q)) /
                      (4.0 * numbers::PI * distance * distance * distance) :
@@ -2412,14 +2424,15 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
           for (unsigned int i = 0; i < dpc; ++i)
             {
               const double test_value = test_values.shape_value(i, q) * weight;
-              const Tensor<1, spacedim> test_curl = cross_product_3d(
-                test_values.normal_vector(q), test_values.shape_grad(i, q));
+              const Tensor<1, spacedim> test_curl =
+                cross_product_3d(test_values.normal_vector(q),
+                                 test_values.shape_grad(i, q));
               for (unsigned int j = 0; j < dpc; ++j)
                 {
                   const double trial_value = trial_values.shape_value(j, qt);
-                  const Tensor<1, spacedim> trial_curl = cross_product_3d(
-                    trial_values.normal_vector(qt),
-                    trial_values.shape_grad(j, qt));
+                  const Tensor<1, spacedim> trial_curl =
+                    cross_product_3d(trial_values.normal_vector(qt),
+                                     trial_values.shape_grad(j, qt));
                   local_matrix(i, j) += test_value * single * trial_value;
                   local_matrix(i, dpc + j) +=
                     test_value * double_kernel * trial_value;
@@ -2448,11 +2461,12 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
           for (unsigned int j = 0; j < finite_element.dofs_per_cell; ++j)
             if (operator_type == OperatorType::weak_hypersingular)
               {
-                const Tensor<1, spacedim> test_curl = cross_product_3d(
-                  test_values.normal_vector(q), test_values.shape_grad(i, q));
-                const Tensor<1, spacedim> trial_curl = cross_product_3d(
-                  trial_values.normal_vector(qt),
-                  trial_values.shape_grad(j, qt));
+                const Tensor<1, spacedim> test_curl =
+                  cross_product_3d(test_values.normal_vector(q),
+                                   test_values.shape_grad(i, q));
+                const Tensor<1, spacedim> trial_curl =
+                  cross_product_3d(trial_values.normal_vector(qt),
+                                   trial_values.shape_grad(j, qt));
                 local_matrix(i, j) +=
                   (test_curl * trial_curl) * single * weight;
               }
@@ -2461,19 +2475,20 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
                                     trial_values.shape_value(j, qt) * weight;
         else if (operator_type == OperatorType::weak_hypersingular)
           {
-            const auto test_curl = cross_product_3d(
-              test_values.normal_vector(q), test_values.shape_grad(i, q));
+            const auto test_curl =
+              cross_product_3d(test_values.normal_vector(q),
+                               test_values.shape_grad(i, q));
             // The trial curl is taken at the trial point: with the factorised
             // regular rule the two indices differ, and using the test index
             // here would evaluate the trial normal at the wrong point.
-            const auto trial_curl = cross_product_3d(
-              trial_values.normal_vector(qt), trial_gradient[qt]);
-            local_matrix(i, 0) +=
-              (test_curl * trial_curl) * single * weight;
+            const auto trial_curl =
+              cross_product_3d(trial_values.normal_vector(qt),
+                               trial_gradient[qt]);
+            local_matrix(i, 0) += (test_curl * trial_curl) * single * weight;
           }
         else if (operator_type == OperatorType::adjoint_double_layer)
-          local_matrix(i, 0) += test_values.shape_value(i, q) * kernel *
-                                trial_flux[qt] * weight;
+          local_matrix(i, 0) +=
+            test_values.shape_value(i, q) * kernel * trial_flux[qt] * weight;
         else if (operator_type == OperatorType::single_layer)
           {
             // V applied to a flux given as a function rather than as a
@@ -2483,8 +2498,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
             // <V lambda, phi_i>, through the single-layer kernel - which
             // behaves like 1/r and is what the Sauter-Schwab rule is built
             // for - instead of through the double layer's 1/r^2.
-            local_matrix(i, 0) += test_values.shape_value(i, q) * single *
-                                  trial_flux[qt] * weight;
+            local_matrix(i, 0) +=
+              test_values.shape_value(i, q) * single * trial_flux[qt] * weight;
           }
         else
           {
@@ -2517,9 +2532,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_layer_flux(
   const Function<spacedim> &gradient) const
 {
   AssertDimension(gradient.n_components, spacedim);
-  const auto column = integrate_operator(test_cell, trial_cell, order,
-                                         OperatorType::single_layer,
-                                         &gradient, false);
+  const auto column = integrate_operator(
+    test_cell, trial_cell, order, OperatorType::single_layer, &gradient, false);
   Vector<double> result(column.m());
   for (unsigned int i = 0; i < column.m(); ++i)
     result[i] = column(i, 0);
@@ -2530,12 +2544,14 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_layer_flux(
 template <int spacedim>
 Vector<double>
 GalerkinPanelPairIntegrator<spacedim>::integrate_hypersingular_rhs(
-  const CellIterator &test_cell, const CellIterator &trial_cell,
-  const unsigned int order, const Function<spacedim> &gradient) const
+  const CellIterator       &test_cell,
+  const CellIterator       &trial_cell,
+  const unsigned int        order,
+  const Function<spacedim> &gradient) const
 {
   AssertDimension(gradient.n_components, spacedim);
-  const auto column = integrate_operator(test_cell, trial_cell, order,
-    OperatorType::weak_hypersingular, &gradient);
+  const auto column = integrate_operator(
+    test_cell, trial_cell, order, OperatorType::weak_hypersingular, &gradient);
   Vector<double> result(column.m());
   for (unsigned int i = 0; i < column.m(); ++i)
     result[i] = column(i, 0);
@@ -2579,15 +2595,17 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_leaf(
                   pair_weights);
 
   const std::vector<double> unit_weights(test_reference_points.size(), 1.0);
-  const Quadrature<2>       test_quadrature(test_reference_points,
-                                            unit_weights);
-  const Quadrature<2>       trial_quadrature(trial_reference_points,
-                                             unit_weights);
-  const UpdateFlags         flags = update_values | update_normal_vectors |
+  const Quadrature<2> test_quadrature(test_reference_points, unit_weights);
+  const Quadrature<2> trial_quadrature(trial_reference_points, unit_weights);
+  const UpdateFlags   flags = update_values | update_normal_vectors |
                             update_quadrature_points | update_JxW_values;
-  FEValues<2, spacedim> test_values(mapping, finite_element, test_quadrature,
+  FEValues<2, spacedim> test_values(mapping,
+                                    finite_element,
+                                    test_quadrature,
                                     flags);
-  FEValues<2, spacedim> trial_values(mapping, finite_element, trial_quadrature,
+  FEValues<2, spacedim> trial_values(mapping,
+                                     finite_element,
+                                     trial_quadrature,
                                      flags);
   test_values.reinit(test_cell);
   trial_values.reinit(trial_cell);
@@ -2661,20 +2679,28 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_adaptive(
   const unsigned int         depth) const
 {
   if (!is_near_singular(test_cell, test_patch, trial_cell, trial_patch))
-    return error_energy_leaf(test_cell, test_patch, trial_cell, trial_patch,
-                             order, exact_gradient, test_coefficients,
+    return error_energy_leaf(test_cell,
+                             test_patch,
+                             trial_cell,
+                             trial_patch,
+                             order,
+                             exact_gradient,
+                             test_coefficients,
                              trial_coefficients);
 
   if (depth >= near_singular_maximum_depth)
-    return error_energy_leaf(test_cell, test_patch, trial_cell, trial_patch,
+    return error_energy_leaf(test_cell,
+                             test_patch,
+                             trial_cell,
+                             trial_patch,
                              std::max(order, near_singular_quadrature_order),
-                             exact_gradient, test_coefficients,
+                             exact_gradient,
+                             test_coefficients,
                              trial_coefficients);
 
-  const auto   test_points  = patch_sample_points(test_cell, test_patch);
-  const auto   trial_points = patch_sample_points(trial_cell, trial_patch);
-  const double test_diameter =
-    test_points.front().distance(test_points.back());
+  const auto   test_points   = patch_sample_points(test_cell, test_patch);
+  const auto   trial_points  = patch_sample_points(trial_cell, trial_patch);
+  const double test_diameter = test_points.front().distance(test_points.back());
   const double trial_diameter =
     trial_points.front().distance(trial_points.back());
   const bool split_test =
@@ -2686,14 +2712,26 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_adaptive(
   double total = 0.0;
   if (split_test)
     for (const auto &child : split_patch(test_patch))
-      total += error_energy_adaptive(test_cell, child, trial_cell, trial_patch,
-                                     order, exact_gradient, test_coefficients,
-                                     trial_coefficients, depth + 1);
+      total += error_energy_adaptive(test_cell,
+                                     child,
+                                     trial_cell,
+                                     trial_patch,
+                                     order,
+                                     exact_gradient,
+                                     test_coefficients,
+                                     trial_coefficients,
+                                     depth + 1);
   else
     for (const auto &child : split_patch(trial_patch))
-      total += error_energy_adaptive(test_cell, test_patch, trial_cell, child,
-                                     order, exact_gradient, test_coefficients,
-                                     trial_coefficients, depth + 1);
+      total += error_energy_adaptive(test_cell,
+                                     test_patch,
+                                     trial_cell,
+                                     child,
+                                     order,
+                                     exact_gradient,
+                                     test_coefficients,
+                                     trial_coefficients,
+                                     depth + 1);
   return total;
 }
 
@@ -2716,33 +2754,56 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_error_energy(
   const GalerkinPanelPairType pair_type = classify(test_cell, trial_cell);
   const unsigned int          effective_order =
     pair_type == GalerkinPanelPairType::regular || singular_order == 0 ?
-      order :
-      singular_order;
+               order :
+               singular_order;
 
   if (pair_type == GalerkinPanelPairType::regular &&
       is_near_singular(test_cell, full_patch, trial_cell, full_patch))
-    return error_energy_adaptive(test_cell, full_patch, trial_cell, full_patch,
-                                 order, exact_gradient, test_coefficients,
-                                 trial_coefficients, 0);
+    return error_energy_adaptive(test_cell,
+                                 full_patch,
+                                 trial_cell,
+                                 full_patch,
+                                 order,
+                                 exact_gradient,
+                                 test_coefficients,
+                                 trial_coefficients,
+                                 0);
 
   if (!share_nonconforming_edge(test_cell, trial_cell))
-    return error_energy_balanced(test_cell, full_patch, trial_cell,
-                                 full_patch, order, exact_gradient,
-                                 test_coefficients, trial_coefficients, 0);
+    return error_energy_balanced(test_cell,
+                                 full_patch,
+                                 trial_cell,
+                                 full_patch,
+                                 order,
+                                 exact_gradient,
+                                 test_coefficients,
+                                 trial_coefficients,
+                                 0);
 
   // Non-conforming edge: the containing cell in strips across the contact,
   // as the operator integrals do.
   (void)effective_order;
   const EdgeContact contact = nonconforming_contact(test_cell, trial_cell);
-  double total = 0.0;
+  double            total   = 0.0;
   for (const ReferencePatch &strip : contact_strips(contact))
-    total += contact.test_contains ?
-               error_energy_balanced(test_cell, strip, trial_cell, full_patch,
-                                     order, exact_gradient, test_coefficients,
-                                     trial_coefficients, 0) :
-               error_energy_balanced(test_cell, full_patch, trial_cell, strip,
-                                     order, exact_gradient, test_coefficients,
-                                     trial_coefficients, 0);
+    total += contact.test_contains ? error_energy_balanced(test_cell,
+                                                           strip,
+                                                           trial_cell,
+                                                           full_patch,
+                                                           order,
+                                                           exact_gradient,
+                                                           test_coefficients,
+                                                           trial_coefficients,
+                                                           0) :
+                                     error_energy_balanced(test_cell,
+                                                           full_patch,
+                                                           trial_cell,
+                                                           strip,
+                                                           order,
+                                                           exact_gradient,
+                                                           test_coefficients,
+                                                           trial_coefficients,
+                                                           0);
   return total;
 }
 
@@ -2820,10 +2881,9 @@ GalerkinPanelPairIntegrator<spacedim>::set_light_geometry(const bool enable)
         }
       if (tensor)
         {
-          const std::vector<double> coefficients =
-            lagrange_data(nodes);
-          const Point<2> probe(0.3141, 0.7182);
-          LagrangeValues v0, v1;
+          const std::vector<double> coefficients = lagrange_data(nodes);
+          const Point<2>            probe(0.3141, 0.7182);
+          LagrangeValues            v0, v1;
           lagrange_basis(coefficients, n1, probe[0], v0, nullptr);
           lagrange_basis(coefficients, n1, probe[1], v1, nullptr);
           for (unsigned int k = 0; tensor && k < support.size(); ++k)
@@ -2839,7 +2899,7 @@ GalerkinPanelPairIntegrator<spacedim>::set_light_geometry(const bool enable)
     }
   geometry_coefficients = lagrange_data(geometry_nodes);
   shape_coefficients    = lagrange_data(shape_nodes);
-  light_geometry = true;
+  light_geometry        = true;
   return true;
 }
 
@@ -2865,25 +2925,26 @@ GalerkinPanelPairIntegrator<spacedim>::light_cell(
   // The nodes of the mesh mapping; on the exact geometry, evaluate_geometry
   // projects the points it reconstructs from them.
   const Mapping<2, spacedim> &nodal_mapping =
-    projected_mapping != nullptr ?
-      static_cast<const Mapping<2, spacedim> &>(
-        projected_mapping->get_mesh_mapping()) :
-      mapping;
+    projected_mapping != nullptr ? static_cast<const Mapping<2, spacedim> &>(
+                                     projected_mapping->get_mesh_mapping()) :
+                                   mapping;
   for (unsigned int j = 0; j < n; ++j)
     for (unsigned int i = 0; i < n; ++i)
       data.nodes[i + n * j] = nodal_mapping.transform_unit_to_real_cell(
         cell, Point<2>(geometry_nodes[i], geometry_nodes[j]));
-  data.orientation       = 1.0;
+  data.orientation        = 1.0;
   light_cell_valid[index] = true;
 
   // The orientation of the normal is the library's, and the reconstructed
   // map must reproduce the library's on every cell it is used on.
   if (!light_check_values)
-    light_check_values = std::make_unique<FEValues<2, spacedim>>(
-      mapping,
-      finite_element,
-      QGauss<2>(3),
-      update_quadrature_points | update_normal_vectors | update_JxW_values);
+    light_check_values =
+      std::make_unique<FEValues<2, spacedim>>(mapping,
+                                              finite_element,
+                                              QGauss<2>(3),
+                                              update_quadrature_points |
+                                                update_normal_vectors |
+                                                update_JxW_values);
   FEValues<2, spacedim> &check = *light_check_values;
   check.reinit(cell);
   const Quadrature<2> &rule = check.get_quadrature();
@@ -2924,8 +2985,10 @@ GalerkinPanelPairIntegrator<spacedim>::map_to_real_cell(
   const LightCell   &data = light_cell(cell);
   const unsigned int n    = geometry_nodes.size();
   LagrangeValues     v0, v1;
-  lagrange_basis(geometry_coefficients, geometry_nodes.size(), reference[0], v0, nullptr);
-  lagrange_basis(geometry_coefficients, geometry_nodes.size(), reference[1], v1, nullptr);
+  lagrange_basis(
+    geometry_coefficients, geometry_nodes.size(), reference[0], v0, nullptr);
+  lagrange_basis(
+    geometry_coefficients, geometry_nodes.size(), reference[1], v1, nullptr);
   Tensor<1, spacedim> x;
   for (unsigned int j = 0; j < n; ++j)
     {
@@ -2946,10 +3009,10 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
   PointSet                    &set) const
 {
   const auto         geometry_start = std::chrono::steady_clock::now();
-  const LightCell   &data = light_cell(cell);
-  const unsigned int n    = geometry_nodes.size();
-  const unsigned int m    = reference_points.size();
-  set.n                   = m;
+  const LightCell   &data           = light_cell(cell);
+  const unsigned int n              = geometry_nodes.size();
+  const unsigned int m              = reference_points.size();
+  set.n                             = m;
   set.points.resize(m);
   set.normals.resize(m);
   set.jacobians.resize(m);
@@ -2980,7 +3043,7 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
         m,
         [&](const unsigned int begin,
             const unsigned int count,
-            const double (&s)[9][4]) {
+            const double(&s)[9][4]) {
           for (unsigned int q = 0; q < count; ++q)
             {
               DerivativeForm<1, 2, spacedim> V, D;
@@ -2991,11 +3054,7 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
                   V[c][0] = s[3 + c][q];
                   V[c][1] = s[6 + c][q];
                 }
-              exact_evaluator->project(reference_points[begin + q],
-                                       x,
-                                       V,
-                                       y,
-                                       D);
+              exact_evaluator->project(reference_points[begin + q], x, V, y, D);
               Tensor<1, spacedim> tangent1, tangent2;
               for (unsigned int c = 0; c < 3; ++c)
                 {
@@ -3004,7 +3063,7 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
                 }
               const Tensor<1, spacedim> normal =
                 cross_product_3d(tangent1, tangent2);
-              const double jacobian       = normal.norm();
+              const double jacobian    = normal.norm();
               set.points[begin + q]    = y;
               set.normals[begin + q]   = (orientation / jacobian) * normal;
               set.jacobians[begin + q] = jacobian;
@@ -3025,7 +3084,7 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
       m,
       [&](const unsigned int begin,
           const unsigned int count,
-          const double (&s)[9][4]) {
+          const double(&s)[9][4]) {
         alignas(32) double normal[3][4], jacobian[4];
 #pragma omp simd
         for (unsigned int q = 0; q < 4; ++q)
@@ -3059,10 +3118,10 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_geometry(
           }
       });
   profile.geometry_points += m;
-  profile.geometry_seconds += std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() -
-                                geometry_start)
-                                .count();
+  profile.geometry_seconds +=
+    std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                  geometry_start)
+      .count();
 }
 
 
@@ -3075,13 +3134,13 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_shapes(
   const auto shape_start = std::chrono::steady_clock::now();
   struct Timer
   {
-    double                                &total;
-    std::chrono::steady_clock::time_point  start;
+    double                               &total;
+    std::chrono::steady_clock::time_point start;
     ~Timer()
     {
-      total += std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                             start)
-                 .count();
+      total +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
     }
   } timer{profile.shape_seconds, shape_start};
   const unsigned int dpc = finite_element.dofs_per_cell;
@@ -3098,8 +3157,16 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_shapes(
   LagrangeValues v0, v1;
   for (unsigned int q = 0; q < m; ++q)
     {
-      lagrange_basis(shape_coefficients, shape_nodes.size(), reference_points[q][0], v0, nullptr);
-      lagrange_basis(shape_coefficients, shape_nodes.size(), reference_points[q][1], v1, nullptr);
+      lagrange_basis(shape_coefficients,
+                     shape_nodes.size(),
+                     reference_points[q][0],
+                     v0,
+                     nullptr);
+      lagrange_basis(shape_coefficients,
+                     shape_nodes.size(),
+                     reference_points[q][1],
+                     v1,
+                     nullptr);
       for (unsigned int k = 0; k < dpc; ++k)
         shapes[k * m + q] =
           v0[shape_tensor_index[k][0]] * v1[shape_tensor_index[k][1]];
@@ -3151,12 +3218,20 @@ GalerkinPanelPairIntegrator<spacedim>::evaluate_shape_derivatives(
   LagrangeValues v0, v1, d0, d1;
   for (unsigned int q = 0; q < m; ++q)
     {
-      lagrange_basis(shape_coefficients, shape_nodes.size(), reference_points[q][0], v0, &d0);
-      lagrange_basis(shape_coefficients, shape_nodes.size(), reference_points[q][1], v1, &d1);
+      lagrange_basis(shape_coefficients,
+                     shape_nodes.size(),
+                     reference_points[q][0],
+                     v0,
+                     &d0);
+      lagrange_basis(shape_coefficients,
+                     shape_nodes.size(),
+                     reference_points[q][1],
+                     v1,
+                     &d1);
       for (unsigned int k = 0; k < dpc; ++k)
         {
-          const unsigned int a = shape_tensor_index[k][0];
-          const unsigned int b = shape_tensor_index[k][1];
+          const unsigned int a    = shape_tensor_index[k][0];
+          const unsigned int b    = shape_tensor_index[k][1];
           derivatives0[k * m + q] = d0[a] * v1[b];
           derivatives1[k * m + q] = v0[a] * d1[b];
         }
@@ -3246,12 +3321,12 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
       auto rule_hit = gauss_rules.find(order);
       if (rule_hit == gauss_rules.end())
         rule_hit = gauss_rules.emplace(order, QGauss<2>(order)).first;
-      const QGauss<2>   &rule = rule_hit->second;
-      const unsigned int m    = rule.size();
+      const QGauss<2>      &rule = rule_hit->second;
+      const unsigned int    m    = rule.size();
       std::vector<Point<2>> test_points(m), trial_points(m);
       for (unsigned int q = 0; q < m; ++q)
         {
-          test_points[q] = transform_patch_point(rule.point(q),
+          test_points[q]  = transform_patch_point(rule.point(q),
                                                  test_patch.lower,
                                                  test_patch.upper);
           trial_points[q] = transform_patch_point(rule.point(q),
@@ -3305,11 +3380,16 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
     type == GalerkinPanelPairType::same_panel ?
       std::vector<CommonVertex>() :
       common_vertices(test_cell, test_patch, trial_cell, trial_patch);
-  const bool half = light_half && type == GalerkinPanelPairType::same_panel &&
-                   singular_quadrature == GalerkinSingularQuadrature::sauter_schwab;
+  const bool half =
+    light_half && type == GalerkinPanelPairType::same_panel &&
+    singular_quadrature == GalerkinSingularQuadrature::sauter_schwab;
   std::array<int, 7> key{{static_cast<int>(type),
                           static_cast<int>(order),
-                          half ? 1 : 0, -1, -1, -1, -1}};
+                          half ? 1 : 0,
+                          -1,
+                          -1,
+                          -1,
+                          -1}};
   if (type == GalerkinPanelPairType::common_edge ||
       type == GalerkinPanelPairType::common_vertex)
     for (unsigned int k = 0; k < shared.size() && k < 2; ++k)
@@ -3405,17 +3485,25 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
         }
       hit = light_rule_cache.emplace(key, std::move(built)).first;
     }
-  hit->second.last_use = ++light_rule_clock;
+  hit->second.last_use  = ++light_rule_clock;
   const LightRule &rule = hit->second;
 
   leaf.tensor = false;
   leaf.half   = half;
   if (!raised && is_full_patch(test_patch) && is_full_patch(trial_patch))
     {
-      evaluate_rule_geometry(test_cell, test_patch, rule.test_points,
-                             rule.test_unique, rule.test_index, test_set);
-      evaluate_rule_geometry(trial_cell, trial_patch, rule.trial_points,
-                             rule.trial_unique, rule.trial_index, trial_set);
+      evaluate_rule_geometry(test_cell,
+                             test_patch,
+                             rule.test_points,
+                             rule.test_unique,
+                             rule.test_index,
+                             test_set);
+      evaluate_rule_geometry(trial_cell,
+                             trial_patch,
+                             rule.trial_points,
+                             rule.trial_unique,
+                             rule.trial_index,
+                             trial_set);
       leaf.test_shapes        = &rule.test_shapes;
       leaf.trial_shapes       = &rule.trial_shapes;
       leaf.weights            = &rule.weights;
@@ -3425,15 +3513,22 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
       leaf.trial_derivatives1 = &rule.trial_derivatives1;
       return;
     }
-  evaluate_rule_geometry(test_cell, test_patch, rule.test_points,
-                         rule.test_unique, rule.test_index, test_set);
-  evaluate_rule_geometry(trial_cell, trial_patch, rule.trial_points,
-                         rule.trial_unique, rule.trial_index, trial_set);
-  const double patch_jacobians =
-    (test_patch.upper[0] - test_patch.lower[0]) *
-    (test_patch.upper[1] - test_patch.lower[1]) *
-    (trial_patch.upper[0] - trial_patch.lower[0]) *
-    (trial_patch.upper[1] - trial_patch.lower[1]);
+  evaluate_rule_geometry(test_cell,
+                         test_patch,
+                         rule.test_points,
+                         rule.test_unique,
+                         rule.test_index,
+                         test_set);
+  evaluate_rule_geometry(trial_cell,
+                         trial_patch,
+                         rule.trial_points,
+                         rule.trial_unique,
+                         rule.trial_index,
+                         trial_set);
+  const double patch_jacobians = (test_patch.upper[0] - test_patch.lower[0]) *
+                                 (test_patch.upper[1] - test_patch.lower[1]) *
+                                 (trial_patch.upper[0] - trial_patch.lower[0]) *
+                                 (trial_patch.upper[1] - trial_patch.lower[1]);
   const bool unique_shapes = !rule.test_unique_shapes.empty();
   if ((!raised || unique_shapes) && light_affine && light_derivatives &&
       !shape_nodes.empty())
@@ -3443,8 +3538,8 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
       // raised order has them at its distinct points only.
       if (raised)
         {
-          const unsigned int dpc    = finite_element.dofs_per_cell;
-          const auto         gather = [dpc](const std::vector<double> &values,
+          const unsigned int dpc = finite_element.dofs_per_cell;
+          const auto         gather = [dpc](const std::vector<double>       &values,
                                     const std::vector<unsigned int> &index,
                                     std::vector<double>             &out) {
             const unsigned int m = values.size() / dpc, n = index.size();
@@ -3457,7 +3552,9 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
                   o[q] = u[index[q]];
               }
           };
-          gather(rule.test_unique_shapes, rule.test_index, leaf.own_test_shapes);
+          gather(rule.test_unique_shapes,
+                 rule.test_index,
+                 leaf.own_test_shapes);
           gather(rule.trial_unique_shapes,
                  rule.trial_index,
                  leaf.own_trial_shapes);
@@ -3489,9 +3586,9 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
           leaf.trial_derivatives0 = &rule.trial_derivatives0;
           leaf.trial_derivatives1 = &rule.trial_derivatives1;
         }
-      leaf.weights     = &rule.weights;
-      leaf.transformed = true;
-      leaf.weight_scale       = patch_jacobians;
+      leaf.weights      = &rule.weights;
+      leaf.transformed  = true;
+      leaf.weight_scale = patch_jacobians;
       for (unsigned int d = 0; d < 2; ++d)
         {
           leaf.test_derivative_scale[d] =
@@ -3602,8 +3699,9 @@ GalerkinPanelPairIntegrator<spacedim>::patch_transform(
   // Shape k of the cell restricted to the patch, as a function of the
   // coordinates of the patch, is in Q_p: its interpolant on the support
   // points, sum over l of its values there times shape l.
-  const std::vector<Point<2>> &support = finite_element.get_unit_support_points();
-  std::vector<Point<2>>        points(support.size());
+  const std::vector<Point<2>> &support =
+    finite_element.get_unit_support_points();
+  std::vector<Point<2>> points(support.size());
   for (unsigned int l = 0; l < support.size(); ++l)
     points[l] = transform_patch_point(support[l], patch.lower, patch.upper);
   // evaluate_shapes() lays out shape k at point l at k * n + l.
@@ -3624,15 +3722,15 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
   const bool                regularize_trial_function) const
 {
   const auto setup_start = std::chrono::steady_clock::now();
-  LightLeaf &leaf = light_leaf;
+  LightLeaf &leaf        = light_leaf;
   leaf.reset();
   const bool curls = operator_type == OperatorType::weak_hypersingular ||
                      is_joint(operator_type);
   light_derivatives = curls;
   light_affine      = curls;
   light_half        = is_joint(operator_type);
-  prepare_light_leaf(test_cell, test_patch, trial_cell, trial_patch, order,
-                     leaf);
+  prepare_light_leaf(
+    test_cell, test_patch, trial_cell, trial_patch, order, leaf);
   light_derivatives = false;
   light_affine      = false;
   light_half        = false;
@@ -3641,11 +3739,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
                              .count();
   // The datum at the points of each cell: the function of its slot.
   const Function<spacedim> *trial_piece =
-    trial_function != nullptr ? &on_cell(*trial_function, trial_cell) :
-                                nullptr;
+    trial_function != nullptr ? &on_cell(*trial_function, trial_cell) : nullptr;
   const Function<spacedim> *test_piece =
-    trial_function != nullptr ? &on_cell(*trial_function, test_cell) :
-                                nullptr;
+    trial_function != nullptr ? &on_cell(*trial_function, test_cell) : nullptr;
   if (flux_function != nullptr)
     {
       light_trial_flux = &on_cell(*flux_function, trial_cell);
@@ -3653,13 +3749,14 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
     }
   // On half a rule, the joint operators need K the other way for K.
   FullMatrix<double> result =
-    curls       ? complete_light_leaf(
-              leaf,
-              integrate_light_hypersingular(
-                leaf,
-                leaf.half ? OperatorType::single_double_hypersingular_both :
-                            operator_type),
-              n_result_columns(operator_type, nullptr)) :
+    curls ?
+      complete_light_leaf(leaf,
+                          integrate_light_hypersingular(
+                            leaf,
+                            leaf.half ?
+                              OperatorType::single_double_hypersingular_both :
+                              operator_type),
+                          n_result_columns(operator_type, nullptr)) :
     leaf.tensor ? integrate_tensor_sets(test_set,
                                         leaf.test_weights,
                                         trial_set,
@@ -3700,7 +3797,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
 template <int spacedim>
 FullMatrix<double>
 GalerkinPanelPairIntegrator<spacedim>::complete_light_leaf(
-  const LightLeaf    &leaf,
+  const LightLeaf     &leaf,
   FullMatrix<double> &&result,
   const unsigned int   n_columns) const
 {
@@ -3708,8 +3805,8 @@ GalerkinPanelPairIntegrator<spacedim>::complete_light_leaf(
   if (leaf.transformed)
     {
       // Each block B of the shapes of the patches becomes s T_x B T_y^T.
-      const double *tx = leaf.test_transform.data();
-      const double *ty = leaf.trial_transform.data();
+      const double       *tx = leaf.test_transform.data();
+      const double       *ty = leaf.trial_transform.data();
       std::vector<double> half_product(dpc * dpc);
       for (unsigned int b = 0; b < result.n() / dpc; ++b)
         {
@@ -3742,11 +3839,13 @@ GalerkinPanelPairIntegrator<spacedim>::complete_light_leaf(
       for (unsigned int i = 0; i < dpc; ++i)
         for (unsigned int j = 0; j < dpc; ++j)
           {
-            whole(i, j)           = result(i, j) + result(j, i);
-            whole(i, dpc + j)     = result(i, dpc + j) + result(j, 3 * dpc + i);
-            whole(i, 2 * dpc + j) = result(i, 2 * dpc + j) + result(j, 2 * dpc + i);
+            whole(i, j)       = result(i, j) + result(j, i);
+            whole(i, dpc + j) = result(i, dpc + j) + result(j, 3 * dpc + i);
+            whole(i, 2 * dpc + j) =
+              result(i, 2 * dpc + j) + result(j, 2 * dpc + i);
             if (n_columns > 3 * dpc)
-              whole(i, 3 * dpc + j) = result(i, 3 * dpc + j) + result(j, dpc + i);
+              whole(i, 3 * dpc + j) =
+                result(i, 3 * dpc + j) + result(j, dpc + i);
           }
       return whole;
     }
@@ -3762,8 +3861,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
 {
   const auto         kernel_start = std::chrono::steady_clock::now();
   const unsigned int dpc          = finite_element.dofs_per_cell;
-  const bool joint = is_joint(operator_type);
-  const bool both =
+  const bool         joint        = is_joint(operator_type);
+  const bool         both =
     operator_type == OperatorType::single_double_hypersingular_both;
   const unsigned int  w_column = joint ? 2 * dpc : 0;
   FullMatrix<double>  result(dpc, n_result_columns(operator_type, nullptr));
@@ -3790,19 +3889,19 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
             out[q] = a0[q] * set.tangents1[q][c] - a1[q] * set.tangents0[q][c];
         }
   };
-  std::vector<double> &cx = kernel_curls_x, &cy = kernel_curls_y;
-  const std::vector<double> &sx = *leaf.test_shapes;
-  const std::vector<double> &sy = *leaf.trial_shapes;
-  const unsigned int         nx = x.n;
-  const unsigned int         ny = y.n;
+  std::vector<double>       &cx = kernel_curls_x, &cy = kernel_curls_y;
+  const std::vector<double> &sx    = *leaf.test_shapes;
+  const std::vector<double> &sy    = *leaf.trial_shapes;
+  const unsigned int         nx    = x.n;
+  const unsigned int         ny    = y.n;
   const double               scale = 1.0 / (4.0 * numbers::PI);
 
   if (!leaf.tensor)
     {
       // Points in pairs: for each pair of shape functions, a sum over the
       // points with the weight of V, of K or of W.
-      const unsigned int  n = leaf.weights->size();
-      const auto          weight_start = std::chrono::steady_clock::now();
+      const unsigned int n            = leaf.weights->size();
+      const auto         weight_start = std::chrono::steady_clock::now();
       if (kernel_weights.size() < 8 * n)
         kernel_weights.resize(8 * n);
       double *single_weight = kernel_weights.data();
@@ -3832,10 +3931,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
         {
           const Tensor<1, spacedim> displacement = y.points[p] - x.points[p];
           const double              distance     = displacement.norm();
-          curl_weight[p] = (*leaf.weights)[p] * scale / distance;
+          curl_weight[p]   = (*leaf.weights)[p] * scale / distance;
           single_weight[p] = curl_weight[p] * x.jacobians[p] * y.jacobians[p];
-          double_weight[p] = -single_weight[p] *
-                             (displacement * y.normals[p]) /
+          double_weight[p] = -single_weight[p] * (displacement * y.normals[p]) /
                              (distance * distance);
           if (both)
             back_weight[p] = single_weight[p] * (displacement * x.normals[p]) /
@@ -3862,11 +3960,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
       double *wx_back   = wx_double + dpc * block;
       // The weighted derivatives of the test shapes: d0 g00, d1 g10 (against
       // d0 of the trial shapes), d0 g01, d1 g11 (against d1).
-      double *wx_d = wx_back + dpc * block;
-      const std::vector<double> &d0x = *leaf.test_derivatives0,
-                                &d1x = *leaf.test_derivatives1,
-                                &d0y = *leaf.trial_derivatives0,
-                                &d1y = *leaf.trial_derivatives1;
+      double                    *wx_d = wx_back + dpc * block;
+      const std::vector<double> &d0x  = *leaf.test_derivatives0,
+                                &d1x  = *leaf.test_derivatives1,
+                                &d0y  = *leaf.trial_derivatives0,
+                                &d1y  = *leaf.trial_derivatives1;
       std::vector<double> sums_vk(3 * dpc * dpc, 0.0),
         sums_w(2 * dpc * dpc, 0.0);
       for (unsigned int begin = 0; begin < n; begin += block)
@@ -3874,7 +3972,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
           const unsigned int m = std::min(block, n - begin);
           for (unsigned int i = 0; i < dpc; ++i)
             {
-              const double *a = &sx[i * n + begin];
+              const double *a  = &sx[i * n + begin];
               double       *vs = &wx_single[i * block];
               double       *vd = &wx_double[i * block];
 #pragma omp simd
@@ -3890,8 +3988,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                   for (unsigned int k = 0; k < m; ++k)
                     vb[k] = a[k] * back_weight[begin + k];
                 }
-              const double *a0 = &d0x[i * n + begin];
-              const double *a1 = &d1x[i * n + begin];
+              const double *a0  = &d0x[i * n + begin];
+              const double *a1  = &d1x[i * n + begin];
               double       *v00 = &wx_d[i * block];
               double       *v10 = &wx_d[(dpc + i) * block];
               double       *v01 = &wx_d[(2 * dpc + i) * block];
@@ -3917,15 +4015,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                            m,
                            sums_vk.data(),
                            dpc);
-          add_row_products(wx_d,
-                           block,
-                           2 * dpc,
-                           &d0y[begin],
-                           n,
-                           dpc,
-                           m,
-                           sums_w.data(),
-                           dpc);
+          add_row_products(
+            wx_d, block, 2 * dpc, &d0y[begin], n, dpc, m, sums_w.data(), dpc);
           add_row_products(&wx_d[2 * dpc * block],
                            block,
                            2 * dpc,
@@ -3949,9 +4040,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
             result(i, w_column + j) +=
               sums_w[i * dpc + j] + sums_w[(dpc + i) * dpc + j];
           }
-      profile.kernel_sum_seconds += std::chrono::duration<double>(
-                                      std::chrono::steady_clock::now() - sum_start)
-                                      .count();
+      profile.kernel_sum_seconds +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      sum_start)
+          .count();
     }
   else
     {
@@ -3975,18 +4067,16 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
             const double single =
               leaf.test_weights[qx] * leaf.trial_weights[qy] * scale / distance;
             single_block[qx * ny + qy] = single;
-            double_block[qx * ny + qy] = -single *
-                                         (displacement * y.normals[qy]) /
-                                         (distance * distance);
+            double_block[qx * ny + qy] =
+              -single * (displacement * y.normals[qy]) / (distance * distance);
             curl_block[qx * ny + qy] =
               single / (x.jacobians[qx] * y.jacobians[qy]);
             if (both)
-              back_block[qx * ny + qy] = single *
-                                         (displacement * x.normals[qx]) /
-                                         (distance * distance);
+              back_block[qx * ny + qy] =
+                single * (displacement * x.normals[qx]) / (distance * distance);
           }
       std::vector<double> partial(ny);
-      const auto contract = [&](const double              *u,
+      const auto          contract = [&](const double              *u,
                                 const std::vector<double> &block,
                                 const double              *v_base,
                                 const unsigned int         column) {
@@ -4050,17 +4140,17 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_light(
 {
   LightLeaf &leaf = light_leaf;
   leaf.reset();
-  prepare_light_leaf(test_cell, test_patch, trial_cell, trial_patch, order,
-                     leaf);
+  prepare_light_leaf(
+    test_cell, test_patch, trial_cell, trial_patch, order, leaf);
 
   // The error, exact normal trace minus discrete flux, at the points of
   // each side, as in error_energy_leaf().
-  const unsigned int dpc      = finite_element.dofs_per_cell;
+  const unsigned int dpc       = finite_element.dofs_per_cell;
   const auto         errors_at = [&](const PointSet            &set,
-                                     const std::vector<double> &shapes,
-                                     const std::vector<double> &coefficients,
-                                     std::vector<double>       &error,
-                                     const Function<spacedim>  &piece) {
+                             const std::vector<double> &shapes,
+                             const std::vector<double> &coefficients,
+                             std::vector<double>       &error,
+                             const Function<spacedim>  &piece) {
     const unsigned int n = set.n;
     error.resize(n);
     Vector<double> gradient(spacedim);
@@ -4101,11 +4191,11 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_light(
       }
   else
     for (unsigned int p = 0; p < leaf.weights->size(); ++p)
-      contribution += test_error[p] *
-                      single_layer_kernel(
-                        test_set.points[p].distance(trial_set.points[p])) *
-                      trial_error[p] * (*leaf.weights)[p] *
-                      test_set.jacobians[p] * trial_set.jacobians[p];
+      contribution +=
+        test_error[p] *
+        single_layer_kernel(test_set.points[p].distance(trial_set.points[p])) *
+        trial_error[p] * (*leaf.weights)[p] * test_set.jacobians[p] *
+        trial_set.jacobians[p];
   return contribution;
 }
 
@@ -4134,12 +4224,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
   // A matrix block, of the single, the double or the adjoint double layer,
   // and a column of the double layer applied to the trial function, or of
   // the adjoint double layer applied to the normal trace of a gradient.
-  const bool adjoint = operator_type == OperatorType::adjoint_double_layer;
+  const bool adjoint     = operator_type == OperatorType::adjoint_double_layer;
   const bool matrix_part = fused || trial_function == nullptr;
-  const bool single_kernel = operator_type == OperatorType::single_layer || fused;
+  const bool single_kernel =
+    operator_type == OperatorType::single_layer || fused;
   const bool function_part = trial_function != nullptr;
-  const bool regularize    = function_part && regularize_trial_function &&
-                          !adjoint;
+  const bool regularize =
+    function_part && regularize_trial_function && !adjoint;
   const unsigned int function_column = fused ? dpc : 0;
   // The consistent right-hand sides, <V lambda, phi>, in the last columns.
   const bool         flux        = fused && flux_function != nullptr;
@@ -4173,10 +4264,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
       const auto function_start = std::chrono::steady_clock::now();
       trial_values.resize(ny);
       for (unsigned int qy = 0; qy < ny; ++qy)
-        trial_values[qy] = adjoint ?
-                             normal_trace(*trial_function, trial.points[qy],
-                                          trial.normals[qy]) :
-                             trial_function->value(trial.points[qy]);
+        trial_values[qy] =
+          adjoint ?
+            normal_trace(*trial_function, trial.points[qy], trial.normals[qy]) :
+            trial_function->value(trial.points[qy]);
       if (regularize || both)
         {
           test_values.resize(nx);
@@ -4211,13 +4302,12 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
           // For the adjoint double layer this is dG/dn_x instead,
           // (y - x).n_x / (4 pi r^3), times the screening factor.
           const double laplace_double_layer =
-            adjoint ?
-              (displacement * test.normals[qx]) /
-                (4.0 * numbers::PI * distance * distance * distance) :
+            adjoint ? (displacement * test.normals[qx]) /
+                        (4.0 * numbers::PI * distance * distance * distance) :
             (function_part || !single_kernel) ?
-              -(displacement * trial.normals[qy]) /
-                (4.0 * numbers::PI * distance * distance * distance) :
-              0.0;
+                      -(displacement * trial.normals[qy]) /
+                        (4.0 * numbers::PI * distance * distance * distance) :
+                      0.0;
           if (matrix_part)
             kernel[qx * ny + qy] =
               trial_weights[qy] *
@@ -4225,9 +4315,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
                                laplace_double_layer * factor);
           if (function_part)
             {
-              sum_function +=
-                trial_weights[qy] * laplace_double_layer * factor *
-                trial_values[qy];
+              sum_function += trial_weights[qy] * laplace_double_layer *
+                              factor * trial_values[qy];
               sum_kernel += trial_weights[qy] * laplace_double_layer;
             }
           if (both)
@@ -4248,8 +4337,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
           (sum_function - (regularize ? sum_kernel * test_values[qx] : 0.0));
     }
 
-  FullMatrix<double> result(dpc, n_result_columns(operator_type,
-                                                  trial_function));
+  FullMatrix<double> result(dpc,
+                            n_result_columns(operator_type, trial_function));
   if (matrix_part)
     {
       // Contract the test index first, then the trial one: dpc (nx + dpc) ny
@@ -4363,12 +4452,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
   const bool both = operator_type == OperatorType::single_and_double_layer_both;
   const bool fused =
     operator_type == OperatorType::single_and_double_layer || both;
-  const bool adjoint       = operator_type == OperatorType::adjoint_double_layer;
-  const bool matrix_part   = fused || trial_function == nullptr;
-  const bool single_kernel = operator_type == OperatorType::single_layer || fused;
+  const bool adjoint     = operator_type == OperatorType::adjoint_double_layer;
+  const bool matrix_part = fused || trial_function == nullptr;
+  const bool single_kernel =
+    operator_type == OperatorType::single_layer || fused;
   const bool function_part = trial_function != nullptr;
-  const bool regularize    = function_part && regularize_trial_function &&
-                          !adjoint;
+  const bool regularize =
+    function_part && regularize_trial_function && !adjoint;
   const unsigned int function_column = fused ? dpc : 0;
   const bool         flux            = fused && flux_function != nullptr;
   const unsigned int flux_column     = dpc + (both ? 2 : 1);
@@ -4401,10 +4491,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
       const auto function_start = std::chrono::steady_clock::now();
       trial_values.resize(n);
       for (unsigned int p = 0; p < n; ++p)
-        trial_values[p] = adjoint ?
-                            normal_trace(*trial_function, trial.points[p],
-                                         trial.normals[p]) :
-                            trial_function->value(trial.points[p]);
+        trial_values[p] =
+          adjoint ?
+            normal_trace(*trial_function, trial.points[p], trial.normals[p]) :
+            trial_function->value(trial.points[p]);
       if (regularize || both)
         {
           test_values.resize(n);
@@ -4429,24 +4519,21 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
       const double              exponential =
         screening == 0.0 ? 1.0 : std::exp(-screening * distance);
       const double factor = (1.0 + screening * distance) * exponential;
-      const double weight =
-        weights[p] * test.jacobians[p] * trial.jacobians[p];
+      const double weight = weights[p] * test.jacobians[p] * trial.jacobians[p];
       const double laplace_double_layer =
-        adjoint ?
-          (displacement * test.normals[p]) /
-            (4.0 * numbers::PI * distance * distance * distance) :
+        adjoint ? (displacement * test.normals[p]) /
+                    (4.0 * numbers::PI * distance * distance * distance) :
         (function_part || !single_kernel) ?
-          -(displacement * trial.normals[p]) /
-            (4.0 * numbers::PI * distance * distance * distance) :
-          0.0;
-      if (!(std::isfinite(weight) && std::isfinite(distance) &&
-            distance > 0.0))
+                  -(displacement * trial.normals[p]) /
+                    (4.0 * numbers::PI * distance * distance * distance) :
+                  0.0;
+      if (!(std::isfinite(weight) && std::isfinite(distance) && distance > 0.0))
         non_finite = true;
       if (matrix_part)
         matrix_weight[p] =
-          weight *
-          (single_kernel ? exponential / (4.0 * numbers::PI * distance) :
-                           laplace_double_layer * factor);
+          weight * (single_kernel ?
+                      exponential / (4.0 * numbers::PI * distance) :
+                      laplace_double_layer * factor);
       if (function_part)
         function_weight[p] =
           weight * laplace_double_layer *
@@ -4461,8 +4548,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
 
   AssertThrow(!non_finite,
               ExcMessage("Non-finite Galerkin panel-pair integrand."));
-  FullMatrix<double> result(dpc, n_result_columns(operator_type,
-                                                  trial_function));
+  FullMatrix<double> result(dpc,
+                            n_result_columns(operator_type, trial_function));
   if (matrix_part)
     {
       std::vector<double> weighted_test(n);

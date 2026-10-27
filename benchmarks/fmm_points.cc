@@ -53,9 +53,9 @@ namespace
           {
             // near the south pole: polar angle from the pole ~ 0.5 u^2
             const double t = 0.5 * u(rng) * u(rng), f = 2 * M_PI * u(rng);
-            v = Tensor<1, 3>(
-              {std::sin(t) * std::cos(f), std::sin(t) * std::sin(f),
-               -std::cos(t)});
+            v = Tensor<1, 3>({std::sin(t) * std::cos(f),
+                              std::sin(t) * std::sin(f),
+                              -std::cos(t)});
           }
         else
           {
@@ -122,8 +122,8 @@ main(int argc, char **argv)
 
   const char        *kappa_variable = std::getenv("FMM_KAPPA");
   const double       kappa = kappa_variable ? std::atof(kappa_variable) : 0.;
-  const unsigned int n    = argc > 1 ? std::atoi(argv[1]) : 100000;
-  const unsigned int leaf = argc > 2 ? std::atoi(argv[2]) : 64;
+  const unsigned int n     = argc > 1 ? std::atoi(argv[1]) : 100000;
+  const unsigned int leaf  = argc > 2 ? std::atoi(argv[2]) : 64;
   std::vector<std::pair<unsigned int, double>> settings;
   for (int i = 3; i + 1 < argc; i += 2)
     settings.emplace_back(std::atoi(argv[i]), std::atof(argv[i + 1]));
@@ -142,7 +142,7 @@ main(int argc, char **argv)
       charges[i] = u(rng);
       dipoles[i] = u(rng) * normals[i];
     }
-  std::vector<unsigned int> targets(500);
+  std::vector<unsigned int>                   targets(500);
   std::uniform_int_distribution<unsigned int> pick(0, n - 1);
   for (auto &t : targets)
     t = pick(rng);
@@ -161,15 +161,14 @@ main(int argc, char **argv)
       const auto          start = std::chrono::steady_clock::now();
       fmm.evaluate(charges, dipoles, potentials);
       const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      start)
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
       fmm.print_statistics(std::cout);
 
       for (const bool with_dipoles : {false, true})
         {
           // charges only, then charges and dipoles
-          std::vector<double> u_fmm;
+          std::vector<double>             u_fmm;
           const std::vector<Tensor<1, 3>> none;
           if (!with_dipoles)
             fmm.evaluate(charges, none, u_fmm);
@@ -177,12 +176,15 @@ main(int argc, char **argv)
             u_fmm = potentials;
           if (root)
             {
-              const std::vector<double> exact = fmm.evaluate_directly(
-                charges, with_dipoles ? dipoles : none, targets);
+              const std::vector<double> exact =
+                fmm.evaluate_directly(charges,
+                                      with_dipoles ? dipoles : none,
+                                      targets);
               double error = 0, scale = 0;
               for (unsigned int t = 0; t < targets.size(); ++t)
                 {
-                  error = std::max(error, std::abs(u_fmm[targets[t]] - exact[t]));
+                  error =
+                    std::max(error, std::abs(u_fmm[targets[t]] - exact[t]));
                   scale = std::max(scale, std::abs(exact[t]));
                 }
               std::cout << "  relative error, "
@@ -195,8 +197,7 @@ main(int argc, char **argv)
       const auto again = std::chrono::steady_clock::now();
       fmm.evaluate(charges, dipoles, potentials);
       const double seconds_again =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      again)
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - again)
           .count();
       if (root)
         std::cout << "  first evaluation " << std::setprecision(3) << seconds

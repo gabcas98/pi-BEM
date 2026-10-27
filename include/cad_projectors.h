@@ -214,7 +214,7 @@ namespace OpenCASCADE
     /// The parametric map of the current cell, from the positions of its
     /// vertices on the mesh (faces only).
     void
-    reinit_parametric(const Mapping<dim, 3>                               &mapping,
+    reinit_parametric(const Mapping<dim, 3> &mapping,
                       const typename Triangulation<dim, 3>::cell_iterator &cell,
                       const std::array<Point<3>, 4> &vertices,
                       Cache                         &cache) const;

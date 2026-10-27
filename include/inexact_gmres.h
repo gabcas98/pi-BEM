@@ -87,8 +87,8 @@ namespace InexactGMRES
         for (unsigned int i = 0; i < m; ++i)
           {
             const double a = R[m][i], b = R[m][i + 1];
-            R[m][i]        = cs[i] * a + sn[i] * b;
-            R[m][i + 1]    = -sn[i] * a + cs[i] * b;
+            R[m][i]     = cs[i] * a + sn[i] * b;
+            R[m][i + 1] = -sn[i] * a + cs[i] * b;
           }
         const double a = R[m][m], b = R[m][m + 1];
         const double norm = std::hypot(a, b);

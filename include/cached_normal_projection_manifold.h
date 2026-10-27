@@ -16,6 +16,7 @@
 #define cached_normal_projection_manifold_h
 
 #include <deal.II/base/point.h>
+
 #include <deal.II/opencascade/manifold_lib.h>
 
 #include <IntCurvesFace_ShapeIntersector.hxx>
@@ -70,8 +71,8 @@ private:
     }
   };
 
-  const TopoDS_Shape shape;
-  const double       tolerance;
+  const TopoDS_Shape                                      shape;
+  const double                                            tolerance;
   mutable std::unique_ptr<IntCurvesFace_ShapeIntersector> intersector;
   mutable std::unordered_map<std::array<std::uint64_t, 3>, Tensor<1, 3>, Hash>
     normals;

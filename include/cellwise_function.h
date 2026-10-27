@@ -21,7 +21,7 @@ template <int dim>
 class CellwiseFunction : public Function<dim>
 {
 public:
-  CellwiseFunction(const std::vector<const Function<dim> *>        &pieces,
+  CellwiseFunction(const std::vector<const Function<dim> *>         &pieces,
                    const std::map<types::manifold_id, unsigned int> &slots)
     : Function<dim>(pieces[0]->n_components)
     , pieces(pieces)
@@ -60,7 +60,7 @@ public:
   }
 
 private:
-  const std::vector<const Function<dim> *>   pieces;
+  const std::vector<const Function<dim> *>         pieces;
   const std::map<types::manifold_id, unsigned int> slots;
 };
 

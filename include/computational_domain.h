@@ -386,7 +386,7 @@ public:
 
   /// Optimize interior vertices on selected planar patches after refinement.
   std::set<types::material_id> planar_smoothing_material_ids;
-  unsigned int planar_smoothing_iterations = 0;
+  unsigned int                 planar_smoothing_iterations = 0;
 
   // ratio between the tolerance found in the cad files and the
   // one to be prescribed to the projectors

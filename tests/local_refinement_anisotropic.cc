@@ -1,7 +1,7 @@
-#include "tests.h"
-#include "computational_domain.h"
-
 #include <deal.II/grid/grid_generator.h>
+
+#include "computational_domain.h"
+#include "tests.h"
 
 int
 main(int argc, char **argv)
@@ -19,7 +19,7 @@ main(int argc, char **argv)
   ++selected;
   selected->set_material_id(1);
   const auto focus = selected->center();
-  auto cut = domain.tria.begin();
+  auto       cut   = domain.tria.begin();
   for (unsigned int step = 0; step < 3; ++step)
     {
       cut->set_refine_flag(RefinementCase<2>::cut_x);
@@ -33,27 +33,31 @@ main(int argc, char **argv)
         ++count;
     return count;
   };
-  const auto before = count_unselected();
-  const auto flags = domain.tria.get_mesh_smoothing();
-  domain.max_element_aspect_ratio = 1000.;
-  domain.graded_refinement_material_ids = {1};
-  domain.graded_refinement_focus = focus;
-  domain.graded_refinement_size_ratio = 0.2;
-  domain.graded_refinement_minimum_size = 0.1;
+  const auto before                       = count_unselected();
+  const auto flags                        = domain.tria.get_mesh_smoothing();
+  domain.max_element_aspect_ratio         = 1000.;
+  domain.graded_refinement_material_ids   = {1};
+  domain.graded_refinement_focus          = focus;
+  domain.graded_refinement_size_ratio     = 0.2;
+  domain.graded_refinement_minimum_size   = 0.1;
   domain.graded_refinement_maximum_cycles = 1;
   domain.refine_and_resize(0);
   domain.update_triangulation();
   AssertThrow(count_unselected() == before,
-              ExcMessage("Local grading refined unrelated anisotropic materials."));
+              ExcMessage(
+                "Local grading refined unrelated anisotropic materials."));
   AssertThrow(domain.tria.get_mesh_smoothing() == flags,
-              ExcMessage("Local grading leaked temporary mesh-smoothing flags."));
-  domain.graded_refinement_maximum_cycles = 0;
-  domain.exponential_refinement_decay_vector = {0., 0., 1.};
-  domain.exponential_refinement_minimum_size = 10.;
+              ExcMessage(
+                "Local grading leaked temporary mesh-smoothing flags."));
+  domain.graded_refinement_maximum_cycles      = 0;
+  domain.exponential_refinement_decay_vector   = {0., 0., 1.};
+  domain.exponential_refinement_minimum_size   = 10.;
   domain.exponential_refinement_maximum_cycles = 1;
   domain.refine_and_resize(0);
   AssertThrow(domain.tria.get_mesh_smoothing() == flags,
-              ExcMessage("Exponential grading leaked temporary smoothing flags."));
-  deallog << "Local grading preserves anisotropic locality and smoothing flags: OK"
-          << std::endl;
+              ExcMessage(
+                "Exponential grading leaked temporary smoothing flags."));
+  deallog
+    << "Local grading preserves anisotropic locality and smoothing flags: OK"
+    << std::endl;
 }

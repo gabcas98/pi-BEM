@@ -102,10 +102,9 @@ namespace YukawaExpansions
       }
     // Miller: i_{n-1} = i_{n+1} + (2n+1)/z i_n from well above N down to
     // zero, rescaled when it grows large, and normalized by i_0.
-    const unsigned int start =
-      N + 20 + static_cast<unsigned int>(std::abs(z));
-    const Number inverse_z = 1. / z;
-    Number       above = 0., current = 1e-280;
+    const unsigned int start = N + 20 + static_cast<unsigned int>(std::abs(z));
+    const Number       inverse_z = 1. / z;
+    Number             above = 0., current = 1e-280;
     for (unsigned int n = start; n > 0; --n)
       {
         const Number below = above + (double(2 * n + 1) * inverse_z) * current;
@@ -197,8 +196,7 @@ namespace YukawaExpansions
                 const Number p_next =
                   n == m + 1 ?
                     ct * double(2 * m + 1) * pmm :
-                    (double(2 * n - 1) * ct * p -
-                     double(n + m - 1) * p_prev) /
+                    (double(2 * n - 1) * ct * p - double(n + m - 1) * p_prev) /
                       double(n - m);
                 p_prev = p;
                 p      = p_next;
@@ -430,7 +428,7 @@ namespace YukawaExpansions
              const dealii::Tensor<1, 3> &y_minus_c,
              double                     *M)
   {
-    using complex       = std::complex<double>;
+    using complex             = std::complex<double>;
     const unsigned int p      = w.p;
     const double       d_norm = d.norm();
     if (d_norm == 0.)
@@ -610,8 +608,8 @@ namespace YukawaExpansions
       // Gaunt coefficients int Y_(n,m) Y_(n',m) Y_(l,0), the same for m and
       // -m, by Gauss-Legendre in cos(theta): the integrand is a polynomial
       // of degree n + n' + l <= 4p.
-      const dealii::QGauss<1>                      gauss(2 * p + 2);
-      std::vector<std::vector<double>>             legendre(gauss.size());
+      const dealii::QGauss<1>          gauss(2 * p + 2);
+      std::vector<std::vector<double>> legendre(gauss.size());
       for (unsigned int k = 0; k < gauss.size(); ++k)
         {
           const double x = 2. * gauss.point(k)[0] - 1.;
@@ -681,8 +679,7 @@ namespace YukawaExpansions
       rotation_start.resize(p + 2);
       rotation_start[0] = 0;
       for (unsigned int n = 0; n <= p; ++n)
-        rotation_start[n + 1] =
-          rotation_start[n] + (2 * n + 1) * (2 * n + 1);
+        rotation_start[n + 1] = rotation_start[n] + (2 * n + 1) * (2 * n + 1);
       swap_blocks.resize(rotation_start[p + 1]);
       for (unsigned int n = 0; n <= p; ++n)
         for (unsigned int b = 0; b < 2 * n + 1; ++b)
@@ -798,8 +795,7 @@ namespace YukawaExpansions
     {
       // (2k-1)!!, k = 0..2p+1, and the powers of 1/|v|; computed once per
       // distance, so plain vectors.
-      std::vector<double> double_factorial(2 * p + 2),
-        inverse_power(2 * p + 2);
+      std::vector<double> double_factorial(2 * p + 2), inverse_power(2 * p + 2);
       double_factorial[0] = 1.;
       for (unsigned int k = 1; k < double_factorial.size(); ++k)
         double_factorial[k] = double_factorial[k - 1] * (2. * k - 1.);
@@ -837,8 +833,8 @@ namespace YukawaExpansions
       // e^{i theta} = (v_z + i rho) / |v| and e^{i phi} = (v_x + i v_y) /
       // rho, rho the distance from the axis, and their powers: no
       // trigonometric function.
-      const double r   = v.norm();
-      const double rho = std::sqrt(v[0] * v[0] + v[1] * v[1]);
+      const double               r   = v.norm();
+      const double               rho = std::sqrt(v[0] * v[0] + v[1] * v[1]);
       const std::complex<double> e_theta(v[2] / r, rho / r);
       const std::complex<double> e_phi =
         rho > 0 ? std::complex<double>(v[0] / rho, v[1] / rho) :
@@ -936,18 +932,19 @@ namespace YukawaExpansions
      * The blocks on the degrees of D(P) Z(theta) D(P), the rotation by theta
      * about the y-axis, for the angle theta of v (the angle phi is not
      * used), row by row (block n at the sum of (2k + 1)^2 over k < n), of
-     * rotation_size() entries. With Z(-phi), cheap, they give the rotation D(Q) of
-     * translate(), and translate_blocks() applies them as dense products;
+     * rotation_size() entries. With Z(-phi), cheap, they give the rotation D(Q)
+     * of translate(), and translate_blocks() applies them as dense products;
      * the blocks depend on the polar angle of the offset only, so that the
      * groups of offsets of a tree share them.
      */
     void
     rotation_blocks(const Angles &a, double *R) const
     {
-      double C[(2 * maximum_rotation_order + 1) *
-               (2 * maximum_rotation_order + 1)];
+      double
+        C[(2 * maximum_rotation_order + 1) * (2 * maximum_rotation_order + 1)];
       AssertThrow(p <= maximum_rotation_order,
-                  dealii::ExcMessage("Order too high for the rotation blocks."));
+                  dealii::ExcMessage(
+                    "Order too high for the rotation blocks."));
       for (unsigned int n = 0; n <= p; ++n)
         {
           const unsigned int s     = 2 * n + 1;
@@ -965,8 +962,8 @@ namespace YukawaExpansions
               for (unsigned int k = 0; k < s; ++k)
                 {
                   const double x = u[k], y = w[k];
-                  u[k]           = cm * x - sm * y;
-                  w[k]           = sm * x + cm * y;
+                  u[k] = cm * x - sm * y;
+                  w[k] = sm * x + cm * y;
                 }
             }
           // R = D(P) C, by the rows of D(P).
@@ -1065,7 +1062,7 @@ namespace YukawaExpansions
                   const double      *X,
                   double            *Y)
     {
-      constexpr unsigned int G = B >= 16 ? 2 : 4;
+      constexpr unsigned int G             = B >= 16 ? 2 : 4;
       const unsigned int     row_stride    = transpose ? 1 : s;
       const unsigned int     column_stride = transpose ? s : 1;
       unsigned int           r             = 0;
@@ -1081,8 +1078,7 @@ namespace YukawaExpansions
               const double *x = X + c * B;
               for (unsigned int g = 0; g < G; ++g)
                 {
-                  const double a =
-                    A[(r + g) * row_stride + c * column_stride];
+                  const double a = A[(r + g) * row_stride + c * column_stride];
 #pragma omp simd
                   for (unsigned int j = 0; j < B; ++j)
                     sums[g][j] += a * x[j];
@@ -1120,8 +1116,10 @@ namespace YukawaExpansions
     /// X <- Z(sign alpha) X, a rotation by sign alpha about the z-axis.
     template <unsigned int B>
     void
-    rotate_z(const double *c, const double *s, const double sign, double *X)
-      const
+    rotate_z(const double *c,
+             const double *s,
+             const double  sign,
+             double       *X) const
     {
       for (unsigned int n = 1; n <= p; ++n)
         for (unsigned int m = 1; m <= n; ++m)
@@ -1133,8 +1131,8 @@ namespace YukawaExpansions
             for (unsigned int j = 0; j < B; ++j)
               {
                 const double u = x[j], w = y[j];
-                x[j]           = cm * u - sm * w;
-                y[j]           = sm * u + cm * w;
+                x[j] = cm * u - sm * w;
+                y[j] = sm * u + cm * w;
               }
           }
     }
@@ -1192,8 +1190,9 @@ namespace YukawaExpansions
     /// expansion j at Tz[e * B + j].
     template <unsigned int B>
     void
-    apply_z_translation_lanes(const double *Tz, const double *X, double *Y)
-      const
+    apply_z_translation_lanes(const double *Tz,
+                              const double *X,
+                              double       *Y) const
     {
       apply_z_blocks<B, true>(Tz, X, Y);
     }
@@ -1266,10 +1265,10 @@ namespace YukawaExpansions
         }
     }
 
-    unsigned int              p, nc;
-    std::vector<double>       norms;
-    std::vector<double>       gaunt;
-    std::vector<double>       axis_factor;
+    unsigned int        p, nc;
+    std::vector<double> norms;
+    std::vector<double> gaunt;
+    std::vector<double> axis_factor;
     /// D(P) by rows: the columns and values of row b from swap_start[b].
     std::vector<unsigned int> swap_start, swap_column;
     std::vector<double>       swap_value;

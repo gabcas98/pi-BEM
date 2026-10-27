@@ -119,11 +119,11 @@
 
 #include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
-#include "../include/galerkin_fmm_operator.h"
-#include "../include/galerkin_calderon_fmm_operator.h"
 #include "../include/cad_projectors.h"
 #include "../include/computational_domain.h"
 #include "../include/constrained_matrix.h"
+#include "../include/galerkin_calderon_fmm_operator.h"
+#include "../include/galerkin_fmm_operator.h"
 #include "../include/local_expansion.h"
 #include "../include/multipole_expansion.h"
 #include "../include/octree_block.h"
@@ -159,7 +159,7 @@ public:
         const TrilinosWrappers::MPI::Vector &tmp_rhs,
         const Function<dim>                 *dirichlet_function = nullptr,
         const Function<dim>                 *dirichlet_gradient = nullptr,
-        bool                                 reset_matrix = true);
+        bool                                 reset_matrix       = true);
 
   /// Solve for potential and normal derivative using real vectors. The overload
   /// with imaginary vectors solves a complex problem as a two-block real
@@ -169,12 +169,12 @@ public:
   /// must already be prepared. The Galerkin formulation needs the analytical
   /// data of the real and of the imaginary part, as the real overload.
   void
-  solve(TrilinosWrappers::MPI::Vector       &phi,
-        TrilinosWrappers::MPI::Vector       &phi_imag,
-        TrilinosWrappers::MPI::Vector       &dphi_dn,
-        TrilinosWrappers::MPI::Vector       &dphi_dn_imag,
-        const TrilinosWrappers::MPI::Vector &tmp_rhs,
-        const TrilinosWrappers::MPI::Vector &tmp_rhs_imag,
+  solve(TrilinosWrappers::MPI::Vector              &phi,
+        TrilinosWrappers::MPI::Vector              &phi_imag,
+        TrilinosWrappers::MPI::Vector              &dphi_dn,
+        TrilinosWrappers::MPI::Vector              &dphi_dn_imag,
+        const TrilinosWrappers::MPI::Vector        &tmp_rhs,
+        const TrilinosWrappers::MPI::Vector        &tmp_rhs_imag,
         const std::array<const Function<dim> *, 2> &dirichlet_functions =
           {{nullptr, nullptr}},
         const std::array<const Function<dim> *, 2> &dirichlet_gradients =
@@ -192,14 +192,15 @@ public:
   reinit();
 
   const Quadrature<dim - 1>
-  get_quasi_singular_quadrature(const typename DoFHandler<dim-1,dim>::active_cell_iterator &cell,
-                                const Mapping<dim-1,dim> &mapping,
-                                const Point<dim> &singularity,
-                                const Point<dim-1> &ref_projection,
-                                const unsigned int exponent,
-                                const unsigned int quadrature_order_override = 0,
-                                const double normalized_distance =
-                                  std::numeric_limits<double>::infinity()) const;
+  get_quasi_singular_quadrature(
+    const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
+    const Mapping<dim - 1, dim>                                   &mapping,
+    const Point<dim>                                              &singularity,
+    const Point<dim - 1> &ref_projection,
+    const unsigned int    exponent,
+    const unsigned int    quadrature_order_override = 0,
+    const double          normalized_distance =
+      std::numeric_limits<double>::infinity()) const;
 
   /// This function compute a very specific case, a double node that has a
   /// dirichlet-dirichlet condition. In this case there is a constraint for
@@ -237,8 +238,8 @@ public:
   /// it.
   void
   compute_alpha();
-  
-  /// This function computes the free coefficients for the Screened Poisson 
+
+  /// This function computes the free coefficients for the Screened Poisson
   /// problem. The computation involves evaluating exp(-kappa/sqrt(3) * (x+y+z))
   /// and its normal derivative on the degrees of freedom.
   void
@@ -306,8 +307,7 @@ public:
               const TrilinosWrappers::MPI::Vector &src) const;
 
   void
-  assemble_explicit_system(
-    TrilinosWrappers::SparseMatrix &system_matrix) const;
+  assemble_explicit_system(TrilinosWrappers::SparseMatrix &system_matrix) const;
 
   void
   assemble_exact_regularized_dirichlet_rhs(
@@ -454,7 +454,8 @@ public:
   /// Recover the gradient from the Galerkin form of its boundary integral
   /// representation, the route that leads to the hypersingular equation. On
   /// the boundary the representation gives
-  ///     grad u = grad_S (2 sigma (V lambda - K phi)) + 2 sigma (K' lambda + W phi) n,
+  ///     grad u = grad_S (2 sigma (V lambda - K phi)) + 2 sigma (K' lambda + W
+  ///     phi) n,
   /// with sigma the orientation of the mesh normals relative to the outward
   /// normal of the domain. The tangential part is tested with the vector
   /// space and integrated by parts on each cell, edges included, so neither
@@ -767,16 +768,16 @@ public:
   /// ExactGeometry::ProjectedMapping of degree mapping_degree, whose
   /// projectors come from the CAD surfaces of the domain or from the
   /// analytic manifolds attached to the triangulation.
-  bool         exact_geometry = false;
-  std::string  exact_geometry_source;
-  std::string  exact_geometry_map = "projection";
-  std::string  mixed_galerkin_preconditioner = "diagonal";
-  std::string  mixed_galerkin_dirichlet_datum = "projection";
+  bool        exact_geometry = false;
+  std::string exact_geometry_source;
+  std::string exact_geometry_map             = "projection";
+  std::string mixed_galerkin_preconditioner  = "diagonal";
+  std::string mixed_galerkin_dirichlet_datum = "projection";
   /// Error indicators of the mixed Galerkin problem for adaptive
   /// refinement (none, jumps, exact), the fraction of their sum that the
   /// marked cells carry, and their values on the active cells after a
   /// solve, eta_T^2, which adaptive_refinement() uses and clears.
-  std::string    mixed_galerkin_error_indicator = "none";
+  std::string    mixed_galerkin_error_indicator     = "none";
   double         mixed_galerkin_refinement_fraction = 0.5;
   std::string    mixed_galerkin_indicator_norm      = "energy";
   double         mixed_galerkin_solver_reduction    = 1e-12;
@@ -786,7 +787,7 @@ public:
   /// problem from one solve to the next, for adaptive refinement: the pairs
   /// of cells that were not refined keep their blocks (the Driver sets it
   /// without global refinement).
-  bool reuse_near_field = false;
+  bool                                        reuse_near_field = false;
   GalerkinCalderonFMMOperator::NearFieldCache near_field_cache;
   /// The operators of the mixed problem, V, K and W as dense matrices or
   /// through the multipole method, kept for the next component on the same
@@ -803,14 +804,14 @@ public:
   /// Neumann cells, by level and index, and the degree of the element: the
   /// next solve on a refined mesh starts GMRES from them.
   std::map<std::array<int, 2>, std::vector<double>> transfer_values;
-  unsigned int                                     transfer_degree = 0;
+  unsigned int                                      transfer_degree = 0;
   /// The element, the mapping and the rules the cache was filled with.
   std::vector<double> near_field_signature;
   /// Degree of the polynomial interpolation of the exact geometry, a
   /// MappingQCache filled by ExactGeometry::interpolate_exact_geometry, or
   /// zero for the lowest degree that meets the tolerance; zero degree and
   /// zero tolerance project every point.
-  unsigned int exact_geometry_degree    = 0;
+  unsigned int exact_geometry_degree = 0;
   /// The degree of the interpolated exact geometry in use, as chosen.
   unsigned int geometry_degree_in_use   = 0;
   double       exact_geometry_tolerance = 1e-10;
@@ -819,15 +820,14 @@ public:
   /// normals of the mapping at the nodes, averaged over the cells that
   /// share a node (interpolation), which on a curved exact geometry are
   /// the normals of the surface.
-  std::string  nodal_normals = "projection";
+  std::string nodal_normals = "projection";
   /// The mixed Galerkin problem with the boundary data and the errors taken
   /// at the points of the exact surface that correspond to the points of the
   /// mesh, as for data given on a CAD model, while kernel, normals and
   /// surface elements are those of the mesh.
-  bool         boundary_data_on_exact_surface = false;
-  bool         interpolate_exact_geometry = false;
-  std::shared_ptr<ExactGeometry::ProjectedMapping<dim - 1, dim>>
-    exact_mapping;
+  bool boundary_data_on_exact_surface = false;
+  bool interpolate_exact_geometry     = false;
+  std::shared_ptr<ExactGeometry::ProjectedMapping<dim - 1, dim>> exact_mapping;
   std::shared_ptr<MappingQCache<dim - 1, dim>> exact_mapping_cache;
   /// The interpolation of the previous reinit(), kept alive until the next
   /// one: objects built in reinit(), such as the FMA, observe the mapping
@@ -840,8 +840,8 @@ public:
 
   /// The mapping onto the exact geometry, with the projectors.
   std::shared_ptr<Mapping<dim - 1, dim>>
-  make_exact_geometry_mapping();
-  Vector<double>                         map_points;
+                 make_exact_geometry_mapping();
+  Vector<double> map_points;
 
   /// these are the std::vectors of std::sets
   /// containing informations on multiple
@@ -863,32 +863,32 @@ public:
   unsigned int singular_quadrature_order;
   unsigned int galerkin_quadrature_order;
   unsigned int galerkin_singular_quadrature_order;
-  unsigned int galerkin_folded_singular_quadrature_order = 0;
+  unsigned int galerkin_folded_singular_quadrature_order   = 0;
   unsigned int galerkin_material_singular_quadrature_order = 0;
-  unsigned int galerkin_skewed_singular_quadrature_order = 0;
-  double       galerkin_skewed_minimum_angle = 30.;
-  unsigned int galerkin_kinked_singular_quadrature_order = 0;
-  double       galerkin_kinked_minimum_angle = 60.;
-  double       galerkin_kinked_distance_ratio = 0.;
+  unsigned int galerkin_skewed_singular_quadrature_order   = 0;
+  double       galerkin_skewed_minimum_angle               = 30.;
+  unsigned int galerkin_kinked_singular_quadrature_order   = 0;
+  double       galerkin_kinked_minimum_angle               = 60.;
+  double       galerkin_kinked_distance_ratio              = 0.;
   /// Mixed Galerkin relaxed products below.
-  double       mixed_galerkin_relaxation = 0.;
+  double                       mixed_galerkin_relaxation = 0.;
   std::set<types::material_id> galerkin_singular_quadrature_material_ids;
-  unsigned int galerkin_duffy_outer_subdivisions;
-  double       galerkin_near_singular_distance_ratio;
-  unsigned int galerkin_near_singular_maximum_depth;
-  unsigned int galerkin_near_singular_quadrature_order;
-  std::string  galerkin_singular_quadrature;
-  unsigned int quasi_singular_neumann_quadrature_order;
-  unsigned int quasi_singular_dirichlet_quadrature_order;
-  bool         adaptive_quadrature;
-  double       adaptive_quadrature_relative_tolerance;
-  double       adaptive_quadrature_absolute_tolerance;
-  unsigned int adaptive_quadrature_max_order;
-  double       adaptive_quadrature_order_growth;
-  double       quasi_singular_distance_ratio;
-  bool         near_singular_subdivision;
-  double       near_singular_subdivision_ratio;
-  unsigned int near_singular_subdivision_max_levels;
+  unsigned int                 galerkin_duffy_outer_subdivisions;
+  double                       galerkin_near_singular_distance_ratio;
+  unsigned int                 galerkin_near_singular_maximum_depth;
+  unsigned int                 galerkin_near_singular_quadrature_order;
+  std::string                  galerkin_singular_quadrature;
+  unsigned int                 quasi_singular_neumann_quadrature_order;
+  unsigned int                 quasi_singular_dirichlet_quadrature_order;
+  bool                         adaptive_quadrature;
+  double                       adaptive_quadrature_relative_tolerance;
+  double                       adaptive_quadrature_absolute_tolerance;
+  unsigned int                 adaptive_quadrature_max_order;
+  double                       adaptive_quadrature_order_growth;
+  double                       quasi_singular_distance_ratio;
+  bool                         near_singular_subdivision;
+  double                       near_singular_subdivision_ratio;
+  unsigned int                 near_singular_subdivision_max_levels;
 
 
   TrilinosWrappers::SparsityPattern full_sparsity_pattern;
@@ -901,14 +901,13 @@ public:
     robin_matrix_diagonal_imag;
   TrilinosWrappers::MPI::Vector robin_rhs, robin_rhs_imag;
 
-  TrilinosWrappers::SparseMatrix    jump_matrix;
-  TrilinosWrappers::SparseMatrix    calderon_hypersingular_matrix;
-  TrilinosWrappers::SparseMatrix    calderon_mass_matrix;
+  TrilinosWrappers::SparseMatrix jump_matrix;
+  TrilinosWrappers::SparseMatrix calderon_hypersingular_matrix;
+  TrilinosWrappers::SparseMatrix calderon_mass_matrix;
 
+  std::vector<TrilinosWrappers::MPI::Vector> laplace_patch_normal_components;
   std::vector<TrilinosWrappers::MPI::Vector>
-    laplace_patch_normal_components;
-  std::vector<TrilinosWrappers::MPI::Vector>
-    laplace_patch_correction_coefficients;
+       laplace_patch_correction_coefficients;
   bool laplace_patch_correction_initialized;
 
   TrilinosWrappers::MPI::Vector system_rhs;
@@ -951,25 +950,24 @@ public:
 
   /// compute the energy norm of the flux error after the solve; costs one
   /// extra pass over all panel pairs, so it is off by default
-  bool   compute_energy_norm;
+  bool        compute_energy_norm;
   std::string gradient_recovery;
-  double galerkin_far_field_tolerance;
+  double      galerkin_far_field_tolerance;
   /// Assemble the single layer and the double-layer right-hand side in one
   /// pass over the panel pairs, sharing their quadrature.
-  bool   galerkin_fused_rhs;
+  bool galerkin_fused_rhs;
   /// Evaluate the near-field rules from the reconstructed cell geometry
   /// instead of FEValues.
-  bool   galerkin_light_geometry;
+  bool galerkin_light_geometry;
   /// Set by solve() while assemble_system() runs, so that the Galerkin
   /// assembly can build the right-hand side together with the matrix; and
   /// whether it did.
   const Function<dim> *galerkin_fused_dirichlet_function = nullptr;
   bool                 galerkin_rhs_from_fused_assembly  = false;
 
-  IndexSet                  calderon_cpu_set;
-  AffineConstraints<double> calderon_constraints;
-  std::vector<std::vector<types::global_dof_index>>
-    calderon_dual_cell_vertices;
+  IndexSet                                          calderon_cpu_set;
+  AffineConstraints<double>                         calderon_constraints;
+  std::vector<std::vector<types::global_dof_index>> calderon_dual_cell_vertices;
   std::vector<unsigned int> calderon_dual_vertex_valence;
   std::vector<double>       calderon_dual_cell_areas;
 
@@ -995,7 +993,7 @@ public:
   }
 
 
-  bool   enforce_laplace_linear_patch;
+  bool enforce_laplace_linear_patch;
 
 
   types::global_dof_index        preconditioner_band;

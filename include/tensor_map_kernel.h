@@ -47,11 +47,11 @@ namespace TensorMapKernel
    */
   template <unsigned int n, typename Output>
   void
-  evaluate(const double             *nodes,
-           const double             *basis,
-           const dealii::Point<2>   *reference_points,
-           const unsigned int        m,
-           Output                  &&output)
+  evaluate(const double           *nodes,
+           const double           *basis,
+           const dealii::Point<2> *reference_points,
+           const unsigned int      m,
+           Output                &&output)
   {
     constexpr unsigned int block = 4;
     for (unsigned int begin = 0; begin < m; begin += block)
@@ -70,7 +70,7 @@ namespace TensorMapKernel
         const double *x = basis, *w = basis + n;
         for (unsigned int direction = 0; direction < 2; ++direction)
           {
-            const double *r = direction == 0 ? t : u;
+            const double *r      = direction == 0 ? t : u;
             double(&v)[n][block] = direction == 0 ? v0 : v1;
             double(&d)[n][block] = direction == 0 ? d0 : d1;
             alignas(32) double P[n][block], dP[n][block], S[n][block],
@@ -147,18 +147,18 @@ namespace TensorMapKernel
   /// The same for n known at run time, from 2 to 12.
   template <typename Output>
   void
-  evaluate(const unsigned int        n,
-           const double             *nodes,
-           const double             *basis,
-           const dealii::Point<2>   *reference_points,
-           const unsigned int        m,
-           Output                  &&output)
+  evaluate(const unsigned int      n,
+           const double           *nodes,
+           const double           *basis,
+           const dealii::Point<2> *reference_points,
+           const unsigned int      m,
+           Output                &&output)
   {
     switch (n)
       {
-#define PIBEM_TENSOR_MAP_CASE(N)                                \
-  case N:                                                      \
-    evaluate<N>(nodes, basis, reference_points, m, output);    \
+#define PIBEM_TENSOR_MAP_CASE(N)                            \
+  case N:                                                   \
+    evaluate<N>(nodes, basis, reference_points, m, output); \
     break;
         PIBEM_TENSOR_MAP_CASE(2)
         PIBEM_TENSOR_MAP_CASE(3)

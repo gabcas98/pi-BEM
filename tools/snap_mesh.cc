@@ -58,7 +58,7 @@ main(int argc, char **argv)
       if (!row.empty())
         rows.push_back(row);
     }
-  const unsigned int n_vertices = std::stoi(rows[0][0]);
+  const unsigned int              n_vertices = std::stoi(rows[0][0]);
   std::map<std::string, Point<3>> vertices;
   for (unsigned int k = 1; k <= n_vertices; ++k)
     vertices[rows[k][0]] = Point<3>(std::stod(rows[k][1]),
@@ -78,13 +78,15 @@ main(int argc, char **argv)
   for (unsigned int j = 1;
        std::filesystem::exists(folder + "Curve_" + std::to_string(j) + ".iges");
        ++j)
-    curves[10 + j] = OpenCASCADE::read_IGES(
-      folder + "Curve_" + std::to_string(j) + ".iges", 1e-3);
+    curves[10 + j] =
+      OpenCASCADE::read_IGES(folder + "Curve_" + std::to_string(j) + ".iges",
+                             1e-3);
   for (unsigned int i = 1;
        std::filesystem::exists(folder + "Color_" + std::to_string(i) + ".iges");
        ++i)
-    surfaces[i] = OpenCASCADE::read_IGES(
-      folder + "Color_" + std::to_string(i) + ".iges", 1e-3);
+    surfaces[i] =
+      OpenCASCADE::read_IGES(folder + "Color_" + std::to_string(i) + ".iges",
+                             1e-3);
 
   double       moved = 0, corner_gap = 0;
   unsigned int on_curve = 0, on_corner = 0, on_surface = 0, kept = 0;
@@ -107,9 +109,10 @@ main(int argc, char **argv)
           for (unsigned int it = 0; it < 200; ++it)
             for (unsigned int c = 0; c < 2; ++c)
               q = OpenCASCADE::closest_point(curves[on[c]], q, 1e-12);
-          corner_gap = std::max(
-            corner_gap,
-            q.distance(OpenCASCADE::closest_point(curves[on[0]], q, 1e-12)));
+          corner_gap =
+            std::max(corner_gap,
+                     q.distance(
+                       OpenCASCADE::closest_point(curves[on[0]], q, 1e-12)));
           ++on_corner;
         }
       else if (!materials_of[name].empty() &&
@@ -141,8 +144,8 @@ main(int argc, char **argv)
       out << '\n';
     }
   std::cout << "vertices on one curve " << on_curve << ", on two curves "
-            << on_corner << ", on a surface " << on_surface << ", kept "
-            << kept << "; largest move " << moved
+            << on_corner << ", on a surface " << on_surface << ", kept " << kept
+            << "; largest move " << moved
             << ", largest gap between the curves at a corner " << corner_gap
             << std::endl;
 }

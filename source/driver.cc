@@ -117,14 +117,14 @@ Driver<dim>::run()
       if (global_refinement)
         {
           computational_domain.refine_and_resize(computational_domain.n_cycles);
-          //computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
+          // computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
         }
       else
         {
-          //computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
-          //local_refinement_cycles = 0;
-          // refine_and_resize() applies pre_global_refinements itself.  The
-          // following cycles are driven by the adaptive estimator below.
+          // computational_domain.conditional_refine_and_resize(computational_domain.n_cycles);
+          // local_refinement_cycles = 0;
+          //  refine_and_resize() applies pre_global_refinements itself.  The
+          //  following cycles are driven by the adaptive estimator below.
           computational_domain.refine_and_resize(initial_level);
           local_refinement_cycles = computational_domain.n_cycles;
         }
@@ -146,8 +146,7 @@ Driver<dim>::run()
             computational_domain.pcout
               << "Mesh only: FE_DGQ(" << degree << ") would give " << dofs
               << " dofs, dense matrix about "
-              << 18.0 * double(dofs) * double(dofs) / 1e9 << " GB"
-              << std::endl;
+              << 18.0 * double(dofs) * double(dofs) / 1e9 << " GB" << std::endl;
           }
         return;
       }

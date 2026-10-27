@@ -135,13 +135,13 @@ public:
    * of the direct interactions and the sums over the processes are shared.
    */
   void
-  evaluate_mixed(const std::vector<double>               &q,
-                 const std::vector<dealii::Tensor<1, 3>> &d,
+  evaluate_mixed(const std::vector<double>                &q,
+                 const std::vector<dealii::Tensor<1, 3>>  &d,
                  const std::array<std::vector<double>, 3> &c,
-                 std::vector<double>                     &potentials_q,
-                 std::vector<dealii::Tensor<1, 3>>       &gradients_q,
-                 std::vector<double>                     &potentials_d,
-                 std::array<std::vector<double>, 3>      &potentials_c) const;
+                 std::vector<double>                      &potentials_q,
+                 std::vector<dealii::Tensor<1, 3>>        &gradients_q,
+                 std::vector<double>                      &potentials_d,
+                 std::array<std::vector<double>, 3>       &potentials_c) const;
 
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
@@ -175,8 +175,8 @@ private:
     double       radius;
     unsigned int begin, end; // range in the sorted points
     unsigned int first_child = invalid, n_children = 0;
-    unsigned int parent      = invalid;
-    unsigned int level       = 0;
+    unsigned int parent = invalid;
+    unsigned int level  = 0;
 
     bool
     is_leaf() const
@@ -291,9 +291,7 @@ private:
   /// together. On the expansions of real_multipoles(), adding to the real
   /// coefficients of complex_locals() (Laplace kernel).
   void
-  multipole_to_local(const double      *M,
-                     double            *L,
-                     const unsigned int k) const;
+  multipole_to_local(const double *M, double *L, const unsigned int k) const;
 
   /// the Laplace kernel optionally their gradients g (three arrays of the
   /// size of u, one per component); the times of the phases are added to
@@ -342,7 +340,7 @@ private:
   /// Work of this process: leaves whose multipoles and potentials it forms,
   /// M2L and P2P pairs whose target it owns (or shares), boxes whose
   /// expansions it translates.
-  mutable std::vector<unsigned int>                          my_leaves, my_boxes;
+  mutable std::vector<unsigned int> my_leaves, my_boxes;
   mutable std::vector<std::pair<unsigned int, unsigned int>> my_m2l_pairs,
     my_p2p_pairs;
 
@@ -364,7 +362,7 @@ private:
     unsigned int         begin, end; // range in m2l_order
     /// Start in m2l_rotations of the blocks of the rotation about y of the
     /// polar angle of -tau (Laplace kernel).
-    std::size_t          rotation = 0;
+    std::size_t rotation = 0;
   };
   mutable std::vector<M2LGroup>     m2l_groups;
   mutable std::vector<unsigned int> m2l_order;
@@ -386,7 +384,7 @@ private:
   /// its parent, at (level * 8 + octant) times the square of the number of
   /// coefficients.
   mutable std::vector<double> yukawa_multipoles, yukawa_locals;
-  std::vector<double>                          yukawa_m2m, yukawa_l2l;
+  std::vector<double>         yukawa_m2m, yukawa_l2l;
   /// The normalization of the screened expansions of each level, 1/k_n and
   /// i_n of kappa times its radius, at level * (order + 1) + n: the M2L
   /// translations work between the unnormalized bases.
@@ -399,7 +397,7 @@ private:
    * |tau| u, so that the pairs of a group, of different sizes, may need
    * different ones.
    */
-  mutable std::vector<double>       yukawa_tz;
+  mutable std::vector<double> yukawa_tz;
   /// The rotations about y of the polar angles of the groups
   /// (YukawaExpansions::Operators::rotation_blocks()), shared by the
   /// groups of the same polar angle (Laplace kernel).
@@ -410,8 +408,7 @@ private:
 
   /// Cost model: seconds per M2L, per P2P interaction and per point, and
   /// the relative speed of every process.
-  mutable double              cost_m2l = 1., cost_p2p = 1. / 1500.,
-                 cost_point = 0.05;
+  mutable double cost_m2l = 1., cost_p2p = 1. / 1500., cost_point = 0.05;
   mutable std::vector<double> speed;
   /// Counts per box, for the cost model: M2L translations and P2P
   /// interactions for which the box is the target.
@@ -419,7 +416,7 @@ private:
   std::vector<unsigned long> p2p_count;
 
   /// Wall-clock time of the phases, summed over the calls of evaluate().
-  mutable std::array<double, 6> phase_time = {{0, 0, 0, 0, 0, 0}};
+  mutable std::array<double, 6> phase_time    = {{0, 0, 0, 0, 0, 0}};
   mutable unsigned int          n_evaluations = 0;
   double                        setup_time    = 0;
 };

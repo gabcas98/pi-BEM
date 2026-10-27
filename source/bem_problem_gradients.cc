@@ -18,18 +18,6 @@
 // of the collocation formulation and the Galerkin form of the gradient
 // representation; and the surface gradients of the constraints.
 
-#include "../include/bem_problem.h"
-#include "../include/cellwise_function.h"
-#include "../include/galerkin_calderon_fmm_operator.h"
-#include "../include/galerkin_panel_pair_integrator.h"
-#include "../include/laplace_kernel.h"
-#include "../include/screened_kernel.h"
-#include "../include/quasi_singular_kernel_integral.h"
-#include "../include/singular_kernel_integral.h"
-#include "../include/surface_potential_evaluator.h"
-#include "bem_problem_helpers.h"
-#include "mapping_hanging_constraints.h"
-
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -39,6 +27,18 @@
 #include <numeric>
 #include <sstream>
 #include <vector>
+
+#include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
+#include "../include/galerkin_calderon_fmm_operator.h"
+#include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/laplace_kernel.h"
+#include "../include/quasi_singular_kernel_integral.h"
+#include "../include/screened_kernel.h"
+#include "../include/singular_kernel_integral.h"
+#include "../include/surface_potential_evaluator.h"
+#include "bem_problem_helpers.h"
+#include "mapping_hanging_constraints.h"
 
 using namespace std;
 
@@ -398,8 +398,7 @@ BEMProblem<dim>::compute_gradients_weak(
   FEFaceValues<dim - 1, dim> fe_face(*mapping,
                                      *fe,
                                      face_quadrature,
-                                     update_values |
-                                       update_quadrature_points |
+                                     update_values | update_quadrature_points |
                                        update_JxW_values);
   FEFaceValues<dim - 1, dim> normal_face(*mapping,
                                          *fe,
@@ -431,7 +430,7 @@ BEMProblem<dim>::compute_gradients_weak(
   //     div_S n = sum_{a,b} G^{-1}_{ab} (dn/dxi_a . a_b),
   // with a_b the columns of the mapping Jacobian and G = A^T A the metric.
   // Central differences with this step are accurate to about 1e-10.
-  const double         fd_step = 1e-5;
+  const double                fd_step = 1e-5;
   std::vector<Point<dim - 1>> fd_points;
   for (unsigned int q = 0; q < vector_n_q_points; ++q)
     {
@@ -446,13 +445,13 @@ BEMProblem<dim>::compute_gradients_weak(
           fd_points.push_back(minus);
         }
     }
-  const unsigned int     fd_stride = 1 + 2 * (dim - 1);
+  const unsigned int        fd_stride = 1 + 2 * (dim - 1);
   const Quadrature<dim - 1> fd_quadrature(fd_points);
-  FEValues<dim - 1, dim> fd_values(*mapping,
+  FEValues<dim - 1, dim>    fd_values(*mapping,
                                    *fe,
                                    fd_quadrature,
                                    update_normal_vectors | update_jacobians);
-  const auto geometric_curvature = [&](const cell_it &c,
+  const auto                geometric_curvature = [&](const cell_it       &c,
                                        std::vector<double> &kappa) {
     fd_values.reinit(c);
     for (unsigned int q = 0; q < vector_n_q_points; ++q)
@@ -469,8 +468,7 @@ BEMProblem<dim>::compute_gradients_weak(
         for (unsigned int a = 0; a < dim - 1; ++a)
           {
             Tensor<1, dim> n_plus = fd_values.normal_vector(base + 1 + 2 * a);
-            Tensor<1, dim> n_minus =
-              fd_values.normal_vector(base + 2 + 2 * a);
+            Tensor<1, dim> n_minus = fd_values.normal_vector(base + 2 + 2 * a);
             n_plus /= n_plus.norm();
             n_minus /= n_minus.norm();
             const Tensor<1, dim> dn = (n_plus - n_minus) / (2.0 * fd_step);
@@ -520,12 +518,11 @@ BEMProblem<dim>::compute_gradients_weak(
             // curvature term included, so the projected field is exactly
             // tangential and its projection error has nothing directed
             // along the normal to pass on. The flux is added afterwards.
-            local_rhs(i) += (-trace_values[q] *
-                               vector_fe_v.shape_grad(i, q)[ci] +
-                             trace_values[q] * total_curvature[q] *
-                               vector_fe_v.shape_value(i, q) *
-                               normals[q][ci]) *
-                            vector_fe_v.JxW(q);
+            local_rhs(i) +=
+              (-trace_values[q] * vector_fe_v.shape_grad(i, q)[ci] +
+               trace_values[q] * total_curvature[q] *
+                 vector_fe_v.shape_value(i, q) * normals[q][ci]) *
+              vector_fe_v.JxW(q);
           }
 
       for (unsigned int f = 0; f < GeometryInfo<dim - 1>::faces_per_cell; ++f)
@@ -537,12 +534,12 @@ BEMProblem<dim>::compute_gradients_weak(
             face_trace_values[q] =
               on_cell(analytic_phi, cell).value(fe_face.quadrature_point(q));
 
-          const Point<dim> face_centre = cell->face(f)->center();
-          const Tensor<1, dim> outward = face_centre - cell->center();
-          const Point<dim>     tail    = cell->face(f)->vertex(0);
-          const Point<dim>     head    = cell->face(f)->vertex(1);
-          Tensor<1, dim>       tangent = head - tail;
-          const double         length  = tangent.norm();
+          const Point<dim>     face_centre = cell->face(f)->center();
+          const Tensor<1, dim> outward     = face_centre - cell->center();
+          const Point<dim>     tail        = cell->face(f)->vertex(0);
+          const Point<dim>     head        = cell->face(f)->vertex(1);
+          Tensor<1, dim>       tangent     = head - tail;
+          const double         length      = tangent.norm();
           if (length < 1e-14)
             continue;
           tangent /= length;
@@ -594,60 +591,61 @@ BEMProblem<dim>::compute_gradients_weak(
   vector_constraints.distribute(get_vector_gradients_solution());
 
   gradient_normal_from_flux = true;
-    {
-      // Assemble the full gradient as the L2 projection, at the quadrature
-      // points, of  P g_t + lambda_h n,  with n the exact normal of the
-      // mapped surface there. Projecting rather than interpolating at the
-      // nodes gives the normal component the best approximation of lambda n
-      // the space allows, which is what the projection-based recovery gets
-      // right and the nodal replacement did not.
-      TrilinosWrappers::MPI::Vector tangential_field(get_vector_gradients_solution());
-      const Vector<double>          tangential(tangential_field);
-      TrilinosWrappers::MPI::Vector full_rhs(vector_this_cpu_set,
-                                             mpi_communicator);
-      std::vector<Tensor<1, dim>>   tangential_values(vector_n_q_points);
-      std::vector<types::global_dof_index> indices(vector_dofs_per_cell);
-      Vector<double> cell_rhs(vector_dofs_per_cell);
-      cell_it c = dh.begin_active(), vc = gradient_dh.begin_active();
-      for (; c != endc; ++c, ++vc)
-        {
-          if (c->subdomain_id() != this_mpi_process)
-            continue;
-          fe_v.reinit(c);
-          vector_fe_v.reinit(vc);
-          fe_v.get_function_values(dphi_dn, flux_values);
-          vector_fe_v[all_components].get_function_values(tangential,
-                                                          tangential_values);
-          const std::vector<Tensor<1, dim>> &normals_q =
-            vector_fe_v.get_normal_vectors();
-          cell_rhs = 0;
-          for (unsigned int q = 0; q < vector_n_q_points; ++q)
-            {
-              Tensor<1, dim> normal = normals_q[q];
-              normal /= normal.norm();
-              const Tensor<1, dim> &g = tangential_values[q];
-              const Tensor<1, dim>  full =
-                g - (g * normal) * normal + flux_values[q] * normal;
-              for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
-                {
-                  const unsigned int ci =
-                    gradient_fe->system_to_component_index(i).first;
-                  cell_rhs(i) += vector_fe_v.shape_value(i, q) * full[ci] *
-                                 vector_fe_v.JxW(q);
-                }
-            }
-          vc->get_dof_indices(indices);
-          vector_constraints.distribute_local_to_global(cell_rhs,
-                                                        indices,
-                                                        full_rhs);
-        }
-      full_rhs.compress(VectorOperation::add);
-      solver.solve(vector_gradients_matrix,
-                   get_vector_gradients_solution(),
-                   full_rhs,
-                   mass_prec);
-      vector_constraints.distribute(get_vector_gradients_solution());
-    }
+  {
+    // Assemble the full gradient as the L2 projection, at the quadrature
+    // points, of  P g_t + lambda_h n,  with n the exact normal of the
+    // mapped surface there. Projecting rather than interpolating at the
+    // nodes gives the normal component the best approximation of lambda n
+    // the space allows, which is what the projection-based recovery gets
+    // right and the nodal replacement did not.
+    TrilinosWrappers::MPI::Vector tangential_field(
+      get_vector_gradients_solution());
+    const Vector<double>                 tangential(tangential_field);
+    TrilinosWrappers::MPI::Vector        full_rhs(vector_this_cpu_set,
+                                           mpi_communicator);
+    std::vector<Tensor<1, dim>>          tangential_values(vector_n_q_points);
+    std::vector<types::global_dof_index> indices(vector_dofs_per_cell);
+    Vector<double>                       cell_rhs(vector_dofs_per_cell);
+    cell_it c = dh.begin_active(), vc = gradient_dh.begin_active();
+    for (; c != endc; ++c, ++vc)
+      {
+        if (c->subdomain_id() != this_mpi_process)
+          continue;
+        fe_v.reinit(c);
+        vector_fe_v.reinit(vc);
+        fe_v.get_function_values(dphi_dn, flux_values);
+        vector_fe_v[all_components].get_function_values(tangential,
+                                                        tangential_values);
+        const std::vector<Tensor<1, dim>> &normals_q =
+          vector_fe_v.get_normal_vectors();
+        cell_rhs = 0;
+        for (unsigned int q = 0; q < vector_n_q_points; ++q)
+          {
+            Tensor<1, dim> normal = normals_q[q];
+            normal /= normal.norm();
+            const Tensor<1, dim> &g = tangential_values[q];
+            const Tensor<1, dim>  full =
+              g - (g * normal) * normal + flux_values[q] * normal;
+            for (unsigned int i = 0; i < vector_dofs_per_cell; ++i)
+              {
+                const unsigned int ci =
+                  gradient_fe->system_to_component_index(i).first;
+                cell_rhs(i) +=
+                  vector_fe_v.shape_value(i, q) * full[ci] * vector_fe_v.JxW(q);
+              }
+          }
+        vc->get_dof_indices(indices);
+        vector_constraints.distribute_local_to_global(cell_rhs,
+                                                      indices,
+                                                      full_rhs);
+      }
+    full_rhs.compress(VectorOperation::add);
+    solver.solve(vector_gradients_matrix,
+                 get_vector_gradients_solution(),
+                 full_rhs,
+                 mass_prec);
+    vector_constraints.distribute(get_vector_gradients_solution());
+  }
 }
 
 template <int dim>
@@ -715,15 +713,14 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       const double sigma = position_flux > 0.0 ? 1.0 : -1.0;
 
       SurfacePotentialEvaluator::Densities densities;
-      densities.flux_coefficients = &flux_full;
-      densities.trace_function    = &analytic_phi;
-      densities.trace_gradient    = &trace_gradient;
-      const char  *duffy_env = std::getenv("PIBEM_HW_DUFFY_ORDER");
-      const char  *near_env  = std::getenv("PIBEM_HW_NEAR_RATIO");
+      densities.flux_coefficients  = &flux_full;
+      densities.trace_function     = &analytic_phi;
+      densities.trace_gradient     = &trace_gradient;
+      const char        *duffy_env = std::getenv("PIBEM_HW_DUFFY_ORDER");
+      const char        *near_env  = std::getenv("PIBEM_HW_NEAR_RATIO");
       const unsigned int duffy_order =
         duffy_env != nullptr ? std::atoi(duffy_env) : 12;
-      const double near_ratio =
-        near_env != nullptr ? std::atof(near_env) : 0.5;
+      const double near_ratio = near_env != nullptr ? std::atof(near_env) : 0.5;
 
       const auto start = std::chrono::steady_clock::now();
 
@@ -736,139 +733,137 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       // sum, as in the assembly of the matrix.
       std::vector<Vector<double>> adjoint_moments(
         dh.get_triangulation().n_active_cells());
-        {
-          const GalerkinSingularQuadrature singular_strategy =
-            galerkin_singular_quadrature == "iterated_duffy" ?
-              GalerkinSingularQuadrature::iterated_duffy :
-              GalerkinSingularQuadrature::sauter_schwab;
-          const char *ratio_env = std::getenv("PIBEM_HW_PAIR_RATIO");
-          const char *depth_env = std::getenv("PIBEM_HW_PAIR_DEPTH");
-          const char *order_env = std::getenv("PIBEM_HW_PAIR_ORDER");
-          GalerkinPanelPairIntegrator<3> integrator(
-            *mapping,
-            *fe,
-            singular_strategy,
-            galerkin_singular_quadrature_order,
-            galerkin_duffy_outer_subdivisions,
-            ratio_env != nullptr ? std::atof(ratio_env) :
-                                   galerkin_near_singular_distance_ratio,
-            // The kernel of K' is as sharp as the gap near a contact; the
-            // depth used for V is not enough to resolve it.
-            depth_env != nullptr ?
-              std::atoi(depth_env) :
-              std::max(10U, galerkin_near_singular_maximum_depth),
-            order_env != nullptr ? std::atoi(order_env) :
-                                   galerkin_near_singular_quadrature_order);
-          integrator.set_screening(galerkin_screening());
-          integrator.set_light_geometry(galerkin_light_geometry);
-      integrator.set_folded_singular_order(
-        galerkin_folded_singular_quadrature_order);
-      integrator.set_material_singular_order(
-        galerkin_singular_quadrature_material_ids,
-        galerkin_material_singular_quadrature_order);
-      integrator.set_skewed_singular_order(
-        galerkin_skewed_singular_quadrature_order,
-        galerkin_skewed_minimum_angle);
-      integrator.set_kinked_singular_order(
-        galerkin_kinked_singular_quadrature_order,
-        galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(
-        galerkin_kinked_distance_ratio);
-          const double kappa = galerkin_screening();
+      {
+        const GalerkinSingularQuadrature singular_strategy =
+          galerkin_singular_quadrature == "iterated_duffy" ?
+            GalerkinSingularQuadrature::iterated_duffy :
+            GalerkinSingularQuadrature::sauter_schwab;
+        const char *ratio_env = std::getenv("PIBEM_HW_PAIR_RATIO");
+        const char *depth_env = std::getenv("PIBEM_HW_PAIR_DEPTH");
+        const char *order_env = std::getenv("PIBEM_HW_PAIR_ORDER");
+        GalerkinPanelPairIntegrator<3> integrator(
+          *mapping,
+          *fe,
+          singular_strategy,
+          galerkin_singular_quadrature_order,
+          galerkin_duffy_outer_subdivisions,
+          ratio_env != nullptr ? std::atof(ratio_env) :
+                                 galerkin_near_singular_distance_ratio,
+          // The kernel of K' is as sharp as the gap near a contact; the
+          // depth used for V is not enough to resolve it.
+          depth_env != nullptr ?
+            std::atoi(depth_env) :
+            std::max(10U, galerkin_near_singular_maximum_depth),
+          order_env != nullptr ? std::atoi(order_env) :
+                                 galerkin_near_singular_quadrature_order);
+        integrator.set_screening(galerkin_screening());
+        integrator.set_light_geometry(galerkin_light_geometry);
+        integrator.set_folded_singular_order(
+          galerkin_folded_singular_quadrature_order);
+        integrator.set_material_singular_order(
+          galerkin_singular_quadrature_material_ids,
+          galerkin_material_singular_quadrature_order);
+        integrator.set_skewed_singular_order(
+          galerkin_skewed_singular_quadrature_order,
+          galerkin_skewed_minimum_angle);
+        integrator.set_kinked_singular_order(
+          galerkin_kinked_singular_quadrature_order,
+          galerkin_kinked_minimum_angle);
+        integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
+        const double kappa = galerkin_screening();
 
-          const QGauss<dim - 1>  pair_rule(galerkin_quadrature_order);
-          FEValues<dim - 1, dim> pair_values(*mapping,
-                                             *fe,
-                                             pair_rule,
-                                             update_values |
-                                               update_normal_vectors |
-                                               update_quadrature_points |
-                                               update_JxW_values);
-          const unsigned int n_pair_points = pair_rule.size();
-          const unsigned int n_cells = dh.get_triangulation().n_active_cells();
-          std::vector<std::vector<Point<dim>>>     cached_points(n_cells);
-          std::vector<std::vector<Tensor<1, dim>>> cached_normals(n_cells);
-          std::vector<std::vector<double>>         cached_weighted_flux(n_cells);
-          std::vector<std::vector<double>>         cached_JxW(n_cells);
-          std::vector<FullMatrix<double>>          cached_shapes(n_cells);
-          std::vector<types::global_dof_index>     dofs(fe->dofs_per_cell);
-          for (const auto &cell : dh.active_cell_iterators())
-            {
-              const unsigned int c = cell->active_cell_index();
-              pair_values.reinit(cell);
-              cell->get_dof_indices(dofs);
-              cached_points[c]  = pair_values.get_quadrature_points();
-              cached_normals[c] = pair_values.get_normal_vectors();
-              cached_weighted_flux[c].resize(n_pair_points);
-              cached_JxW[c].resize(n_pair_points);
-              cached_shapes[c].reinit(fe->dofs_per_cell, n_pair_points);
+        const QGauss<dim - 1>  pair_rule(galerkin_quadrature_order);
+        FEValues<dim - 1, dim> pair_values(*mapping,
+                                           *fe,
+                                           pair_rule,
+                                           update_values |
+                                             update_normal_vectors |
+                                             update_quadrature_points |
+                                             update_JxW_values);
+        const unsigned int     n_pair_points = pair_rule.size();
+        const unsigned int n_cells = dh.get_triangulation().n_active_cells();
+        std::vector<std::vector<Point<dim>>>     cached_points(n_cells);
+        std::vector<std::vector<Tensor<1, dim>>> cached_normals(n_cells);
+        std::vector<std::vector<double>>         cached_weighted_flux(n_cells);
+        std::vector<std::vector<double>>         cached_JxW(n_cells);
+        std::vector<FullMatrix<double>>          cached_shapes(n_cells);
+        std::vector<types::global_dof_index>     dofs(fe->dofs_per_cell);
+        for (const auto &cell : dh.active_cell_iterators())
+          {
+            const unsigned int c = cell->active_cell_index();
+            pair_values.reinit(cell);
+            cell->get_dof_indices(dofs);
+            cached_points[c]  = pair_values.get_quadrature_points();
+            cached_normals[c] = pair_values.get_normal_vectors();
+            cached_weighted_flux[c].resize(n_pair_points);
+            cached_JxW[c].resize(n_pair_points);
+            cached_shapes[c].reinit(fe->dofs_per_cell, n_pair_points);
+            for (unsigned int q = 0; q < n_pair_points; ++q)
+              {
+                double flux = 0.0;
+                for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
+                  flux += flux_full(dofs[k]) * pair_values.shape_value(k, q);
+                cached_weighted_flux[c][q] = flux * pair_values.JxW(q);
+                cached_JxW[c][q]           = pair_values.JxW(q);
+                for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
+                  cached_shapes[c](k, q) = pair_values.shape_value(k, q);
+              }
+          }
+
+        std::vector<double> potential(n_pair_points);
+        for (const auto &test_cell : dh.active_cell_iterators())
+          {
+            if (test_cell->subdomain_id() != this_mpi_process)
+              continue;
+            const unsigned int t = test_cell->active_cell_index();
+            Vector<double>     moments(fe->dofs_per_cell);
+            std::fill(potential.begin(), potential.end(), 0.0);
+            for (const auto &trial_cell : dh.active_cell_iterators())
+              {
+                const unsigned int r = trial_cell->active_cell_index();
+                if (integrator.is_far_regular_pair(test_cell, trial_cell))
+                  {
+                    for (unsigned int q = 0; q < n_pair_points; ++q)
+                      {
+                        double sum = 0.0;
+                        for (unsigned int k = 0; k < n_pair_points; ++k)
+                          {
+                            const Tensor<1, dim> displacement =
+                              cached_points[r][k] - cached_points[t][q];
+                            const double distance = displacement.norm();
+                            sum +=
+                              (displacement * cached_normals[t][q]) *
+                              (kappa == 0.0 ? 1.0 :
+                                              (1.0 + kappa * distance) *
+                                                std::exp(-kappa * distance)) /
+                              (4.0 * numbers::PI * distance * distance *
+                               distance) *
+                              cached_weighted_flux[r][k];
+                          }
+                        potential[q] += sum;
+                      }
+                  }
+                else
+                  {
+                    const FullMatrix<double> block =
+                      integrator.integrate_adjoint_double_layer(
+                        test_cell, trial_cell, galerkin_quadrature_order);
+                    trial_cell->get_dof_indices(dofs);
+                    for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                      for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+                        moments(i) += block(i, j) * flux_full(dofs[j]);
+                  }
+              }
+            for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
               for (unsigned int q = 0; q < n_pair_points; ++q)
-                {
-                  double flux = 0.0;
-                  for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
-                    flux += flux_full(dofs[k]) * pair_values.shape_value(k, q);
-                  cached_weighted_flux[c][q] = flux * pair_values.JxW(q);
-                  cached_JxW[c][q]           = pair_values.JxW(q);
-                  for (unsigned int k = 0; k < fe->dofs_per_cell; ++k)
-                    cached_shapes[c](k, q) = pair_values.shape_value(k, q);
-                }
-            }
-
-          std::vector<double> potential(n_pair_points);
-          for (const auto &test_cell : dh.active_cell_iterators())
-            {
-              if (test_cell->subdomain_id() != this_mpi_process)
-                continue;
-              const unsigned int t = test_cell->active_cell_index();
-              Vector<double>     moments(fe->dofs_per_cell);
-              std::fill(potential.begin(), potential.end(), 0.0);
-              for (const auto &trial_cell : dh.active_cell_iterators())
-                {
-                  const unsigned int r = trial_cell->active_cell_index();
-                  if (integrator.is_far_regular_pair(test_cell, trial_cell))
-                    {
-                      for (unsigned int q = 0; q < n_pair_points; ++q)
-                        {
-                          double sum = 0.0;
-                          for (unsigned int k = 0; k < n_pair_points; ++k)
-                            {
-                              const Tensor<1, dim> displacement =
-                                cached_points[r][k] - cached_points[t][q];
-                              const double distance = displacement.norm();
-                              sum += (displacement * cached_normals[t][q]) *
-                                     (kappa == 0.0 ?
-                                        1.0 :
-                                        (1.0 + kappa * distance) *
-                                          std::exp(-kappa * distance)) /
-                                     (4.0 * numbers::PI * distance *
-                                      distance * distance) *
-                                     cached_weighted_flux[r][k];
-                            }
-                          potential[q] += sum;
-                        }
-                    }
-                  else
-                    {
-                      const FullMatrix<double> block =
-                        integrator.integrate_adjoint_double_layer(
-                          test_cell, trial_cell, galerkin_quadrature_order);
-                      trial_cell->get_dof_indices(dofs);
-                      for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                        for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                          moments(i) += block(i, j) * flux_full(dofs[j]);
-                    }
-                }
-              for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                for (unsigned int q = 0; q < n_pair_points; ++q)
-                  moments(i) +=
-                    cached_shapes[t](i, q) * potential[q] * cached_JxW[t][q];
-              adjoint_moments[t] = moments;
-            }
-        }
+                moments(i) +=
+                  cached_shapes[t](i, q) * potential[q] * cached_JxW[t][q];
+            adjoint_moments[t] = moments;
+          }
+      }
 
       const double pair_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      start)
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
       // The degree of the reconstruction is that of the mapping: of the
       // polynomial mapping, of the interpolation of the exact geometry, or
@@ -878,15 +873,14 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       if (const auto *polynomial =
             dynamic_cast<const MappingQ<dim - 1, dim> *>(mapping.get()))
         geometry_degree = polynomial->get_degree();
-      const SurfacePotentialEvaluator evaluator(
-        *mapping,
-        dh,
-        geometry_degree,
-        densities,
-        duffy_order,
-        near_ratio,
-        16,
-        galerkin_screening());
+      const SurfacePotentialEvaluator evaluator(*mapping,
+                                                dh,
+                                                geometry_degree,
+                                                densities,
+                                                duffy_order,
+                                                near_ratio,
+                                                16,
+                                                galerkin_screening());
 
       // Quadrature for the test integrals. The potentials are smooth on
       // each cell, so a rule a few orders above the polynomial degree
@@ -894,16 +888,16 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       const char        *points_env = std::getenv("PIBEM_HW_POINTS");
       const unsigned int n_points =
         points_env != nullptr ? std::atoi(points_env) : fe->degree + 4;
-      const QGauss<dim - 1>    area_rule(n_points);
-      const QGauss<1>          edge_rule(n_points);
-      FEValues<dim - 1, dim>   vector_values(*mapping,
+      const QGauss<dim - 1>  area_rule(n_points);
+      const QGauss<1>        edge_rule(n_points);
+      FEValues<dim - 1, dim> vector_values(*mapping,
                                            *gradient_fe,
                                            area_rule,
                                            update_values | update_gradients |
                                              update_normal_vectors |
                                              update_quadrature_points |
                                              update_JxW_values);
-      FEValues<dim - 1, dim>   scalar_values(*mapping,
+      FEValues<dim - 1, dim> scalar_values(*mapping,
                                            *fe,
                                            area_rule,
                                            update_values | update_gradients |
@@ -929,46 +923,42 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               weights.push_back(edge_rule.weight(q));
             }
           const Quadrature<dim - 1> rule(points, weights);
-          edge_vector_values.push_back(
-            std::make_unique<FEValues<dim - 1, dim>>(*mapping,
-                                                     *gradient_fe,
-                                                     rule,
-                                                     update_values));
-          edge_scalar_values.push_back(
-            std::make_unique<FEValues<dim - 1, dim>>(
-              *mapping,
-              *fe,
-              rule,
-              update_values | update_quadrature_points |
-                update_normal_vectors | update_jacobians));
+          edge_vector_values.push_back(std::make_unique<FEValues<dim - 1, dim>>(
+            *mapping, *gradient_fe, rule, update_values));
+          edge_scalar_values.push_back(std::make_unique<FEValues<dim - 1, dim>>(
+            *mapping,
+            *fe,
+            rule,
+            update_values | update_quadrature_points | update_normal_vectors |
+              update_jacobians));
         }
 
-      const unsigned int nv = gradient_fe->dofs_per_cell;
-      const unsigned int ns = fe->dofs_per_cell;
+      const unsigned int nv     = gradient_fe->dofs_per_cell;
+      const unsigned int ns     = fe->dofs_per_cell;
       const double kappa_square = galerkin_screening() * galerkin_screening();
       std::vector<unsigned int> component(nv);
       for (unsigned int i = 0; i < nv; ++i)
         component[i] = gradient_fe->system_to_component_index(i).first;
 
-      FullMatrix<double> mass_v(nv, nv), inverse_v(nv, nv);
-      FullMatrix<double> mass_s(ns, ns), inverse_s(ns, ns);
-      Vector<double>     rhs_t(nv), coef_t(nv), rhs_full(nv), coef_full(nv);
-      Vector<double>     rhs_check(nv), check_scale(nv);
-      Vector<double>     rhs_n(ns), coef_n(ns), rhs_best(ns), coef_best(ns);
+      FullMatrix<double>  mass_v(nv, nv), inverse_v(nv, nv);
+      FullMatrix<double>  mass_s(ns, ns), inverse_s(ns, ns);
+      Vector<double>      rhs_t(nv), coef_t(nv), rhs_full(nv), coef_full(nv);
+      Vector<double>      rhs_check(nv), check_scale(nv);
+      Vector<double>      rhs_n(ns), coef_n(ns), rhs_best(ns), coef_best(ns);
       std::vector<double> flux_q(area_rule.size());
       std::vector<double> exact_flux_q(area_rule.size());
       std::vector<types::global_dof_index> vector_indices(nv);
       Vector<double>                       gradient_value(dim);
 
-      double residual_square = 0.0, measure = 0.0, residual_max = 0.0;
-      double edge_residual_max = 0.0, divergence_defect = 0.0;
-      double error_star = 0.0, error_galerkin = 0.0, error_best = 0.0;
-      double norm_exact = 0.0;
-      double n_targets  = 0.0;
+      double     residual_square = 0.0, measure = 0.0, residual_max = 0.0;
+      double     edge_residual_max = 0.0, divergence_defect = 0.0;
+      double     error_star = 0.0, error_galerkin = 0.0, error_best = 0.0;
+      double     norm_exact = 0.0;
+      double     n_targets  = 0.0;
       Point<dim> worst_location, worst_edge_location;
 
       get_vector_gradients_solution().reinit(vector_this_cpu_set,
-                                       mpi_communicator);
+                                             mpi_communicator);
 
       auto vector_cell = gradient_dh.begin_active();
       for (auto cell = dh.begin_active(); cell != dh.end();
@@ -992,8 +982,8 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               const Point<dim>     &x      = vector_values.quadrature_point(q);
               const Tensor<1, dim> &normal = vector_values.normal_vector(q);
               const double          JxW    = vector_values.JxW(q);
-              const double trace = on_cell(analytic_phi, cell).value(x);
-              const auto potentials = evaluator.evaluate(x, normal, trace);
+              const double trace      = on_cell(analytic_phi, cell).value(x);
+              const auto   potentials = evaluator.evaluate(x, normal, trace);
               n_targets += 1.0;
               const double residual =
                 potentials.single_layer - potentials.double_layer;
@@ -1010,18 +1000,15 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
 
               for (unsigned int i = 0; i < nv; ++i)
                 {
-                  const unsigned int ci = component[i];
-                  const double       v  = vector_values.shape_value(i, q);
-                  const double div = vector_values.shape_grad(i, q)[ci];
-                  rhs_t(i) +=
-                    (-w * div + curvature * w * v * normal[ci]) * JxW;
-                  rhs_check(i) +=
-                    (-div + curvature * v * normal[ci]) * JxW;
+                  const unsigned int ci  = component[i];
+                  const double       v   = vector_values.shape_value(i, q);
+                  const double       div = vector_values.shape_grad(i, q)[ci];
+                  rhs_t(i) += (-w * div + curvature * w * v * normal[ci]) * JxW;
+                  rhs_check(i) += (-div + curvature * v * normal[ci]) * JxW;
                   check_scale(i) += std::abs(div) * JxW;
                   for (unsigned int j = 0; j < nv; ++j)
                     if (component[j] == ci)
-                      mass_v(i, j) +=
-                        v * vector_values.shape_value(j, q) * JxW;
+                      mass_v(i, j) += v * vector_values.shape_value(j, q) * JxW;
                 }
 
               on_cell(trace_gradient, cell).vector_value(x, gradient_value);
@@ -1035,18 +1022,16 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   const double psi = scalar_values.shape_value(j, q);
                   // The screened hypersingular operator adds
                   // kappa^2 int psi n_x . V(n phi) to Maue's form.
-                  rhs_n(j) += 2.0 * sigma *
-                                (cross_product_3d(normal,
-                                                  scalar_values.shape_grad(j,
-                                                                           q)) *
-                                   potentials.curl_single_layer +
-                                 kappa_square * psi *
-                                   (normal * potentials.normal_single_layer)) *
-                                JxW;
+                  rhs_n(j) +=
+                    2.0 * sigma *
+                    (cross_product_3d(normal, scalar_values.shape_grad(j, q)) *
+                       potentials.curl_single_layer +
+                     kappa_square * psi *
+                       (normal * potentials.normal_single_layer)) *
+                    JxW;
                   rhs_best(j) += psi * exact_flux * JxW;
                   for (unsigned int k = 0; k < ns; ++k)
-                    mass_s(j, k) +=
-                      psi * scalar_values.shape_value(k, q) * JxW;
+                    mass_s(j, k) += psi * scalar_values.shape_value(k, q) * JxW;
                 }
             }
 
@@ -1077,7 +1062,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   Tensor<1, dim> m = o - (o * t) * t - (o * normal) * normal;
                   m /= m.norm();
 
-                  const double trace = on_cell(analytic_phi, cell).value(x);
+                  const double trace    = on_cell(analytic_phi, cell).value(x);
                   const auto potentials = evaluator.evaluate(x, normal, trace);
                   n_targets += 1.0;
                   const double residual =
@@ -1095,26 +1080,23 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                       rhs_t(i) += w * vm * ds;
                       rhs_check(i) += vm * ds;
                     }
-                    {
-                      // -oint psi (n x m) . V(n x grad phi): the edge term
-                      // of Maue's form, which cancels between neighbours
-                      // only for continuous test functions.
-                      const double edge_density =
-                        cross_product_3d(normal, m) *
-                        potentials.curl_single_layer;
-                      for (unsigned int j = 0; j < ns; ++j)
-                        rhs_n(j) += 2.0 * sigma *
-                                    (-es.shape_value(j, q) * edge_density) *
-                                    ds;
-                    }
+                  {
+                    // -oint psi (n x m) . V(n x grad phi): the edge term
+                    // of Maue's form, which cancels between neighbours
+                    // only for continuous test functions.
+                    const double edge_density = cross_product_3d(normal, m) *
+                                                potentials.curl_single_layer;
+                    for (unsigned int j = 0; j < ns; ++j)
+                      rhs_n(j) += 2.0 * sigma *
+                                  (-es.shape_value(j, q) * edge_density) * ds;
+                  }
                 }
             }
 
           // With w = 1 the tangential right-hand side must vanish: the
           // divergence theorem on the cell, curvature and co-normals
           // included.
-          rhs_n.add(2.0 * sigma,
-                      adjoint_moments[cell->active_cell_index()]);
+          rhs_n.add(2.0 * sigma, adjoint_moments[cell->active_cell_index()]);
 
           // Normalised by the largest term of the cell: a test function
           // along the normal of a flat cell has no divergence at all, and
@@ -1153,13 +1135,12 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               const Tensor<1, dim> full =
                 g - (g * normal) * normal + lambda_star * normal;
               for (unsigned int i = 0; i < nv; ++i)
-                rhs_full(i) += vector_values.shape_value(i, q) *
-                               full[component[i]] * JxW;
+                rhs_full(i) +=
+                  vector_values.shape_value(i, q) * full[component[i]] * JxW;
 
               const double exact = exact_flux_q[q];
               error_star += (lambda_star - exact) * (lambda_star - exact) * JxW;
-              error_galerkin +=
-                (flux_q[q] - exact) * (flux_q[q] - exact) * JxW;
+              error_galerkin += (flux_q[q] - exact) * (flux_q[q] - exact) * JxW;
               error_best += (lambda_best - exact) * (lambda_best - exact) * JxW;
               norm_exact += exact * exact * JxW;
             }
@@ -1172,16 +1153,15 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
       get_vector_gradients_solution().compress(VectorOperation::insert);
 
       const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                      start)
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
-      const auto   counts   = evaluator.counts();
-      const double far      = Utilities::MPI::sum(double(counts[0]),
-                                             mpi_communicator);
-      const double leaves   = Utilities::MPI::sum(double(counts[1]),
-                                                mpi_communicator);
-      const double singular = Utilities::MPI::sum(double(counts[2]),
-                                                  mpi_communicator);
+      const auto   counts = evaluator.counts();
+      const double far =
+        Utilities::MPI::sum(double(counts[0]), mpi_communicator);
+      const double leaves =
+        Utilities::MPI::sum(double(counts[1]), mpi_communicator);
+      const double singular =
+        Utilities::MPI::sum(double(counts[2]), mpi_communicator);
       const double targets = Utilities::MPI::sum(n_targets, mpi_communicator);
       const double rms =
         std::sqrt(Utilities::MPI::sum(residual_square, mpi_communicator) /
@@ -1202,12 +1182,12 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
         Utilities::MPI::max(divergence_defect, mpi_communicator);
       const double deviation =
         Utilities::MPI::max(evaluator.geometry_deviation(), mpi_communicator);
-      const double max_seconds =
-        Utilities::MPI::max(seconds, mpi_communicator);
+      const double max_seconds = Utilities::MPI::max(seconds, mpi_communicator);
       const double max_pair_seconds =
         Utilities::MPI::max(pair_seconds, mpi_communicator);
-      const double sources = Utilities::MPI::sum(
-        double(evaluator.source_evaluations()), mpi_communicator);
+      const double sources =
+        Utilities::MPI::sum(double(evaluator.source_evaluations()),
+                            mpi_communicator);
 
       AssertThrow(deviation < 1e-8,
                   ExcMessage("The geometry reconstructed for the surface "
@@ -1217,18 +1197,18 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
             << defect << std::endl
             << "  " << targets << " target points (" << n_points
             << " per direction); panels far " << far << ", near leaves "
-            << leaves << ", near or singular " << singular << ", "
-            << sources << " source points off the far rules; "
-            << max_seconds << " s, of which " << max_pair_seconds
-            << " s for <K' lambda, psi>" << std::endl
+            << leaves << ", near or singular " << singular << ", " << sources
+            << " source points off the far rules; " << max_seconds
+            << " s, of which " << max_pair_seconds << " s for <K' lambda, psi>"
+            << std::endl
             << "  first-kind residual V lambda - R phi at the targets: rms "
             << rms << ", max interior " << max_residual << ", max on edges "
             << max_edge_residual << std::endl;
       pcout << "  normal part, L2 error relative to |lambda|: "
-                 "representation "
-              << e_star / exact_norm << ", Galerkin flux "
-              << e_galerkin / exact_norm << ", best approximation "
-              << e_best / exact_norm << std::endl;
+               "representation "
+            << e_star / exact_norm << ", Galerkin flux "
+            << e_galerkin / exact_norm << ", best approximation "
+            << e_best / exact_norm << std::endl;
     }
 }
 
@@ -1337,16 +1317,18 @@ BEMProblem<dim>::compute_gradients_hypersingular(
       // therefore check wether this is
       // the case, and we store which
       // one is the singular index:
-      for (types::global_dof_index i = 0; i < dh.n_dofs(); ++i) // these must now be the locally owned dofs. the rest should stay the same
+      for (types::global_dof_index i = 0; i < dh.n_dofs();
+           ++i) // these must now be the locally owned dofs. the rest should
+                // stay the same
         {
           Tensor<1, dim> integral;
           Tensor<1, dim> b_integral;
           if (this_cpu_set.is_element(i))
             {
-              Point<dim> singularity = support_points[i];
-              Point<dim-1> ref_projection(0.0,0.0);
-              bool         is_singular    = false;
-              unsigned int singular_index = numbers::invalid_unsigned_int;
+              Point<dim>     singularity = support_points[i];
+              Point<dim - 1> ref_projection(0.0, 0.0);
+              bool           is_singular    = false;
+              unsigned int   singular_index = numbers::invalid_unsigned_int;
 
               // Whether a cell needs the singular treatment is a question
               // about geometry, not about degrees of freedom. With a
@@ -1367,25 +1349,27 @@ BEMProblem<dim>::compute_gradients_hypersingular(
                     is_singular    = true;
                     break;
                   }
-                
+
               bool is_quasi_singular = false;
               if (is_singular == false)
-              {
-                Point<dim> singularity = support_points[i];
-                double dist_to_center = (singularity - cell->center()).norm();
-                double h = cell->diameter();
-                if(dist_to_center - 0.5*h < 0.001)
                 {
-                  QuasiSingularKernelIntegral<dim> qski(cell, *fe, *mapping, singularity);
-                  ref_projection = qski.get_closest_reference_point();
-                  double dist_to_cell = qski.min_distance;
-                  
-                  double distance_ratio = dist_to_cell / cell->diameter();
-                  if(distance_ratio < 10)
-                    is_quasi_singular = true;
-                }
+                  Point<dim> singularity = support_points[i];
+                  double dist_to_center = (singularity - cell->center()).norm();
+                  double h              = cell->diameter();
+                  if (dist_to_center - 0.5 * h < 0.001)
+                    {
+                      QuasiSingularKernelIntegral<dim> qski(cell,
+                                                            *fe,
+                                                            *mapping,
+                                                            singularity);
+                      ref_projection      = qski.get_closest_reference_point();
+                      double dist_to_cell = qski.min_distance;
 
-              }
+                      double distance_ratio = dist_to_cell / cell->diameter();
+                      if (distance_ratio < 10)
+                        is_quasi_singular = true;
+                    }
+                }
 
               // We then perform the
               // integral. If the index $i$
@@ -1398,71 +1382,83 @@ BEMProblem<dim>::compute_gradients_hypersingular(
               // matrix:
 
               if ((is_singular == false) && (is_quasi_singular == false))
-              {
-                for (unsigned int q = 0; q < n_q_points; ++q)
                 {
-                  const Tensor<1, dim> R = q_points[q] - support_points[i];
-                  if (kernel_type == "laplace")
-                    LaplaceKernel::kernels(R, H, D, s);
-                  else if (kernel_type == "screened")
-                    ScreenedKernel::kernels(R, H, D, s, screened_kappa);
-                  else
-                    AssertThrow(false, ExcMessage("Unknown kernel type: " + kernel_type));
-                  for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                  {
-                    integral += -phi_local(local_dof_indices[j]) *
-                                  (H * normals[q]) *
-                                  fe_v.shape_value(j, q) * fe_v.JxW(q) +
-                                dphi_dn_local(local_dof_indices[j]) * D *
-                                  fe_v.shape_value(j, q) * fe_v.JxW(q);
-                    b_integral += -1.0 * (H * normals[q]) *
-                                  fe_v.shape_value(j, q) * fe_v.JxW(q);
-                  }
+                  for (unsigned int q = 0; q < n_q_points; ++q)
+                    {
+                      const Tensor<1, dim> R = q_points[q] - support_points[i];
+                      if (kernel_type == "laplace")
+                        LaplaceKernel::kernels(R, H, D, s);
+                      else if (kernel_type == "screened")
+                        ScreenedKernel::kernels(R, H, D, s, screened_kappa);
+                      else
+                        AssertThrow(false,
+                                    ExcMessage("Unknown kernel type: " +
+                                               kernel_type));
+                      for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+                        {
+                          integral += -phi_local(local_dof_indices[j]) *
+                                        (H * normals[q]) *
+                                        fe_v.shape_value(j, q) * fe_v.JxW(q) +
+                                      dphi_dn_local(local_dof_indices[j]) * D *
+                                        fe_v.shape_value(j, q) * fe_v.JxW(q);
+                          b_integral += -1.0 * (H * normals[q]) *
+                                        fe_v.shape_value(j, q) * fe_v.JxW(q);
+                        }
+                    }
                 }
-              }
-              else if(is_quasi_singular == true)
-              {
-                //pcout << cell << " \t s: " << singularity << "\t \t --> the quadrature is quasi singular" << std::endl;
-                const Quadrature<dim - 1> quasi_singular_quadrature =
-                    get_quasi_singular_quadrature(cell, *mapping, singularity, ref_projection, 2);
-                Assert(quasi_singular_quadrature.size() > 0, ExcMessage("empty quasi-singular quadrature!"));
+              else if (is_quasi_singular == true)
+                {
+                  // pcout << cell << " \t s: " << singularity << "\t \t --> the
+                  // quadrature is quasi singular" << std::endl;
+                  const Quadrature<dim - 1> quasi_singular_quadrature =
+                    get_quasi_singular_quadrature(
+                      cell, *mapping, singularity, ref_projection, 2);
+                  Assert(quasi_singular_quadrature.size() > 0,
+                         ExcMessage("empty quasi-singular quadrature!"));
 
-                FEValues<dim - 1, dim> fe_v_quasi_singular(
+                  FEValues<dim - 1, dim> fe_v_quasi_singular(
                     *mapping,
                     *fe,
                     quasi_singular_quadrature,
                     update_jacobians | update_values | update_normal_vectors |
                       update_quadrature_points | update_JxW_values);
 
-                fe_v_quasi_singular.reinit(cell);
+                  fe_v_quasi_singular.reinit(cell);
 
-                const std::vector<Tensor<1, dim>> &quasi_singular_normals =
+                  const std::vector<Tensor<1, dim>> &quasi_singular_normals =
                     fe_v_quasi_singular.get_normal_vectors();
-                const std::vector<Point<dim>> &quasi_singular_q_points =
+                  const std::vector<Point<dim>> &quasi_singular_q_points =
                     fe_v_quasi_singular.get_quadrature_points();
 
-                for (unsigned int q = 0; q < quasi_singular_quadrature.size(); ++q)
-                {
-                  const Tensor<1, dim> R = quasi_singular_q_points[q] - support_points[i];
-                  if (kernel_type == "laplace")
-                    LaplaceKernel::kernels(R, H, D, s);
-                  else if (kernel_type == "screened")
-                    ScreenedKernel::kernels(R, H, D, s, screened_kappa);
-                  else
-                    AssertThrow(false, ExcMessage("Unknown kernel type: " + kernel_type));
+                  for (unsigned int q = 0; q < quasi_singular_quadrature.size();
+                       ++q)
+                    {
+                      const Tensor<1, dim> R =
+                        quasi_singular_q_points[q] - support_points[i];
+                      if (kernel_type == "laplace")
+                        LaplaceKernel::kernels(R, H, D, s);
+                      else if (kernel_type == "screened")
+                        ScreenedKernel::kernels(R, H, D, s, screened_kappa);
+                      else
+                        AssertThrow(false,
+                                    ExcMessage("Unknown kernel type: " +
+                                               kernel_type));
 
-                  for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                  {
-                    integral += -phi_local(local_dof_indices[j]) *
-                                  (H * quasi_singular_normals[q]) *
-                                  fe_v_quasi_singular.shape_value(j, q) * fe_v_quasi_singular.JxW(q) +
-                                dphi_dn_local(local_dof_indices[j]) * D *
-                                  fe_v_quasi_singular.shape_value(j, q) * fe_v_quasi_singular.JxW(q);
-                    b_integral += -1.0 * (H * quasi_singular_normals[q]) *
-                                  fe_v_quasi_singular.shape_value(j, q) * fe_v_quasi_singular.JxW(q);
-                  }
+                      for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+                        {
+                          integral += -phi_local(local_dof_indices[j]) *
+                                        (H * quasi_singular_normals[q]) *
+                                        fe_v_quasi_singular.shape_value(j, q) *
+                                        fe_v_quasi_singular.JxW(q) +
+                                      dphi_dn_local(local_dof_indices[j]) * D *
+                                        fe_v_quasi_singular.shape_value(j, q) *
+                                        fe_v_quasi_singular.JxW(q);
+                          b_integral += -1.0 * (H * quasi_singular_normals[q]) *
+                                        fe_v_quasi_singular.shape_value(j, q) *
+                                        fe_v_quasi_singular.JxW(q);
+                        }
+                    }
                 }
-              }       
               else
                 {
                   // Now we treat the more
@@ -1533,8 +1529,7 @@ BEMProblem<dim>::compute_gradients_hypersingular(
               for (unsigned int d = 0; d < dim; ++d)
                 {
                   const types::global_dof_index vector_dh_index =
-                    vec_original_to_sub_wise[scalar_dh_index +
-                                             d * dh.n_dofs()];
+                    vec_original_to_sub_wise[scalar_dh_index + d * dh.n_dofs()];
                   vector_hyp_gradients_solution(vector_dh_index) += integral[d];
                 }
               // vector_b_free_coeff(vector_dh_index_x_component)+=b_integral[0];
@@ -1661,21 +1656,21 @@ BEMProblem<3>::compute_surface_gradients(
 template void
 BEMProblem<2>::compute_gradients_weak(
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
-  const Function<2>                 &analytic_phi);
+  const Function<2>                   &analytic_phi);
 template void
 BEMProblem<3>::compute_gradients_weak(
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
-  const Function<3>                 &analytic_phi);
+  const Function<3>                   &analytic_phi);
 template void
 BEMProblem<2>::compute_gradients_hypersingular_weak(
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
-  const Function<2>                 &analytic_phi,
-  const Function<2>                 &trace_gradient);
+  const Function<2>                   &analytic_phi,
+  const Function<2>                   &trace_gradient);
 template void
 BEMProblem<3>::compute_gradients_hypersingular_weak(
   const TrilinosWrappers::MPI::Vector &glob_dphi_dn,
-  const Function<3>                 &analytic_phi,
-  const Function<3>                 &trace_gradient);
+  const Function<3>                   &analytic_phi,
+  const Function<3>                   &trace_gradient);
 template void
 BEMProblem<3>::compute_gradients_hypersingular(
   const TrilinosWrappers::MPI::Vector &glob_phi,

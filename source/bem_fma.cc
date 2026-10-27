@@ -5,9 +5,10 @@
 #endif
 
 
-#include <functional>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+
+#include <functional>
 
 #include "../include/bem_fma.h"
 #include "../include/laplace_kernel.h"
@@ -172,7 +173,7 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
 
   prm.enter_subsection("FMA Params");
   {
-    trunc_order = prm.get_integer("FMA Truncation Order");
+    trunc_order                = prm.get_integer("FMA Truncation Order");
     galerkin_opening_criterion = prm.get_double("Galerkin opening criterion");
     galerkin_points_per_leaf =
       prm.get_integer("Galerkin maximum points per leaf");
@@ -186,7 +187,8 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
       prm.get_integer("Galerkin preconditioner maximum points per leaf");
     galerkin_relaxed_order =
       prm.get_integer("Galerkin relaxed truncation order");
-    galerkin_relaxed_theta = prm.get_double("Galerkin relaxed opening criterion");
+    galerkin_relaxed_theta =
+      prm.get_double("Galerkin relaxed opening criterion");
   }
   prm.leave_subsection();
 

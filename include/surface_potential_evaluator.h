@@ -4,8 +4,11 @@
 #include <deal.II/base/function.h>
 #include <deal.II/base/point.h>
 #include <deal.II/base/tensor.h>
+
 #include <deal.II/dofs/dof_handler.h>
+
 #include <deal.II/fe/mapping.h>
+
 #include <deal.II/lac/vector.h>
 
 #include <array>
@@ -70,13 +73,13 @@ public:
 
   struct Values
   {
-    double         single_layer         = 0.0;
-    double         double_layer         = 0.0;
-    double         adjoint_double_layer = 0.0;
-    Tensor<1, 3>   curl_single_layer;
+    double       single_layer         = 0.0;
+    double       double_layer         = 0.0;
+    double       adjoint_double_layer = 0.0;
+    Tensor<1, 3> curl_single_layer;
     /// V (n phi): only with a trace gradient and kappa > 0, for the term
     /// kappa^2 (n_x . n_y) of the screened hypersingular operator.
-    Tensor<1, 3>   normal_single_layer;
+    Tensor<1, 3> normal_single_layer;
   };
 
   struct Geometry
@@ -90,14 +93,14 @@ public:
     double curvature = 0.0;
   };
 
-  SurfacePotentialEvaluator(const Mapping<2, 3>       &mapping,
-                            const DoFHandler<2, 3>    &dof_handler,
-                            const unsigned int         geometry_degree,
-                            const Densities           &densities,
-                            const unsigned int         duffy_order = 10,
-                            const double               near_ratio  = 0.5,
-                            const unsigned int         maximum_depth = 10,
-                            const double               screening   = 0.0);
+  SurfacePotentialEvaluator(const Mapping<2, 3>    &mapping,
+                            const DoFHandler<2, 3> &dof_handler,
+                            const unsigned int      geometry_degree,
+                            const Densities        &densities,
+                            const unsigned int      duffy_order   = 10,
+                            const double            near_ratio    = 0.5,
+                            const unsigned int      maximum_depth = 10,
+                            const double            screening     = 0.0);
 
   /// Potentials at x on the surface, with n_x its normal and phi_x the trace
   /// used by the regularisation of the double layer.
@@ -146,22 +149,23 @@ private:
 
   struct CellData
   {
-    CellIterator              cell;
-    std::vector<Point<3>>     nodes;
+    CellIterator          cell;
+    std::vector<Point<3>> nodes;
     /// The nodes in structure-of-arrays form, for TensorMapKernel.
-    std::vector<double>       soa_nodes;
-    double                    orientation = 1.0;
-    Point<3>                  centre;
-    double                    radius   = 0.0;
-    double                    diameter = 0.0;
-    std::vector<double>       flux_local;
-    std::vector<double>       trace_local;
+    std::vector<double>                soa_nodes;
+    double                             orientation = 1.0;
+    Point<3>                           centre;
+    double                             radius   = 0.0;
+    double                             diameter = 0.0;
+    std::vector<double>                flux_local;
+    std::vector<double>                trace_local;
     std::array<std::vector<Source>, 5> far_rules;
   };
 
   Source
-  source(const CellData &data, const Point<2> &reference, const double weight)
-    const;
+  source(const CellData &data,
+         const Point<2> &reference,
+         const double    weight) const;
 
   /// The densities of a source whose point and normal are set.
   void
@@ -202,12 +206,12 @@ private:
   /// when the distance is positive; subdivision on the rest of the panel.
   void
   integrate_near(const CellData     &data,
-                     const Point<2>     &apex,
-                     const double        distance,
-                     const Point<3>     &x,
-                     const Tensor<1, 3> &normal,
-                     const double        trace_at_x,
-                     Values             &values) const;
+                 const Point<2>     &apex,
+                 const double        distance,
+                 const Point<3>     &x,
+                 const Tensor<1, 3> &normal,
+                 const double        trace_at_x,
+                 Values             &values) const;
 
   void
   integrate_patch(const CellData     &data,
@@ -229,20 +233,20 @@ private:
   const double            screening;
   const bool              wants_curl;
 
-  std::vector<double>   lagrange_nodes;
+  std::vector<double> lagrange_nodes;
   /// The Lagrange bases through lagrange_nodes and shape_nodes in monomial
   /// form, for Horner evaluation: values, first and second derivatives.
-  std::vector<double>   lagrange_coefficients;
-  std::vector<double>   shape_coefficients;
+  std::vector<double> lagrange_coefficients;
+  std::vector<double> shape_coefficients;
   /// One-dimensional nodes of the scalar element, when its basis is the
   /// tensor Lagrange basis on them in lexicographic order (checked); empty
   /// otherwise, and the element is asked directly.
-  std::vector<double>   shape_nodes;
+  std::vector<double> shape_nodes;
   /// Position (a, b) of the support point of each basis function in the
   /// tensor grid of shape_nodes: the function is L_a(x) L_b(y).
   std::vector<std::array<unsigned int, 2>> shape_tensor_index;
-  std::vector<CellData> cells;
-  std::vector<unsigned int> cell_position;
+  std::vector<CellData>                    cells;
+  std::vector<unsigned int>                cell_position;
 
   double maximum_geometry_deviation = 0.0;
 
@@ -254,15 +258,15 @@ private:
     dealii::ExactGeometry::ProjectedMapping<2, 3>::Evaluator>
     exact_evaluator;
 
-  mutable Vector<double>             gradient_buffer;
+  mutable Vector<double> gradient_buffer;
   /// Scratch space of the batched sources.
-  mutable std::vector<Point<2>>      batch_points;
-  mutable std::vector<double>        batch_weights;
-  mutable std::vector<Source>        batch_sources;
-  mutable unsigned long long         n_far      = 0;
-  mutable unsigned long long         n_leaves   = 0;
-  mutable unsigned long long         n_singular = 0;
-  mutable unsigned long long         n_sources  = 0;
+  mutable std::vector<Point<2>> batch_points;
+  mutable std::vector<double>   batch_weights;
+  mutable std::vector<Source>   batch_sources;
+  mutable unsigned long long    n_far      = 0;
+  mutable unsigned long long    n_leaves   = 0;
+  mutable unsigned long long    n_singular = 0;
+  mutable unsigned long long    n_sources  = 0;
 };
 
 #endif

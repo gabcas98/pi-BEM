@@ -61,21 +61,25 @@ public:
     const typename DoFHandler<dim - 1, dim>::active_cell_iterator &in_cell,
     const FiniteElement<dim - 1, dim>                             &in_fe,
     const Mapping<dim - 1, dim>                                   &in_mapping,
-    const Point<dim>                                              &in_external_point);
+    const Point<dim> &in_external_point);
 
-  Point<dim-1>
+  Point<dim - 1>
   find_closest_reference_cell_point(const Point<dim> &external_point);
 
   double min_distance;
-  
-  Point<dim-1> get_closest_reference_point() const { return eta; }
+
+  Point<dim - 1>
+  get_closest_reference_point() const
+  {
+    return eta;
+  }
 
 
 private:
   const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell;
   const FiniteElement<dim - 1, dim>                             &fe;
   const Mapping<dim - 1, dim>                                   &mapping;
-  
+
   Point<dim - 1> eta;
 };
 

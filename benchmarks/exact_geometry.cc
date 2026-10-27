@@ -75,9 +75,9 @@
 #  include <ElCLib.hxx>
 #  include <gp.hxx>
 #  include <gp_Ax2.hxx>
-#  include <gp_Pln.hxx>
 #  include <gp_Circ.hxx>
 #  include <gp_Elips.hxx>
+#  include <gp_Pln.hxx>
 
 #  include "cad_projectors.h"
 #endif
@@ -135,13 +135,14 @@ namespace
   // select(normal at the first point) is false are skipped.
   template <int dim, int spacedim>
   std::array<double, 3>
-  integrate(const Triangulation<dim, spacedim> &tria,
-            const Mapping<dim, spacedim>       &mapping,
-            const Projector<dim, spacedim>     &projector,
-            const unsigned int                  n_points,
-            const Point<spacedim>              &c,
-            const std::function<bool(const Tensor<1, spacedim> &)> &select =
-              [](const Tensor<1, spacedim> &) { return true; })
+  integrate(
+    const Triangulation<dim, spacedim>                     &tria,
+    const Mapping<dim, spacedim>                           &mapping,
+    const Projector<dim, spacedim>                         &projector,
+    const unsigned int                                      n_points,
+    const Point<spacedim>                                  &c,
+    const std::function<bool(const Tensor<1, spacedim> &)> &select =
+      [](const Tensor<1, spacedim> &) { return true; })
   {
     ProjectedQuadrature<dim, spacedim> quadrature(mapping,
                                                   QGauss<dim>(n_points),
@@ -186,9 +187,7 @@ namespace
     const SphericalProjector<dim, spacedim> along_field(
       center, R, Direction<spacedim>(field));
     const SphericalProjector<dim, spacedim> along_vertex_normal(
-      center,
-      R,
-      Direction<spacedim>::interpolated_mesh_normal(tria, mapping));
+      center, R, Direction<spacedim>::interpolated_mesh_normal(tria, mapping));
     const std::vector<std::pair<std::string, const Projector<dim, spacedim> *>>
       methods = {{"mesh", &mesh},
                  {"closest", &closest},
@@ -238,14 +237,13 @@ namespace
       GridGenerator::hyper_sphere(curved, center, R);
       curved.refine_global(3);
       GridGenerator::flatten_triangulation(curved, tria);
-      order<1, 2>(out,
-                  "circle",
-                  tria,
-                  center,
-                  R,
-                  {{2 * numbers::PI * R,
-                    numbers::PI * R * R,
-                    numbers::PI * R * R * R}});
+      order<1, 2>(
+        out,
+        "circle",
+        tria,
+        center,
+        R,
+        {{2 * numbers::PI * R, numbers::PI * R * R, numbers::PI * R * R * R}});
     }
   }
 
@@ -301,9 +299,9 @@ namespace
                               fe,
                               Quadrature<2>(grid),
                               update_quadrature_points | update_jacobians);
-        double subdivision = 0;
+        double         subdivision = 0;
         std::vector<typename Triangulation<2, 3>::active_cell_iterator> cells;
-        std::vector<Tensor<1, 3>> normals;
+        std::vector<Tensor<1, 3>>                                       normals;
         for (const auto &cell : tria.active_cell_iterators())
           {
             cells.push_back(cell);
@@ -336,12 +334,12 @@ namespace
 
         std::mt19937                     generator(level);
         std::normal_distribution<double> gauss(0, 1);
-        const unsigned int               samples = 100000;
+        const unsigned int               samples   = 100000;
         unsigned int                     uncovered = 0, overlapped = 0;
         for (unsigned int s = 0; s < samples; ++s)
           {
-            Tensor<1, 3> e({gauss(generator), gauss(generator),
-                            gauss(generator)});
+            Tensor<1, 3> e(
+              {gauss(generator), gauss(generator), gauss(generator)});
             const Point<3> y       = center + R * e / e.norm();
             unsigned int   covered = 0;
             for (unsigned int k = 0; k < cells.size(); ++k)
@@ -399,10 +397,8 @@ namespace
                                                 R,
                                                 Direction<3>::mesh_normal());
           const SwirlField<3>             field(c, 0.5);
-          const SphericalProjector<2, 3>  along_field(c,
-                                                     R,
-                                                     Direction<3>(field));
-          const SphericalProjector<2, 3>  along_vertex_normal(
+          const SphericalProjector<2, 3> along_field(c, R, Direction<3>(field));
+          const SphericalProjector<2, 3> along_vertex_normal(
             c, R, Direction<3>::interpolated_mesh_normal(tria, mapping));
           out << p << ',' << level << ',' << tria.n_active_cells();
           for (const Projector<2, 3> *projector :
@@ -412,9 +408,9 @@ namespace
                 static_cast<const Projector<2, 3> *>(&along_field),
                 static_cast<const Projector<2, 3> *>(&along_vertex_normal)})
             out << ','
-                << std::abs(
-                     integrate(tria, mapping, *projector, 12, c)[0] / exact -
-                     1);
+                << std::abs(integrate(tria, mapping, *projector, 12, c)[0] /
+                              exact -
+                            1);
           out << '\n';
         }
   }
@@ -444,10 +440,10 @@ namespace
                             (a.get_projection_jacobians()[q] -
                              b.get_projection_jacobians()[q])
                               .norm());
-            d[2] = std::max(d[2],
-                            std::abs(a.get_JxW_values()[q] /
-                                       b.get_JxW_values()[q] -
-                                     1));
+            d[2] =
+              std::max(d[2],
+                       std::abs(a.get_JxW_values()[q] / b.get_JxW_values()[q] -
+                                1));
           }
       }
     return d;
@@ -495,27 +491,22 @@ namespace
         {
           const OpenCASCADE::ShapeProjector<2> closest(shape);
           const OpenCASCADE::ShapeProjector<2> along_field(shape,
-                                                           Direction<3>(
-                                                             field));
-          const auto d1 =
+                                                           Direction<3>(field));
+          const auto                           d1 =
             compare(tria, closest, SphericalProjector<2, 3>(center, R));
-          const auto d2 = compare(tria,
-                                  along_field,
-                                  SphericalProjector<2, 3>(center,
-                                                           R,
-                                                           Direction<3>(
-                                                             field)));
-          out << name << ',' << tria.n_active_cells() << ",4,closest,"
-              << d1[0] << ',' << d1[1] << ',' << d1[2] << '\n'
+          const auto d2 =
+            compare(tria,
+                    along_field,
+                    SphericalProjector<2, 3>(center, R, Direction<3>(field)));
+          out << name << ',' << tria.n_active_cells() << ",4,closest," << d1[0]
+              << ',' << d1[1] << ',' << d1[2] << '\n'
               << name << ',' << tria.n_active_cells() << ",4,field," << d2[0]
               << ',' << d2[1] << ',' << d2[2] << '\n';
           const auto integrals =
             integrate(tria, mapping, closest, 8, Point<3>());
-          out << name << "_integrals," << tria.n_active_cells()
-              << ",8,closest,"
+          out << name << "_integrals," << tria.n_active_cells() << ",8,closest,"
               << std::abs(integrals[0] / (4 * numbers::PI * R * R) - 1) << ','
-              << std::abs(integrals[1] / (4. / 3 * numbers::PI * R * R * R) -
-                          1)
+              << std::abs(integrals[1] / (4. / 3 * numbers::PI * R * R * R) - 1)
               << ",0\n";
         }
     }
@@ -537,15 +528,13 @@ namespace
              {std::make_pair(std::string("mesh"),
                              static_cast<const Projector<2, 3> *>(&mesh)),
               std::make_pair(std::string("closest"),
-                             static_cast<const Projector<2, 3> *>(
-                               &projector))})
+                             static_cast<const Projector<2, 3> *>(&projector))})
           {
             const auto integrals = integrate(tria, mapping, *p, n, Point<3>());
             out << "torus," << tria.n_active_cells() << ',' << n << ','
                 << method << ','
-                << std::abs(integrals[0] /
-                              (4 * numbers::PI * numbers::PI * R * r) -
-                            1)
+                << std::abs(
+                     integrals[0] / (4 * numbers::PI * numbers::PI * R * r) - 1)
                 << ','
                 << std::abs(integrals[1] /
                               (2 * numbers::PI * numbers::PI * R * r * r) -
@@ -572,7 +561,7 @@ namespace
           .Shape();
       const OpenCASCADE::ShapeProjector<2> projector(shape);
       const ProjectorCollection<2, 3>      mesh;
-      const auto lateral = [](const Tensor<1, 3> &n) {
+      const auto                           lateral = [](const Tensor<1, 3> &n) {
         return std::abs(n[0]) < 0.5;
       };
       const auto caps = [](const Tensor<1, 3> &n) {
@@ -604,7 +593,7 @@ namespace
       const gp_Ax2       frame(gp_Pnt(0.1, 0.2, -0.3), gp_Dir(1, 1, 1));
       const gp_Circ      circle(frame, 1.3);
       const gp_Elips     ellipse(frame, 2., 1.);
-      const double       h = std::pow(1. / 3, 2);
+      const double       h         = std::pow(1. / 3, 2);
       double             perimeter = 0, coefficient = 1;
       for (unsigned int k = 0; k < 40; ++k)
         {
@@ -632,11 +621,8 @@ namespace
           for (unsigned int q = 1; q <= 10; ++q)
             out << (is_circle ? "circle," : "ellipse,") << n << ',' << q
                 << ",closest,"
-                << std::abs(integrate(tria,
-                                      line_mapping,
-                                      projector,
-                                      q,
-                                      Point<3>())[0] /
+                << std::abs(integrate(
+                              tria, line_mapping, projector, q, Point<3>())[0] /
                               exact -
                             1)
                 << ','
@@ -674,8 +660,8 @@ namespace
           ProjectedQuadrature<2, 3> quadrature(mapping,
                                                QGauss<2>(6),
                                                projector);
-          n_points          = 0;
-          const double t0   = now();
+          n_points        = 0;
+          const double t0 = now();
           for (const auto &cell : tria.active_cell_iterators())
             {
               quadrature.reinit(cell);
@@ -685,13 +671,13 @@ namespace
         }
 
       // The per-point projections of deal.II, on every 16th cell.
-      const FE_Nothing<2, 3>  fe;
-      FEValues<2, 3>          fe_values(mapping,
+      const FE_Nothing<2, 3> fe;
+      FEValues<2, 3>         fe_values(mapping,
                                fe,
                                QGauss<2>(6),
                                update_quadrature_points);
-      double                  pull_back = 0, intersection = 0;
-      unsigned int            n_sampled = 0;
+      double                 pull_back = 0, intersection = 0;
+      unsigned int           n_sampled = 0;
       for (const auto &cell : tria.active_cell_iterators())
         {
           if (cell->active_cell_index() % 16 != 0)
@@ -781,8 +767,7 @@ namespace
   write_trimmed(const std::string &directory)
   {
     std::ofstream out(directory + "/exact_geometry_trimmed.csv");
-    out << std::setprecision(4)
-        << "case,cells,points,method,area,volume\n";
+    out << std::setprecision(4) << "case,cells,points,method,area,volume\n";
     const MappingQ<2, 3> mapping(1);
 
     const auto run = [&](const std::string         &name,
@@ -797,8 +782,7 @@ namespace
       const SwirlField<3>             field(c, 0.3);
       OpenCASCADE::ShapeProjector<2>  along_field(shape, Direction<3>(field));
       const ProjectorCollection<2, 3> mesh;
-      const std::vector<
-        std::pair<std::string, const Projector<2, 3> *>>
+      const std::vector<std::pair<std::string, const Projector<2, 3> *>>
         methods = {{"mesh", &mesh},
                    {"projection", &projection},
                    {"transfinite", &transfinite},
@@ -859,9 +843,9 @@ namespace
           0);
     }
     {
-      const double R = 1.3, latitude = numbers::PI / 4;
-      const double polar = numbers::PI / 2 - latitude;
-      const double rho = R * std::sin(polar), z0 = R * std::cos(polar);
+      const double     R = 1.3, latitude = numbers::PI / 4;
+      const double     polar = numbers::PI / 2 - latitude;
+      const double     rho = R * std::sin(polar), z0 = R * std::cos(polar);
       Triangulation<2> curved, disk;
       GridGenerator::hyper_ball(curved, Point<2>(), rho);
       curved.refine_global(2);

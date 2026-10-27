@@ -24,7 +24,7 @@ QuasiSingularKernelIntegral<2>::QuasiSingularKernelIntegral(
   const DoFHandler<1, 2>::active_cell_iterator &in_cell,
   const FiniteElement<1, 2>                    &in_fe,
   const Mapping<1, 2>                          &in_mapping,
-  const Point<2>                               & /*in_external_point*/)
+  const Point<2> & /*in_external_point*/)
   : cell(in_cell)
   , fe(in_fe)
   , mapping(in_mapping)
@@ -45,12 +45,12 @@ QuasiSingularKernelIntegral<dim>::find_closest_reference_cell_point(
   for (unsigned int i = 0; i < samples_per_direction; ++i)
     for (unsigned int j = 0; j < samples_per_direction; ++j)
       {
-        const Point<2> candidate(
-          static_cast<double>(i) / (samples_per_direction - 1),
-          static_cast<double>(j) / (samples_per_direction - 1));
-        const double distance_square =
-          external_point.distance_square(
-            mapping.transform_unit_to_real_cell(cell, candidate));
+        const Point<2> candidate(static_cast<double>(i) /
+                                   (samples_per_direction - 1),
+                                 static_cast<double>(j) /
+                                   (samples_per_direction - 1));
+        const double   distance_square = external_point.distance_square(
+          mapping.transform_unit_to_real_cell(cell, candidate));
         if (distance_square < best_distance_square)
           {
             best_distance_square = distance_square;
@@ -61,9 +61,8 @@ QuasiSingularKernelIntegral<dim>::find_closest_reference_cell_point(
   // Projection makes edges and vertices part of the same minimization.
   for (unsigned int iteration = 0; iteration < 30; ++iteration)
     {
-      const Quadrature<2> point_quadrature(
-        std::vector<Point<2>>{eta_sol});
-      FEValues<2, 3> point_values(mapping,
+      const Quadrature<2> point_quadrature(std::vector<Point<2>>{eta_sol});
+      FEValues<2, 3>      point_values(mapping,
                                   fe,
                                   point_quadrature,
                                   update_quadrature_points | update_jacobians);
@@ -91,13 +90,12 @@ QuasiSingularKernelIntegral<dim>::find_closest_reference_cell_point(
           std::abs(determinant) <= 1e-14 * scale * scale)
         break;
 
-      const double step[2] = {
-        (normal_matrix[1][1] * right_hand_side[0] -
-         normal_matrix[0][1] * right_hand_side[1]) /
-          determinant,
-        (-normal_matrix[1][0] * right_hand_side[0] +
-         normal_matrix[0][0] * right_hand_side[1]) /
-          determinant};
+      const double step[2] = {(normal_matrix[1][1] * right_hand_side[0] -
+                               normal_matrix[0][1] * right_hand_side[1]) /
+                                determinant,
+                              (-normal_matrix[1][0] * right_hand_side[0] +
+                               normal_matrix[0][0] * right_hand_side[1]) /
+                                determinant};
 
       bool     accepted             = false;
       double   damping              = 1.0;
@@ -106,8 +104,8 @@ QuasiSingularKernelIntegral<dim>::find_closest_reference_cell_point(
       for (unsigned int line_search = 0; line_search < 16; ++line_search)
         {
           for (unsigned int d = 0; d < 2; ++d)
-            next_eta[d] = std::max(
-              0.0, std::min(1.0, eta_sol[d] + damping * step[d]));
+            next_eta[d] =
+              std::max(0.0, std::min(1.0, eta_sol[d] + damping * step[d]));
           next_distance_square = external_point.distance_square(
             mapping.transform_unit_to_real_cell(cell, next_eta));
           if (next_distance_square < best_distance_square)
@@ -122,8 +120,8 @@ QuasiSingularKernelIntegral<dim>::find_closest_reference_cell_point(
         break;
 
       const double parameter_step = eta_sol.distance(next_eta);
-      eta_sol                      = next_eta;
-      best_distance_square         = next_distance_square;
+      eta_sol                     = next_eta;
+      best_distance_square        = next_distance_square;
       if (parameter_step < 1e-12)
         break;
     }

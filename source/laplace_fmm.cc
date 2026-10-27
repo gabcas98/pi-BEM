@@ -23,11 +23,11 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
-#include <memory>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <ostream>
 #include <set>
@@ -129,7 +129,7 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
   cost_m2l   = 1.;
   cost_p2p   = data.kappa > 0 ? 1. / 150. : 1. / 1500.;
   cost_point = data.kappa > 0 ? 0.5 : 0.05;
-  rotations = std::make_unique<YE::Operators>(data.order);
+  rotations  = std::make_unique<YE::Operators>(data.order);
   if (data.kappa > 0)
     {
       // Translations between a parent and its child in each octant, level
@@ -165,20 +165,22 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
               Tensor<1, 3> child_minus_parent;
               for (unsigned int d = 0; d < 3; ++d)
                 child_minus_parent[d] = ((o >> d) & 1) ? h : -h;
-              rotations->dense_translation(YE::Basis::outgoing,
-                                        YE::Basis::outgoing,
-                                        data.kappa,
-                                        child_minus_parent,
-                                        rho,
-                                        2. * rho,
-                                        &yukawa_m2m[(level * 8 + o) * nc * nc]);
-              rotations->dense_translation(YE::Basis::local,
-                                        YE::Basis::local,
-                                        data.kappa,
-                                        -child_minus_parent,
-                                        2. * rho,
-                                        rho,
-                                        &yukawa_l2l[(level * 8 + o) * nc * nc]);
+              rotations->dense_translation(
+                YE::Basis::outgoing,
+                YE::Basis::outgoing,
+                data.kappa,
+                child_minus_parent,
+                rho,
+                2. * rho,
+                &yukawa_m2m[(level * 8 + o) * nc * nc]);
+              rotations->dense_translation(
+                YE::Basis::local,
+                YE::Basis::local,
+                data.kappa,
+                -child_minus_parent,
+                2. * rho,
+                rho,
+                &yukawa_l2l[(level * 8 + o) * nc * nc]);
             }
         }
       yukawa_multipoles.assign(boxes.size() * nc, 0.);
@@ -234,8 +236,9 @@ LaplaceFMM::build_tree()
   Box root;
   root.center = 0.5 * (lower + upper);
   root.half_side =
-    0.5 * std::max({upper[0] - lower[0], upper[1] - lower[1],
-                    upper[2] - lower[2]}) *
+    0.5 *
+      std::max(
+        {upper[0] - lower[0], upper[1] - lower[1], upper[2] - lower[2]}) *
       (1. + 1e-10) +
     1e-300;
   root.begin = 0;
@@ -260,7 +263,7 @@ LaplaceFMM::build_tree()
                  ((x[2] > box.center[2]) << 2)]
             .push_back(permutation[i]);
         }
-      unsigned int next = box.begin;
+      unsigned int next    = box.begin;
       boxes[b].first_child = boxes.size();
       for (unsigned int o = 0; o < 8; ++o)
         {
@@ -269,9 +272,8 @@ LaplaceFMM::build_tree()
           Box child;
           child.half_side = 0.5 * box.half_side;
           for (unsigned int d = 0; d < 3; ++d)
-            child.center[d] = box.center[d] + ((o >> d) & 1 ?
-                                                 child.half_side :
-                                                 -child.half_side);
+            child.center[d] = box.center[d] + ((o >> d) & 1 ? child.half_side :
+                                                              -child.half_side);
           child.begin = next;
           for (const unsigned int i : octant[o])
             permutation[next++] = i;
@@ -374,7 +376,7 @@ LaplaceFMM::distribute_work() const
       // mesh the work concentrates in a few deep subtrees, which a cut at
       // a fixed level would leave whole to one process. The boxes above the
       // roots are handled by every process.
-      const double share = cost[0] / (16. * n_mpi_processes);
+      const double              share = cost[0] / (16. * n_mpi_processes);
       std::vector<unsigned int> roots;
       {
         const auto lighter = [&](const unsigned int x, const unsigned int y) {
@@ -457,13 +459,13 @@ LaplaceFMM::distribute_work() const
   m2l_unit.resize(my_m2l_pairs.size());
   for (unsigned int i = 0; i < my_m2l_pairs.size(); ++i)
     {
-      const Box   &A    = boxes[my_m2l_pairs[i].first];
-      const Box   &B    = boxes[my_m2l_pairs[i].second];
-      const double unit = std::min(A.half_side, B.half_side);
+      const Box         &A    = boxes[my_m2l_pairs[i].first];
+      const Box         &B    = boxes[my_m2l_pairs[i].second];
+      const double       unit = std::min(A.half_side, B.half_side);
       std::array<int, 3> key;
       for (unsigned int d = 0; d < 3; ++d)
-        key[d] = static_cast<int>(
-          std::lround((A.center[d] - B.center[d]) / unit));
+        key[d] =
+          static_cast<int>(std::lround((A.center[d] - B.center[d]) / unit));
       m2l_unit[i] = unit;
       by_offset[key].push_back(i);
     }
@@ -480,8 +482,7 @@ LaplaceFMM::distribute_work() const
       const unsigned int          size = rotations->z_translation_size();
       for (const auto &[key, members] : by_offset)
         {
-          const int tau2 =
-            key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
+          const int tau2 = key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
           const auto [entry, inserted] =
             start_of.try_emplace(tau2, yukawa_tz.size());
           if (inserted)
@@ -500,8 +501,7 @@ LaplaceFMM::distribute_work() const
       const unsigned int size = rotations->z_translation_size();
       for (const auto &[key, members] : by_offset)
         {
-          const int tau2 =
-            key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
+          const int tau2 = key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
           for (const unsigned int i : members)
             {
               const unsigned int level =
@@ -513,11 +513,11 @@ LaplaceFMM::distribute_work() const
                 {
                   yukawa_tz.resize(yukawa_tz.size() + size);
                   rotations->z_translation_unscaled(YE::Basis::outgoing,
-                                                 YE::Basis::local,
-                                                 data.kappa,
-                                                 std::sqrt(double(tau2)) *
-                                                   m2l_unit[i],
-                                                 &yukawa_tz[entry->second]);
+                                                    YE::Basis::local,
+                                                    data.kappa,
+                                                    std::sqrt(double(tau2)) *
+                                                      m2l_unit[i],
+                                                    &yukawa_tz[entry->second]);
                 }
               m2l_tz[i] = entry->second;
             }
@@ -535,8 +535,8 @@ LaplaceFMM::distribute_work() const
                          std::make_pair(m2l_tz[y], my_m2l_pairs[y]);
                 });
       M2LGroup group;
-      group.tau   = Tensor<1, 3>({double(key[0]), double(key[1]),
-                                  double(key[2])});
+      group.tau =
+        Tensor<1, 3>({double(key[0]), double(key[1]), double(key[2])});
       group.begin = m2l_order.size();
       m2l_order.insert(m2l_order.end(), members.begin(), members.end());
       group.end = m2l_order.size();
@@ -563,8 +563,7 @@ LaplaceFMM::distribute_work() const
             {
               m2l_rotations.resize(m2l_rotations.size() + size);
               rotations->angles(-group.tau, angles);
-              rotations->rotation_blocks(angles,
-                                         &m2l_rotations[entry->second]);
+              rotations->rotation_blocks(angles, &m2l_rotations[entry->second]);
             }
           group.rotation = entry->second;
         }
@@ -581,9 +580,9 @@ LaplaceFMM::rebalance(const std::array<double, 6> &times) const
   for (const unsigned int leaf : my_leaves)
     my_points += boxes[leaf].end - boxes[leaf].begin;
   for (const auto &[a, b] : my_p2p_pairs)
-    my_interactions += static_cast<unsigned long>(boxes[a].end -
-                                                  boxes[a].begin) *
-                       (boxes[b].end - boxes[b].begin);
+    my_interactions +=
+      static_cast<unsigned long>(boxes[a].end - boxes[a].begin) *
+      (boxes[b].end - boxes[b].begin);
   const double m2l_time   = times[2];
   const double p2p_time   = times[4];
   const double point_time = times[0] + times[3];
@@ -593,10 +592,10 @@ LaplaceFMM::rebalance(const std::array<double, 6> &times) const
     Utilities::MPI::sum(double(my_interactions), mpi_communicator);
   const double total_points =
     Utilities::MPI::sum(double(my_points), mpi_communicator);
-  cost_m2l = Utilities::MPI::sum(m2l_time, mpi_communicator) /
-             std::max(1., total_m2l);
-  cost_p2p = Utilities::MPI::sum(p2p_time, mpi_communicator) /
-             std::max(1., total_p2p);
+  cost_m2l =
+    Utilities::MPI::sum(m2l_time, mpi_communicator) / std::max(1., total_m2l);
+  cost_p2p =
+    Utilities::MPI::sum(p2p_time, mpi_communicator) / std::max(1., total_p2p);
   cost_point = Utilities::MPI::sum(point_time, mpi_communicator) /
                std::max(1., total_points);
 
@@ -628,10 +627,10 @@ namespace
     const __m256d positive = _mm256_cmp_pd(r2, _mm256_setzero_pd(), _CMP_GT_OQ);
     const __m256d one      = _mm256_set1_pd(1.);
     const __m256d safe     = _mm256_blendv_pd(one, r2, positive);
-    __m256d y = _mm256_cvtps_pd(_mm_rsqrt_ps(_mm256_cvtpd_ps(safe)));
+    __m256d       y = _mm256_cvtps_pd(_mm_rsqrt_ps(_mm256_cvtpd_ps(safe)));
     const __m256d half_r2      = _mm256_mul_pd(_mm256_set1_pd(0.5), safe);
     const __m256d three_halves = _mm256_set1_pd(1.5);
-    y = _mm256_mul_pd(
+    y                          = _mm256_mul_pd(
       y, _mm256_fnmadd_pd(half_r2, _mm256_mul_pd(y, y), three_halves));
     y = _mm256_mul_pd(
       y, _mm256_fnmadd_pd(half_r2, _mm256_mul_pd(y, y), three_halves));
@@ -648,10 +647,10 @@ namespace
   inline __m256d
   exp_nonpositive(__m256d x)
   {
-    x               = _mm256_max_pd(x, _mm256_set1_pd(-700.));
-    const __m256d n = _mm256_round_pd(
-      _mm256_mul_pd(x, _mm256_set1_pd(1.4426950408889634)),
-      _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    x = _mm256_max_pd(x, _mm256_set1_pd(-700.));
+    const __m256d n =
+      _mm256_round_pd(_mm256_mul_pd(x, _mm256_set1_pd(1.4426950408889634)),
+                      _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
     // Cody and Waite: ln 2 in two parts, the first exact in n * ln2_high.
     __m256d r = _mm256_fnmadd_pd(n, _mm256_set1_pd(6.93145751953125e-1), x);
     r = _mm256_fnmadd_pd(n, _mm256_set1_pd(1.42860682030941723212e-6), r);
@@ -666,15 +665,16 @@ namespace
                                               1. / 40320,
                                               1. / 362880,
                                               1. / 3628800};
-    __m256d p = _mm256_set1_pd(inverse_factorial[10]);
+    __m256d          p = _mm256_set1_pd(inverse_factorial[10]);
     for (int k = 9; k >= 0; --k)
       p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(inverse_factorial[k]));
     // n + 2^52 + 2^51 holds n in its low bits.
     const __m256d magic = _mm256_set1_pd(6755399441055744.);
-    __m256i       bits  = _mm256_sub_epi64(
-      _mm256_castpd_si256(_mm256_add_pd(n, magic)), _mm256_castpd_si256(magic));
-    bits = _mm256_slli_epi64(_mm256_add_epi64(bits, _mm256_set1_epi64x(1023)),
-                             52);
+    __m256i       bits =
+      _mm256_sub_epi64(_mm256_castpd_si256(_mm256_add_pd(n, magic)),
+                       _mm256_castpd_si256(magic));
+    bits =
+      _mm256_slli_epi64(_mm256_add_epi64(bits, _mm256_set1_epi64x(1023)), 52);
     return _mm256_mul_pd(p, _mm256_castsi256_pd(bits));
   }
 
@@ -699,13 +699,13 @@ LaplaceFMM::particle_to_particle(const unsigned int a,
                                  const double      *d,
                                  double            *u) const
 {
-  const Box    &A = boxes[a];
-  const Box    &B = boxes[b];
-  const double *x = sorted_coordinates[0].data();
-  const double *y = sorted_coordinates[1].data();
-  const double *z = sorted_coordinates[2].data();
-  const unsigned int n     = points.size();
-  const double      *dx    = d, *dy = d + n, *dz = d + 2 * n;
+  const Box         &A  = boxes[a];
+  const Box         &B  = boxes[b];
+  const double      *x  = sorted_coordinates[0].data();
+  const double      *y  = sorted_coordinates[1].data();
+  const double      *z  = sorted_coordinates[2].data();
+  const unsigned int n  = points.size();
+  const double      *dx = d, *dy = d + n, *dz = d + 2 * n;
   const double       kappa = data.kappa;
   for (unsigned int i = A.begin; i < A.end; ++i)
     {
@@ -714,8 +714,8 @@ LaplaceFMM::particle_to_particle(const unsigned int a,
       unsigned int j   = B.begin;
 #if defined(__AVX2__) && defined(__FMA__)
       const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
-                    vz  = _mm256_set1_pd(zi);
-      __m256d       acc = _mm256_setzero_pd();
+                    vz = _mm256_set1_pd(zi);
+      __m256d acc      = _mm256_setzero_pd();
       // Four sources at a time; the last one to three through masked
       // loads, whose empty lanes carry zero charges and dipoles, rather
       // than through the scalar loop, which with the exponential costs
@@ -730,26 +730,31 @@ LaplaceFMM::particle_to_particle(const unsigned int a,
         const __m256d rx = _mm256_sub_pd(vx, px);
         const __m256d ry = _mm256_sub_pd(vy, py);
         const __m256d rz = _mm256_sub_pd(vz, pz);
-        const __m256d r2 = _mm256_fmadd_pd(
-          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d r2 =
+          _mm256_fmadd_pd(rx,
+                          rx,
+                          _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
         const __m256d inverse = inverse_sqrt(r2);
         // With screening, e^{-kappa r} / r and, for the dipoles, the
         // factor (1 + kappa r) of the derivative.
         __m256d kernel = inverse, kappa_r = _mm256_setzero_pd();
         if constexpr (screened)
           {
-            kappa_r = _mm256_mul_pd(_mm256_set1_pd(kappa),
-                                    _mm256_mul_pd(r2, inverse));
-            kernel  = _mm256_mul_pd(inverse,
-                                   exp_nonpositive(_mm256_sub_pd(
-                                     _mm256_setzero_pd(), kappa_r)));
+            kappa_r =
+              _mm256_mul_pd(_mm256_set1_pd(kappa), _mm256_mul_pd(r2, inverse));
+            kernel =
+              _mm256_mul_pd(inverse,
+                            exp_nonpositive(
+                              _mm256_sub_pd(_mm256_setzero_pd(), kappa_r)));
           }
         if constexpr (with_charges)
           acc = _mm256_fmadd_pd(qj, kernel, acc);
         if constexpr (with_dipoles)
           {
-            __m256d dot = _mm256_fmadd_pd(
-              dxj, rx, _mm256_fmadd_pd(dyj, ry, _mm256_mul_pd(dzj, rz)));
+            __m256d dot =
+              _mm256_fmadd_pd(dxj,
+                              rx,
+                              _mm256_fmadd_pd(dyj, ry, _mm256_mul_pd(dzj, rz)));
             if constexpr (screened)
               dot = _mm256_fmadd_pd(dot, kappa_r, dot);
             const __m256d inverse3 =
@@ -817,13 +822,13 @@ LaplaceFMM::particle_to_particle_gradient(const unsigned int a,
                                           double            *u,
                                           double            *g) const
 {
-  const Box         &A = boxes[a];
-  const Box         &B = boxes[b];
-  const double      *x = sorted_coordinates[0].data();
-  const double      *y = sorted_coordinates[1].data();
-  const double      *z = sorted_coordinates[2].data();
-  const unsigned int n = points.size();
-  double *gx = g, *gy = g + n, *gz = g + 2 * n;
+  const Box         &A  = boxes[a];
+  const Box         &B  = boxes[b];
+  const double      *x  = sorted_coordinates[0].data();
+  const double      *y  = sorted_coordinates[1].data();
+  const double      *z  = sorted_coordinates[2].data();
+  const unsigned int n  = points.size();
+  double            *gx = g, *gy = g + n, *gz = g + 2 * n;
   for (unsigned int i = A.begin; i < A.end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
@@ -843,16 +848,17 @@ LaplaceFMM::particle_to_particle_gradient(const unsigned int a,
         const __m256d rx = _mm256_sub_pd(vx, px);
         const __m256d ry = _mm256_sub_pd(vy, py);
         const __m256d rz = _mm256_sub_pd(vz, pz);
-        const __m256d r2 = _mm256_fmadd_pd(
-          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d r2 =
+          _mm256_fmadd_pd(rx,
+                          rx,
+                          _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
         const __m256d inverse = inverse_sqrt(r2);
         const __m256d qk      = _mm256_mul_pd(qj, inverse);
         acc                   = _mm256_add_pd(acc, qk);
-        const __m256d f =
-          _mm256_mul_pd(qk, _mm256_mul_pd(inverse, inverse));
-        acc_x = _mm256_fnmadd_pd(f, rx, acc_x);
-        acc_y = _mm256_fnmadd_pd(f, ry, acc_y);
-        acc_z = _mm256_fnmadd_pd(f, rz, acc_z);
+        const __m256d f = _mm256_mul_pd(qk, _mm256_mul_pd(inverse, inverse));
+        acc_x           = _mm256_fnmadd_pd(f, rx, acc_x);
+        acc_y           = _mm256_fnmadd_pd(f, ry, acc_y);
+        acc_z           = _mm256_fnmadd_pd(f, rz, acc_z);
       };
       for (; j + 4 <= B.end; j += 4)
         interact(_mm256_loadu_pd(x + j),
@@ -924,15 +930,14 @@ LaplaceFMM::particle_to_particle_multiple(const unsigned int a,
       __m256d acc[k];
       for (unsigned int s = 0; s < k; ++s)
         acc[s] = _mm256_setzero_pd();
-      const auto inverse_at = [&](const __m256d px,
-                                  const __m256d py,
-                                  const __m256d pz) {
-        const __m256d rx = _mm256_sub_pd(vx, px);
-        const __m256d ry = _mm256_sub_pd(vy, py);
-        const __m256d rz = _mm256_sub_pd(vz, pz);
-        return inverse_sqrt(_mm256_fmadd_pd(
-          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz))));
-      };
+      const auto inverse_at =
+        [&](const __m256d px, const __m256d py, const __m256d pz) {
+          const __m256d rx = _mm256_sub_pd(vx, px);
+          const __m256d ry = _mm256_sub_pd(vy, py);
+          const __m256d rz = _mm256_sub_pd(vz, pz);
+          return inverse_sqrt(_mm256_fmadd_pd(
+            rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz))));
+        };
       for (; j + 4 <= B.end; j += 4)
         {
           const __m256d inverse = inverse_at(_mm256_loadu_pd(x + j),
@@ -1030,14 +1035,14 @@ namespace
     for (; a + 4 <= n; a += 4)
       for (unsigned int j = 0; j < count; j += 4)
         {
-          const __m256d r0 = _mm256_loadu_pd(Y + a * B + j);
-          const __m256d r1 = _mm256_loadu_pd(Y + (a + 1) * B + j);
-          const __m256d r2 = _mm256_loadu_pd(Y + (a + 2) * B + j);
-          const __m256d r3 = _mm256_loadu_pd(Y + (a + 3) * B + j);
-          const __m256d t0 = _mm256_unpacklo_pd(r0, r1);
-          const __m256d t1 = _mm256_unpackhi_pd(r0, r1);
-          const __m256d t2 = _mm256_unpacklo_pd(r2, r3);
-          const __m256d t3 = _mm256_unpackhi_pd(r2, r3);
+          const __m256d r0      = _mm256_loadu_pd(Y + a * B + j);
+          const __m256d r1      = _mm256_loadu_pd(Y + (a + 1) * B + j);
+          const __m256d r2      = _mm256_loadu_pd(Y + (a + 2) * B + j);
+          const __m256d r3      = _mm256_loadu_pd(Y + (a + 3) * B + j);
+          const __m256d t0      = _mm256_unpacklo_pd(r0, r1);
+          const __m256d t1      = _mm256_unpackhi_pd(r0, r1);
+          const __m256d t2      = _mm256_unpacklo_pd(r2, r3);
+          const __m256d t3      = _mm256_unpackhi_pd(r2, r3);
           const __m256d lane[4] = {_mm256_permute2f128_pd(t0, t2, 0x20),
                                    _mm256_permute2f128_pd(t1, t3, 0x20),
                                    _mm256_permute2f128_pd(t0, t2, 0x31),
@@ -1073,11 +1078,11 @@ LaplaceFMM::real_multipoles(LE::complex *M, const unsigned int k) const
         double             scale   = 1.;
         for (unsigned int n = 0; n <= p; ++n, scale *= inverse)
           {
-            const unsigned int c   = LE::index(n, 0);
+            const unsigned int c  = LE::index(n, 0);
             real[YE::index(n, 0)] = scale * real_outgoing[c] * Mb[c].real();
             for (unsigned int m = 1; m <= n; ++m)
               {
-                const double f             = scale * real_outgoing[c + m];
+                const double f              = scale * real_outgoing[c + m];
                 real[YE::index(n, m)]       = f * Mb[c + m].real();
                 real[YE::index(n, -int(m))] = -f * Mb[c + m].imag();
               }
@@ -1109,9 +1114,9 @@ LaplaceFMM::complex_locals(LE::complex *L, const unsigned int k) const
             const unsigned int c = LE::index(n, 0);
             Lb[c] = scale * real_local[c] * real[YE::index(n, 0)];
             for (unsigned int m = 1; m <= n; ++m)
-              Lb[c + m] = scale * real_local[c + m] *
-                          LE::complex(real[YE::index(n, m)],
-                                      real[YE::index(n, -int(m))]);
+              Lb[c + m] =
+                scale * real_local[c + m] *
+                LE::complex(real[YE::index(n, m)], real[YE::index(n, -int(m))]);
           }
       }
 }
@@ -1141,8 +1146,8 @@ LaplaceFMM::multipole_to_local(const double      *M,
   for (const auto &group : m2l_groups)
     {
       rotations->angles(-group.tau, angles);
-      const double *Tz = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
-      const double *R  = &m2l_rotations[group.rotation];
+      const double      *Tz    = &yukawa_tz[m2l_tz[m2l_order[group.begin]]];
+      const double      *R     = &m2l_rotations[group.rotation];
       const unsigned int total = (group.end - group.begin) * k;
       for (unsigned int first = 0; first < total; first += B)
         {
@@ -1150,10 +1155,11 @@ LaplaceFMM::multipole_to_local(const double      *M,
           bool               scaled = false;
           for (unsigned int j = 0; j < count; ++j)
             {
-              const unsigned int pair = m2l_order[group.begin + (first + j) / k];
-              const unsigned int s    = (first + j) % k;
-              const unsigned int b    = my_m2l_pairs[pair].second;
-              source[j] = M + (s * n_boxes + b) * stride;
+              const unsigned int pair =
+                m2l_order[group.begin + (first + j) / k];
+              const unsigned int s = (first + j) % k;
+              const unsigned int b = my_m2l_pairs[pair].second;
+              source[j]            = M + (s * n_boxes + b) * stride;
               target[j] = L + (s * n_boxes + my_m2l_pairs[pair].first) * stride;
               ratio[j]  = boxes[b].half_side / m2l_unit[pair];
               scaled    = scaled || ratio[j] != 1.;
@@ -1184,7 +1190,8 @@ LaplaceFMM::multipole_to_local(const double      *M,
           scaled = false;
           for (unsigned int j = 0; j < count; ++j)
             {
-              const unsigned int pair = m2l_order[group.begin + (first + j) / k];
+              const unsigned int pair =
+                m2l_order[group.begin + (first + j) / k];
               ratio[j] =
                 boxes[my_m2l_pairs[pair].first].half_side / m2l_unit[pair];
               scaled = scaled || ratio[j] != 1.;
@@ -1222,10 +1229,10 @@ LaplaceFMM::far_field_laplace_multiple(
   const std::vector<dealii::Tensor<1, 3>> *dipoles,
   std::vector<double>                     *gradient) const
 {
-  const unsigned int p        = data.order;
-  const unsigned int nc       = LE::n_coefficients(p);
-  const unsigned int n        = points.size();
-  const unsigned int n_boxes  = boxes.size();
+  const unsigned int       p       = data.order;
+  const unsigned int       nc      = LE::n_coefficients(p);
+  const unsigned int       n       = points.size();
+  const unsigned int       n_boxes = boxes.size();
   std::vector<LE::complex> M(k * n_boxes * nc, 0.);
   // The local expansions only on the boxes of this process: zero pages
   // from calloc, which the boxes of the other processes never touch, so
@@ -1241,7 +1248,7 @@ LaplaceFMM::far_field_laplace_multiple(
   auto start = std::chrono::steady_clock::now();
   for (unsigned int s = 0; s < k; ++s)
     {
-      LE::complex *const Ms = &M[s * n_boxes * nc];
+      LE::complex *const Ms         = &M[s * n_boxes * nc];
       const bool         dipole_set = dipoles != nullptr && s == 1;
       for (const unsigned int leaf : my_leaves)
         {
@@ -1304,8 +1311,7 @@ LaplaceFMM::far_field_laplace_multiple(
             {
               u[s * n + i] += LE::evaluate_local(w,
                                                  &Ls[leaf * nc],
-                                                 sorted_points[i] -
-                                                   box.center);
+                                                 sorted_points[i] - box.center);
               if (gradient != nullptr && s == 0)
                 {
                   const Tensor<1, 3> g =
@@ -1396,19 +1402,18 @@ LaplaceFMM::particle_to_particle_mixed(const unsigned int a,
                                        double            *u,
                                        double            *g) const
 {
-  const Box         &A = boxes[a];
-  const Box         &B = boxes[b];
-  const double      *x = sorted_coordinates[0].data();
-  const double      *y = sorted_coordinates[1].data();
-  const double      *z = sorted_coordinates[2].data();
-  const unsigned int n = points.size();
-  const double *q0 = q, *c1 = q + 2 * n, *c2 = q + 3 * n, *c3 = q + 4 * n;
-  const double *dx = d, *dy = d + n, *dz = d + 2 * n;
+  const Box         &A  = boxes[a];
+  const Box         &B  = boxes[b];
+  const double      *x  = sorted_coordinates[0].data();
+  const double      *y  = sorted_coordinates[1].data();
+  const double      *z  = sorted_coordinates[2].data();
+  const unsigned int n  = points.size();
+  const double      *q0 = q, *c1 = q + 2 * n, *c2 = q + 3 * n, *c3 = q + 4 * n;
+  const double      *dx = d, *dy = d + n, *dz = d + 2 * n;
   for (unsigned int i = A.begin; i < A.end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
-      double       s0 = 0, sx = 0, sy = 0, sz = 0, sd = 0, s1 = 0, s2 = 0,
-             s3 = 0;
+      double s0 = 0, sx = 0, sy = 0, sz = 0, sd = 0, s1 = 0, s2 = 0, s3 = 0;
       unsigned int j = B.begin;
 #if defined(__AVX2__) && defined(__FMA__)
       const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
@@ -1432,18 +1437,22 @@ LaplaceFMM::particle_to_particle_mixed(const unsigned int a,
         const __m256d rx = _mm256_sub_pd(vx, px);
         const __m256d ry = _mm256_sub_pd(vy, py);
         const __m256d rz = _mm256_sub_pd(vz, pz);
-        const __m256d r2 = _mm256_fmadd_pd(
-          rx, rx, _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
-        const __m256d inverse  = inverse_sqrt(r2);
+        const __m256d r2 =
+          _mm256_fmadd_pd(rx,
+                          rx,
+                          _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d inverse = inverse_sqrt(r2);
         const __m256d inverse3 =
           _mm256_mul_pd(inverse, _mm256_mul_pd(inverse, inverse));
-        acc0 = _mm256_fmadd_pd(qj, inverse, acc0);
+        acc0            = _mm256_fmadd_pd(qj, inverse, acc0);
         const __m256d f = _mm256_mul_pd(qj, inverse3);
-        acc_x = _mm256_fnmadd_pd(f, rx, acc_x);
-        acc_y = _mm256_fnmadd_pd(f, ry, acc_y);
-        acc_z = _mm256_fnmadd_pd(f, rz, acc_z);
-        const __m256d dot = _mm256_fmadd_pd(
-          dxj, rx, _mm256_fmadd_pd(dyj, ry, _mm256_mul_pd(dzj, rz)));
+        acc_x           = _mm256_fnmadd_pd(f, rx, acc_x);
+        acc_y           = _mm256_fnmadd_pd(f, ry, acc_y);
+        acc_z           = _mm256_fnmadd_pd(f, rz, acc_z);
+        const __m256d dot =
+          _mm256_fmadd_pd(dxj,
+                          rx,
+                          _mm256_fmadd_pd(dyj, ry, _mm256_mul_pd(dzj, rz)));
         acc_d = _mm256_fmadd_pd(dot, inverse3, acc_d);
         acc1  = _mm256_fmadd_pd(cj1, inverse, acc1);
         acc2  = _mm256_fmadd_pd(cj2, inverse, acc2);
@@ -1526,13 +1535,14 @@ LaplaceFMM::expansion_bytes(const unsigned int sets) const
 
 
 void
-LaplaceFMM::evaluate_mixed(const std::vector<double>                &q,
-                           const std::vector<Tensor<1, 3>>          &d,
-                           const std::array<std::vector<double>, 3> &c,
-                           std::vector<double>                      &potentials_q,
-                           std::vector<Tensor<1, 3>>                &gradients_q,
-                           std::vector<double>                      &potentials_d,
-                           std::array<std::vector<double>, 3> &potentials_c) const
+LaplaceFMM::evaluate_mixed(
+  const std::vector<double>                &q,
+  const std::vector<Tensor<1, 3>>          &d,
+  const std::array<std::vector<double>, 3> &c,
+  std::vector<double>                      &potentials_q,
+  std::vector<Tensor<1, 3>>                &gradients_q,
+  std::vector<double>                      &potentials_d,
+  std::array<std::vector<double>, 3>       &potentials_c) const
 {
   AssertThrow(data.kappa == 0.,
               ExcMessage("The mixed sums are implemented for the Laplace "
@@ -1601,9 +1611,9 @@ LaplaceFMM::evaluate_mixed(const std::vector<double>                &q,
 
 
 void
-LaplaceFMM::evaluate_with_gradient(const std::vector<double>  &charges,
-                                   std::vector<double>        &potentials,
-                                   std::vector<Tensor<1, 3>>  &gradients) const
+LaplaceFMM::evaluate_with_gradient(const std::vector<double> &charges,
+                                   std::vector<double>       &potentials,
+                                   std::vector<Tensor<1, 3>> &gradients) const
 {
   AssertThrow(data.kappa == 0.,
               ExcMessage("Gradients are implemented for the Laplace kernel."));
@@ -1686,7 +1696,7 @@ LaplaceFMM::evaluate(const std::vector<double>       &charges,
   else
     far_field_laplace(q, d, u);
 
-  auto start = std::chrono::steady_clock::now();
+  auto       start      = std::chrono::steady_clock::now();
   const auto near_field = [&](auto screened) {
     constexpr bool s = decltype(screened)::value;
     for (const auto &[a, b] : my_p2p_pairs)
@@ -1743,8 +1753,8 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
   auto start = std::chrono::steady_clock::now();
   for (const unsigned int leaf : my_leaves)
     {
-      const Box        &box = boxes[leaf];
-      LE::complex *const M  = &multipoles[leaf * nc];
+      const Box         &box = boxes[leaf];
+      LE::complex *const M   = &multipoles[leaf * nc];
       for (unsigned int i = box.begin; i < box.end; ++i)
         {
           const Tensor<1, 3> offset = sorted_points[i] - box.center;
@@ -1851,8 +1861,8 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
       {
         const Box    &box = boxes[*b];
         const double *T =
-          &yukawa_m2m[(box.level * 8 + octant_of(box, boxes[box.parent])) *
-                      nc * nc];
+          &yukawa_m2m[(box.level * 8 + octant_of(box, boxes[box.parent])) * nc *
+                      nc];
         const double *M      = &yukawa_multipoles[*b * nc];
         double       *parent = &yukawa_multipoles[box.parent * nc];
         for (unsigned int r = 0; r < nc; ++r)
@@ -1908,11 +1918,11 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
               }
             std::fill(Y.begin(), Y.end(), 0.);
             rotations->translate<B>(angles,
-                                 Tz.data(),
-                                 X.data(),
-                                 Y.data(),
-                                 work.data(),
-                                 Tz_lanes.data());
+                                    Tz.data(),
+                                    X.data(),
+                                    Y.data(),
+                                    work.data(),
+                                    Tz_lanes.data());
             for (unsigned int j = 0; j < count; ++j)
               {
                 const unsigned int a_box =
@@ -1936,8 +1946,8 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
       {
         const Box    &box = boxes[b];
         const double *T =
-          &yukawa_l2l[(box.level * 8 + octant_of(box, boxes[box.parent])) *
-                      nc * nc];
+          &yukawa_l2l[(box.level * 8 + octant_of(box, boxes[box.parent])) * nc *
+                      nc];
         const double *parent = &yukawa_locals[box.parent * nc];
         double       *L      = &yukawa_locals[b * nc];
         for (unsigned int r = 0; r < nc; ++r)
@@ -2041,11 +2051,11 @@ LaplaceFMM::print_statistics(std::ostream &out) const
       const auto precision = out.precision();
       out << std::setprecision(3) << "LaplaceFMM: " << points.size()
           << " points, "
-          << (data.kappa > 0 ? "screened kernel, kappa " +
-                                 std::to_string(data.kappa) + ", " :
-                               std::string())
-          << "order " << data.order << ", theta " << data.theta
-          << ", at most " << data.max_points_per_leaf << " points per leaf\n"
+          << (data.kappa > 0 ?
+                "screened kernel, kappa " + std::to_string(data.kappa) + ", " :
+                std::string())
+          << "order " << data.order << ", theta " << data.theta << ", at most "
+          << data.max_points_per_leaf << " points per leaf\n"
           << "  tree: " << boxes.size() << " boxes, " << n_leaves
           << " leaves, depth " << depth << "; setup " << setup_time << " s\n"
           << "  lists: " << m2l_pairs.size() << " M2L pairs (largest share "
@@ -2056,19 +2066,17 @@ LaplaceFMM::print_statistics(std::ostream &out) const
           << " groups on a process, "
           << m2l_rotations.size() /
                std::max<std::size_t>(1, rotations->rotation_size())
-          << " rotations), "
-          << p2p_pairs.size() << " P2P pairs with " << n_direct
-          << " direct interactions ("
+          << " rotations), " << p2p_pairs.size() << " P2P pairs with "
+          << n_direct << " direct interactions ("
           << double(n_direct) / std::max<std::size_t>(1, points.size())
           << " per point)"
-          << (data.kappa > 0 ? ", " + std::to_string(n_screened_out) +
-                                 " pairs screened out" :
-                               std::string())
+          << (data.kappa > 0 ?
+                ", " + std::to_string(n_screened_out) + " pairs screened out" :
+                std::string())
           << "\n"
           << "  seconds per evaluation, slowest process: P2M+M2M " << t[0]
-          << ", sum of multipoles " << t[1] << ", M2L " << t[2]
-          << ", L2L+L2P " << t[3] << ", P2P " << t[4]
-          << ", sum of potentials " << t[5] << '\n'
+          << ", sum of multipoles " << t[1] << ", M2L " << t[2] << ", L2L+L2P "
+          << t[3] << ", P2P " << t[4] << ", sum of potentials " << t[5] << '\n'
           << std::setprecision(precision);
     }
 }

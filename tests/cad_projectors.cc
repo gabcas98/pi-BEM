@@ -31,6 +31,8 @@
 //  - curves: a circle and an ellipse in space, and the two rims of the
 //    cylinder, picked out of the edges of the solid.
 
+#include "cad_projectors.h"
+
 #include <deal.II/base/quadrature_lib.h>
 
 #include <deal.II/fe/fe_nothing.h>
@@ -50,17 +52,16 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRep_Builder.hxx>
+#include <ElCLib.hxx>
 #include <TopoDS_Compound.hxx>
-#include <gp_Ax3.hxx>
-#include <gp_Cylinder.hxx>
 #include <gp.hxx>
 #include <gp_Ax2.hxx>
-#include <gp_Pln.hxx>
+#include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp_Elips.hxx>
-#include <ElCLib.hxx>
+#include <gp_Pln.hxx>
 
-#include "cad_projectors.h"
 #include "tests.h"
 
 using namespace ExactGeometry;
@@ -116,18 +117,18 @@ private:
 template <int dim>
 std::array<double, 2>
 integrate(
-  const Triangulation<dim, 3> &tria,
-  const Projector<dim, 3>     &projector,
-  const unsigned int           n_points,
-  unsigned int                &n_irregular,
+  const Triangulation<dim, 3>                     &tria,
+  const Projector<dim, 3>                         &projector,
+  const unsigned int                               n_points,
+  unsigned int                                    &n_irregular,
   const std::function<bool(const Tensor<1, 3> &)> &select =
     [](const Tensor<1, 3> &) { return true; })
 {
-  const MappingQ<dim, 3>     mapping(1);
+  const MappingQ<dim, 3>      mapping(1);
   ProjectedQuadrature<dim, 3> quadrature(mapping,
                                          QGauss<dim>(n_points),
                                          projector);
-  std::array<double, 2> result = {{0, 0}};
+  std::array<double, 2>       result = {{0, 0}};
   for (const auto &cell : tria.active_cell_iterators())
     {
       quadrature.reinit(cell);
@@ -174,10 +175,10 @@ compare(const std::string         &name,
                               (a.get_projection_jacobians()[q] -
                                b.get_projection_jacobians()[q])
                                 .norm());
-          weight = std::max(weight,
-                            std::abs(a.get_JxW_values()[q] /
-                                       b.get_JxW_values()[q] -
-                                     1));
+          weight =
+            std::max(weight,
+                     std::abs(a.get_JxW_values()[q] / b.get_JxW_values()[q] -
+                              1));
         }
     }
   deallog << name << ": largest differences to the analytic projection: "
@@ -210,8 +211,8 @@ sphere()
       const OpenCASCADE::ShapeProjector<2> closest(shape);
       const OpenCASCADE::ShapeProjector<2> along_field(shape,
                                                        Direction<3>(field));
-      const MappingQ<2, 3> mapping(1);
-      const Direction<3>   vertex_normal =
+      const MappingQ<2, 3>                 mapping(1);
+      const Direction<3>                   vertex_normal =
         Direction<3>::interpolated_mesh_normal(tria, mapping);
       const OpenCASCADE::ShapeProjector<2> along_vertex_normal(shape,
                                                                vertex_normal);
@@ -265,14 +266,12 @@ torus()
       const auto exact   = integrate(tria, projector, n, n_irregular);
       deallog << std::setw(2) << n << "     ";
       for (const auto &integrals : {on_mesh, exact})
-        deallog << format(integrals[0] /
-                            (4 * numbers::PI * numbers::PI * R * r) -
-                          1)
-                << " "
-                << format(integrals[1] /
-                            (2 * numbers::PI * numbers::PI * R * r * r) -
-                          1)
-                << "    ";
+        deallog
+          << format(integrals[0] / (4 * numbers::PI * numbers::PI * R * r) - 1)
+          << " "
+          << format(integrals[1] / (2 * numbers::PI * numbers::PI * R * r * r) -
+                    1)
+          << "    ";
       deallog << std::endl;
     }
   deallog << "irregular projections: " << n_irregular << std::endl;
@@ -288,11 +287,11 @@ check_transfinite(const std::string                    &name,
                   const OpenCASCADE::ShapeProjector<2> &projector,
                   const bool                            all_cells = false)
 {
-  const MappingQ<2, 3>  mapping(1);
+  const MappingQ<2, 3>   mapping(1);
   const FE_Nothing<2, 3> fe;
   auto                   cache   = projector.create_cache();
   unsigned int           n_cells = 0, n_edges = 0;
-  double                 error   = 0;
+  double                 error = 0;
   for (const auto &cell : tria.active_cell_iterators())
     {
       projector.reinit(mapping, cell, *cache);
@@ -428,10 +427,8 @@ cylinder()
   // Along the x-axis, as the cylinder of deal.II: a lateral face and two
   // planar caps, trimmed by circles.
   const TopoDS_Shape shape =
-    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-half_length, 0, 0),
-                                    gp_Dir(1, 0, 0)),
-                             R,
-                             2 * half_length)
+    BRepPrimAPI_MakeCylinder(
+      gp_Ax2(gp_Pnt(-half_length, 0, 0), gp_Dir(1, 0, 0)), R, 2 * half_length)
       .Shape();
   trimmed("cylinder",
           tria,
@@ -472,9 +469,9 @@ split_cylinder()
   // that columns of cells straddle the junctions z = 0, and the knots of
   // the two rational arcs of each half, a quarter turn from the junctions,
   // where a map linear in the parameters has a kink.
-  const double        R = 1, length = 3, turn = 0.3;
-  const unsigned int  n_around = 12;
-  Triangulation<2>    flat;
+  const double       R = 1, length = 3, turn = 0.3;
+  const unsigned int n_around = 12;
+  Triangulation<2>   flat;
   GridGenerator::subdivided_hyper_rectangle(flat,
                                             {n_around, 3},
                                             Point<2>(turn, -length / 2),
@@ -487,20 +484,18 @@ split_cylinder()
     },
     false);
 
-  const gp_Cylinder cylinder(gp_Ax3(gp_Pnt(-length / 2, 0, 0),
-                                    gp_Dir(1, 0, 0),
-                                    gp_Dir(0, 1, 0)),
-                             R);
+  const gp_Cylinder cylinder(
+    gp_Ax3(gp_Pnt(-length / 2, 0, 0), gp_Dir(1, 0, 0), gp_Dir(0, 1, 0)), R);
   BRep_Builder    builder;
   TopoDS_Compound shape;
   builder.MakeCompound(shape);
   for (const double start : {0., numbers::PI})
-    builder.Add(shape,
-                BRepBuilderAPI_NurbsConvert(
-                  BRepBuilderAPI_MakeFace(
-                    cylinder, start, start + numbers::PI, 0, length)
-                    .Face())
-                  .Shape());
+    builder.Add(
+      shape,
+      BRepBuilderAPI_NurbsConvert(
+        BRepBuilderAPI_MakeFace(cylinder, start, start + numbers::PI, 0, length)
+          .Face())
+        .Shape());
   trimmed("split cylinder", tria, shape, 2 * numbers::PI * R * length, 0);
 }
 
@@ -510,9 +505,9 @@ spherical_cap()
 {
   // The part of a sphere above the latitude of 45 degrees, closed by a
   // disk: a spherical face and a planar one, trimmed by the same circle.
-  const double R = 1.3, latitude = numbers::PI / 4;
-  const double polar = numbers::PI / 2 - latitude;
-  const double rho = R * std::sin(polar), z0 = R * std::cos(polar);
+  const double     R = 1.3, latitude = numbers::PI / 4;
+  const double     polar = numbers::PI / 2 - latitude;
+  const double     rho = R * std::sin(polar), z0 = R * std::cos(polar);
   Triangulation<2> curved, disk;
   GridGenerator::hyper_ball(curved, Point<2>(), rho);
   curved.refine_global(2);
@@ -567,7 +562,7 @@ curves()
   const gp_Ax2   frame(gp_Pnt(0.1, 0.2, -0.3), gp_Dir(1, 1, 1));
   const gp_Circ  circle(frame, 1.3);
   const gp_Elips ellipse(frame, 2., 1.);
-  const double   h = std::pow(1. / 3, 2);
+  const double   h         = std::pow(1. / 3, 2);
   double         perimeter = 0, coefficient = 1;
   for (unsigned int k = 0; k < 40; ++k)
     {
@@ -613,10 +608,8 @@ curves()
   // circles and the seam.
   const double       R = 1, half_length = 1.5;
   const TopoDS_Shape shape =
-    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-half_length, 0, 0),
-                                    gp_Dir(1, 0, 0)),
-                             R,
-                             2 * half_length)
+    BRepPrimAPI_MakeCylinder(
+      gp_Ax2(gp_Pnt(-half_length, 0, 0), gp_Dir(1, 0, 0)), R, 2 * half_length)
       .Shape();
   std::vector<Point<3>> left, right;
   for (unsigned int i = 0; i < n; ++i)

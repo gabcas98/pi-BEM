@@ -91,10 +91,9 @@ namespace
         double            deviation = 0;
         for (unsigned int k = 0; k <= 10; ++k)
           {
-            const double t = curve.FirstParameter() +
-                             k * (curve.LastParameter() -
-                                  curve.FirstParameter()) /
-                               10;
+            const double t =
+              curve.FirstParameter() +
+              k * (curve.LastParameter() - curve.FirstParameter()) / 10;
             deviation = std::max(deviation, std::abs(curve.Value(t).Z() - z0));
           }
         if (deviation < 1e-6 * unit)
@@ -122,7 +121,7 @@ namespace
     for (BRepTools_WireExplorer e(TopoDS::Wire(wires->Value(1))); e.More();
          e.Next())
       {
-        double                   first, last;
+        double first, last;
         const Handle(Geom_Curve) curve =
           BRep_Tool::Curve(e.Current(), first, last);
         Handle(Geom_TrimmedCurve) piece =
@@ -148,10 +147,9 @@ namespace
         BRepAdaptor_Curve curve(TopoDS::Edge(e.Current()));
         for (unsigned int k = 0; k <= 50; ++k)
           {
-            const gp_Pnt p =
-              curve.Value(curve.FirstParameter() +
-                          k * (curve.LastParameter() - curve.FirstParameter()) /
-                            50);
+            const gp_Pnt p = curve.Value(
+              curve.FirstParameter() +
+              k * (curve.LastParameter() - curve.FirstParameter()) / 50);
             if (p.Z() > z0 + 1e-9 * unit)
               continue;
             BRepExtrema_DistShapeShape d(BRepBuilderAPI_MakeVertex(p).Vertex(),
@@ -169,8 +167,8 @@ main(int argc, char **argv)
 {
   AssertThrow(argc > 3,
               ExcMessage("Usage: cut_cad input/ output/ z0 [j=i ...]"));
-  const std::string input = argv[1], output = argv[2];
-  const double      z0 = std::atof(argv[3]) * unit;
+  const std::string                    input = argv[1], output = argv[2];
+  const double                         z0 = std::atof(argv[3]) * unit;
   std::map<unsigned int, unsigned int> waterlines;
   for (int a = 4; a < argc; ++a)
     {
@@ -193,7 +191,8 @@ main(int argc, char **argv)
   builder.MakeCompound(all_faces);
   for (unsigned int i = 1; std::filesystem::exists(color_file(input, i)); ++i)
     {
-      const TopoDS_Shape shape = OpenCASCADE::read_IGES(color_file(input, i), 1.);
+      const TopoDS_Shape shape =
+        OpenCASCADE::read_IGES(color_file(input, i), 1.);
       BRepAlgoAPI_Common common(shape, below);
       AssertThrow(common.IsDone() && !common.HasErrors(),
                   ExcMessage("The cut of Color_" + std::to_string(i) +
@@ -230,8 +229,8 @@ main(int argc, char **argv)
       OpenCASCADE::write_IGES(cut.back(), color_file(output, i));
     }
 
-  for (unsigned int j = 1; std::filesystem::exists(curve_file(input, j)) ||
-                           waterlines.count(j) > 0;
+  for (unsigned int j = 1;
+       std::filesystem::exists(curve_file(input, j)) || waterlines.count(j) > 0;
        ++j)
     {
       TopoDS_Shape curve;

@@ -7,13 +7,13 @@
 
 
 #include "../include/boundary_conditions.h"
-#include "mapping_hanging_constraints.h"
 
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/grid/filtered_iterator.h>
 
 #include "../include/vector_tools_integrate_difference.h"
+#include "mapping_hanging_constraints.h"
 
 template <int dim, int spacedim>
 class FilteredDataOut : public DataOut<dim, spacedim>
@@ -57,10 +57,10 @@ private:
   const unsigned int subdomain_id;
 };
 
-#include "Teuchos_TimeMonitor.hpp"
-
 #include <algorithm>
 #include <map>
+
+#include "Teuchos_TimeMonitor.hpp"
 
 using Teuchos::RCP;
 using Teuchos::Time;
@@ -444,19 +444,18 @@ BoundaryConditions<dim>::dof_slots() const
         found == comp_dom.manifold2bcondition_slot_map.end() ? 0 :
                                                                found->second;
       // The kind of the cell, with the precedence of the kinds of nodes.
-      const int kind =
-        has_material(comp_dom.dirichlet_boundary_ids, cell) ? 0 :
-        has_material(comp_dom.neumann_boundary_ids, cell)   ? 1 :
-        has_material(comp_dom.robin_boundary_ids, cell)     ? 2 :
-                                                              -1;
+      const int kind = has_material(comp_dom.dirichlet_boundary_ids, cell) ? 0 :
+                       has_material(comp_dom.neumann_boundary_ids, cell)   ? 1 :
+                       has_material(comp_dom.robin_boundary_ids, cell)     ? 2 :
+                                                                             -1;
       cell->get_dof_indices(dofs);
       for (const auto i : dofs)
         {
-          const int node_kind = dirichlet[i] == 1 ? 0 :
-                                neumann[i] == 1   ? 1 :
-                                robin[i] == 1     ? 2 :
-                                                    -1;
-          const bool match = node_kind == kind;
+          const int  node_kind = dirichlet[i] == 1 ? 0 :
+                                 neumann[i] == 1   ? 1 :
+                                 robin[i] == 1     ? 2 :
+                                                     -1;
+          const bool match     = node_kind == kind;
           if (match || !matched[i])
             {
               slot[i]    = cell_slot;
@@ -716,9 +715,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       potential_pieces.push_back(&get_potential(current_component, slot));
       wind_pieces.push_back(&get_wind(current_component, slot));
     }
-  const CellwiseFunction<dim> potential(potential_pieces,
+  const CellwiseFunction<dim>     potential(potential_pieces,
                                         comp_dom.manifold2bcondition_slot_map);
-  const CellwiseFunction<dim> wind(wind_pieces,
+  const CellwiseFunction<dim>     wind(wind_pieces,
                                    comp_dom.manifold2bcondition_slot_map);
   const std::vector<unsigned int> slots = dof_slots();
   // The slots of the cells, for the errors integrated by VectorTools: one
@@ -728,9 +727,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     {
       const auto found =
         comp_dom.manifold2bcondition_slot_map.find(cell->manifold_id());
-      cell_slots.insert(
-        found == comp_dom.manifold2bcondition_slot_map.end() ? 0 :
-                                                               found->second);
+      cell_slots.insert(found == comp_dom.manifold2bcondition_slot_map.end() ?
+                          0 :
+                          found->second);
     }
 
   // The mixed solver has its own block operator and row residuals. The
@@ -743,8 +742,10 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       for (const auto i : bem.this_cpu_set)
         if (bem.dirichlet_nodes[i] > 0.5)
           ++locally_dirichlet;
-      mixed_galerkin_problem = mixed_galerkin_problem ||
-        Utilities::MPI::sum(locally_dirichlet, mpi_communicator) != bem.dh.n_dofs();
+      mixed_galerkin_problem =
+        mixed_galerkin_problem ||
+        Utilities::MPI::sum(locally_dirichlet, mpi_communicator) !=
+          bem.dh.n_dofs();
     }
   // A complex problem solves its block system: the residuals of the
   // operator below do not apply to it either.
@@ -767,30 +768,29 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     bem.compute_gradients(phi, dphi_dn);
   Vector<double> localized_gradient_solution(
     bem.get_vector_gradients_solution()); // vector_gradients_solution
-  Vector<double> localized_phi(phi);
-  Vector<double> localized_dphi_dn(dphi_dn);
-  Vector<double> localised_normals(bem.vector_normals_solution);
+  Vector<double>          localized_phi(phi);
+  Vector<double>          localized_dphi_dn(dphi_dn);
+  Vector<double>          localised_normals(bem.vector_normals_solution);
   std::vector<Point<dim>> support_points(bem.dh.n_dofs());
   DoFTools::map_dofs_to_support_points<dim - 1, dim>(*bem.mapping,
                                                      bem.dh,
                                                      support_points);
 
   std::vector<Vector<double>> exact_gradient_values(bem.dh.n_dofs(),
-                                                     Vector<double>(dim));
+                                                    Vector<double>(dim));
   for (types::global_dof_index i = 0; i < bem.dh.n_dofs(); ++i)
     get_wind(current_component, slots[i])
       .vector_value(support_points[i], exact_gradient_values[i]);
   Vector<double> exact_dphi_dn(bem.dh.n_dofs());
-  for (types::global_dof_index scalar_i = 0;
-       scalar_i < bem.dh.n_dofs();
+  for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs();
        ++scalar_i)
     {
       const types::global_dof_index original_i =
         bem.sub_wise_to_original[scalar_i];
       for (unsigned int d = 0; d < dim; ++d)
         exact_dphi_dn[scalar_i] +=
-          localised_normals
-            [bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() + original_i]] *
+          localised_normals[bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() +
+                                                         original_i]] *
           exact_gradient_values[scalar_i][d];
     }
 
@@ -807,7 +807,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         ExactGeometry::make_mapping_hanging_node_constraints(
           *bem.mapping, bem.dh, hanging_node_constraints);
       else
-        DoFTools::make_hanging_node_constraints(bem.dh, hanging_node_constraints);
+        DoFTools::make_hanging_node_constraints(bem.dh,
+                                                hanging_node_constraints);
       hanging_node_constraints.close();
       DynamicSparsityPattern dsp(bem.dh.n_dofs());
       DoFTools::make_sparsity_pattern(bem.dh,
@@ -821,25 +822,25 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
       const QGauss<dim - 1> projection_quadrature(
         std::max(8U, 2U * (2U * bem.fe->degree + 3U)));
-      FEValues<dim - 1, dim> projection_values(
-        *bem.mapping,
-        *bem.fe,
-        projection_quadrature,
-        update_values | update_quadrature_points |
-          update_normal_vectors | update_JxW_values);
+      FEValues<dim - 1, dim>      projection_values(*bem.mapping,
+                                               *bem.fe,
+                                               projection_quadrature,
+                                               update_values |
+                                                 update_quadrature_points |
+                                                 update_normal_vectors |
+                                                 update_JxW_values);
       std::vector<Vector<double>> exact_gradient_at_quadrature(
         projection_quadrature.size(), Vector<double>(dim));
-      std::vector<types::global_dof_index> cell_indices(
-        bem.fe->dofs_per_cell);
-      FullMatrix<double> local_mass(bem.fe->dofs_per_cell,
+      std::vector<types::global_dof_index> cell_indices(bem.fe->dofs_per_cell);
+      FullMatrix<double>                   local_mass(bem.fe->dofs_per_cell,
                                     bem.fe->dofs_per_cell);
-      Vector<double>     local_rhs(bem.fe->dofs_per_cell);
+      Vector<double>                       local_rhs(bem.fe->dofs_per_cell);
       for (const auto &cell : bem.dh.active_cell_iterators())
         {
           projection_values.reinit(cell);
-          on_cell(wind, cell).vector_value_list(
-            projection_values.get_quadrature_points(),
-            exact_gradient_at_quadrature);
+          on_cell(wind, cell)
+            .vector_value_list(projection_values.get_quadrature_points(),
+                               exact_gradient_at_quadrature);
           local_mass = 0.0;
           local_rhs  = 0.0;
           for (unsigned int q = 0; q < projection_quadrature.size(); ++q)
@@ -853,19 +854,18 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                   local_rhs[i] += projection_values.shape_value(i, q) *
                                   normal_trace * projection_values.JxW(q);
                   for (unsigned int j = 0; j < bem.fe->dofs_per_cell; ++j)
-                    local_mass(i, j) +=
-                      projection_values.shape_value(i, q) *
-                      projection_values.shape_value(j, q) *
-                      projection_values.JxW(q);
+                    local_mass(i, j) += projection_values.shape_value(i, q) *
+                                        projection_values.shape_value(j, q) *
+                                        projection_values.JxW(q);
                 }
             }
           cell->get_dof_indices(cell_indices);
           hanging_node_constraints.distribute_local_to_global(
             local_mass, local_rhs, cell_indices, mass, projection_rhs);
         }
-      SolverControl projection_control(10 * bem.dh.n_dofs(),
+      SolverControl            projection_control(10 * bem.dh.n_dofs(),
                                        1e-14 * projection_rhs.l2_norm());
-      SolverCG<Vector<double>>          projection_solver(projection_control);
+      SolverCG<Vector<double>> projection_solver(projection_control);
       PreconditionSSOR<SparseMatrix<double>> projection_preconditioner;
       projection_preconditioner.initialize(mass, 1.2);
       projection_solver.solve(mass,
@@ -880,25 +880,25 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     {
       const QGauss<dim - 1> projection_quadrature(
         std::max(8U, 2U * (2U * bem.fe->degree + 3U)));
-      FEValues<dim - 1, dim> projection_values(
-        *bem.mapping,
-        *bem.fe,
-        projection_quadrature,
-        update_values | update_quadrature_points |
-          update_normal_vectors | update_JxW_values);
+      FEValues<dim - 1, dim>      projection_values(*bem.mapping,
+                                               *bem.fe,
+                                               projection_quadrature,
+                                               update_values |
+                                                 update_quadrature_points |
+                                                 update_normal_vectors |
+                                                 update_JxW_values);
       std::vector<Vector<double>> exact_gradient_at_quadrature(
         projection_quadrature.size(), Vector<double>(dim));
-      std::vector<types::global_dof_index> cell_indices(
-        bem.fe->dofs_per_cell);
+      std::vector<types::global_dof_index> cell_indices(bem.fe->dofs_per_cell);
       for (const auto &cell : bem.dh.active_cell_iterators())
         {
           projection_values.reinit(cell);
-          on_cell(wind, cell).vector_value_list(
-            projection_values.get_quadrature_points(),
-            exact_gradient_at_quadrature);
+          on_cell(wind, cell)
+            .vector_value_list(projection_values.get_quadrature_points(),
+                               exact_gradient_at_quadrature);
           FullMatrix<double> local_mass(bem.fe->dofs_per_cell,
                                         bem.fe->dofs_per_cell);
-          Vector<double> local_rhs(bem.fe->dofs_per_cell);
+          Vector<double>     local_rhs(bem.fe->dofs_per_cell);
           for (unsigned int q = 0; q < projection_quadrature.size(); ++q)
             {
               double normal_trace = 0.0;
@@ -910,10 +910,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                   local_rhs[i] += projection_values.shape_value(i, q) *
                                   normal_trace * projection_values.JxW(q);
                   for (unsigned int j = 0; j < bem.fe->dofs_per_cell; ++j)
-                    local_mass(i, j) +=
-                      projection_values.shape_value(i, q) *
-                      projection_values.shape_value(j, q) *
-                      projection_values.JxW(q);
+                    local_mass(i, j) += projection_values.shape_value(i, q) *
+                                        projection_values.shape_value(j, q) *
+                                        projection_values.JxW(q);
                 }
             }
           FullMatrix<double> inverse_mass(local_mass);
@@ -922,16 +921,14 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
           inverse_mass.vmult(local_projection, local_rhs);
           cell->get_dof_indices(cell_indices);
           for (unsigned int i = 0; i < bem.fe->dofs_per_cell; ++i)
-            l2_projected_exact_dphi_dn[cell_indices[i]] =
-              local_projection[i];
+            l2_projected_exact_dphi_dn[cell_indices[i]] = local_projection[i];
         }
     }
 
   TrilinosWrappers::MPI::Vector parallel_exact_dphi_dn(bem.this_cpu_set,
-                                                        mpi_communicator);
-  const bool exact_residual_uses_l2_projection =
-    bem.boundary_integral_formulation == "galerkin" &&
-    has_l2_projection;
+                                                       mpi_communicator);
+  const bool                    exact_residual_uses_l2_projection =
+    bem.boundary_integral_formulation == "galerkin" && has_l2_projection;
   if (exact_residual_uses_l2_projection)
     for (const auto i : bem.this_cpu_set)
       parallel_exact_dphi_dn[i] = l2_projected_exact_dphi_dn[i];
@@ -941,7 +938,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
   parallel_exact_dphi_dn.compress(VectorOperation::insert);
 
   TrilinosWrappers::MPI::Vector exact_residual(bem.this_cpu_set,
-                                                mpi_communicator);
+                                               mpi_communicator);
   ConstrainedOperator<TrilinosWrappers::MPI::Vector, BEMProblem<dim>>
     constrained_operator(bem,
                          bem.constraints,
@@ -963,7 +960,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     for (unsigned int d = 0; d < dim; ++d)
       {
         TrilinosWrappers::MPI::Vector coordinate(bem.this_cpu_set,
-                                                  mpi_communicator);
+                                                 mpi_communicator);
         TrilinosWrappers::MPI::Vector normal_component(bem.this_cpu_set,
                                                        mpi_communicator);
         for (const auto i : bem.this_cpu_set)
@@ -971,17 +968,16 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
             coordinate[i] = support_points[i][d];
             const types::global_dof_index original_i =
               bem.sub_wise_to_original[i];
-            normal_component[i] =
-              localised_normals[bem.vec_original_to_sub_wise
-                                  [d * bem.dh.n_dofs() + original_i]];
+            normal_component[i] = localised_normals
+              [bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() + original_i]];
           }
         coordinate.compress(VectorOperation::insert);
         normal_component.compress(VectorOperation::insert);
 
         TrilinosWrappers::MPI::Vector patch_residual(bem.this_cpu_set,
-                                                      mpi_communicator);
+                                                     mpi_communicator);
         TrilinosWrappers::MPI::Vector patch_rhs(bem.this_cpu_set,
-                                                 mpi_communicator);
+                                                mpi_communicator);
         TrilinosWrappers::MPI::Vector jump_coordinate(coordinate);
         bem.apply_single_layer(patch_residual, normal_component);
         bem.neumann_matrix.vmult(patch_rhs, coordinate);
@@ -1004,8 +1000,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
   double algebraic_energy_square = 0.0;
   // The mixed Galerkin problem frees the single-layer matrix of the
   // Dirichlet path.
-  const bool has_algebraic_energy_distance = !own_system &&
-    exact_residual_uses_l2_projection && bem.dirichlet_matrix.m() > 0;
+  const bool has_algebraic_energy_distance =
+    !own_system && exact_residual_uses_l2_projection &&
+    bem.dirichlet_matrix.m() > 0;
   if (has_algebraic_energy_distance)
     {
       // The energy distance between the Galerkin solution and the best L2
@@ -1073,15 +1070,14 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         {
           Vector<double> slot_difference(comp_dom.tria.n_active_cells()),
             slot_grad_difference(comp_dom.tria.n_active_cells());
-          VectorTools::integrate_difference(*bem.mapping,
-                                            bem.dh,
-                                            localized_phi,
-                                            get_potential(current_component,
-                                                          slot),
-                                            slot_difference,
-                                            QGauss<(dim - 1)>(
-                                              2 * (2 * bem.fe->degree + 1)),
-                                            VectorTools::L2_norm);
+          VectorTools::integrate_difference(
+            *bem.mapping,
+            bem.dh,
+            localized_phi,
+            get_potential(current_component, slot),
+            slot_difference,
+            QGauss<(dim - 1)>(2 * (2 * bem.fe->degree + 1)),
+            VectorTools::L2_norm);
           VectorTools::integrate_difference(*bem.mapping,
                                             bem.gradient_dh,
                                             localized_gradient_solution,
@@ -1106,16 +1102,14 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
 
       Vector<double> vector_gradients_node_error(bem.gradient_dh.n_dofs());
-      for (types::global_dof_index scalar_i = 0;
-           scalar_i < bem.dh.n_dofs();
+      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs();
            ++scalar_i)
         {
           const types::global_dof_index original_i =
             bem.sub_wise_to_original[scalar_i];
           for (types::global_dof_index d = 0; d < dim; ++d)
             vector_gradients_node_error(
-              bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() +
-                                           original_i]) =
+              bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() + original_i]) =
               exact_gradient_values[scalar_i](d);
         }
       vector_gradients_node_error *= -1.0;
@@ -1126,8 +1120,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       for (types::global_dof_index i = 0; i < bem.dh.n_dofs(); ++i)
         phi_nodes_errs[i] =
           get_potential(current_component, slots[i]).value(support_points[i]);
-      for (types::global_dof_index scalar_i = 0;
-           scalar_i < bem.dh.n_dofs();
+      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs();
            ++scalar_i)
         phi_node_error[scalar_i] = phi_nodes_errs[scalar_i];
 
@@ -1135,14 +1128,13 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       phi_node_error.add(1., localized_phi);
       const double phi_node_Linf_error = phi_node_error.linfty_norm();
 
-      Vector<double>              dphi_dn_node_error(bem.dh.n_dofs());
+      Vector<double> dphi_dn_node_error(bem.dh.n_dofs());
       dphi_dn_node_error = exact_dphi_dn;
       dphi_dn_node_error *= -1.0;
       dphi_dn_node_error.add(1., localized_dphi_dn);
 
       Vector<double> recovered_dphi_dn(bem.dh.n_dofs());
-      for (types::global_dof_index original_i = 0;
-           original_i < bem.dh.n_dofs();
+      for (types::global_dof_index original_i = 0; original_i < bem.dh.n_dofs();
            ++original_i)
         {
           const types::global_dof_index scalar_i =
@@ -1161,16 +1153,15 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
       // Separate the BEM error from the error introduced by interpolating the
       // analytical normal trace in the scalar finite element space.
-      const QGauss<dim - 1> dphi_dn_error_quadrature(
-        2 * (2 * bem.fe->degree + 1));
+      const QGauss<dim - 1>  dphi_dn_error_quadrature(2 *
+                                                     (2 * bem.fe->degree + 1));
       FEValues<dim - 1, dim> dphi_dn_error_fe_values(
         *bem.mapping,
         *bem.fe,
         dphi_dn_error_quadrature,
         update_values | update_quadrature_points | update_normal_vectors |
           update_JxW_values);
-      std::vector<double> numerical_dphi_dn(
-        dphi_dn_error_quadrature.size());
+      std::vector<double> numerical_dphi_dn(dphi_dn_error_quadrature.size());
       std::vector<double> interpolated_exact_dphi_dn(
         dphi_dn_error_quadrature.size());
       std::vector<double> projected_exact_dphi_dn(
@@ -1191,15 +1182,15 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         {
           dphi_dn_error_fe_values.reinit(cell);
           dphi_dn_error_fe_values.get_function_values(localized_dphi_dn,
-                                                       numerical_dphi_dn);
+                                                      numerical_dphi_dn);
           dphi_dn_error_fe_values.get_function_values(
             exact_dphi_dn, interpolated_exact_dphi_dn);
           if (has_l2_projection)
             dphi_dn_error_fe_values.get_function_values(
               l2_projected_exact_dphi_dn, projected_exact_dphi_dn);
-          on_cell(wind, cell).vector_value_list(
-            dphi_dn_error_fe_values.get_quadrature_points(),
-            exact_gradient_at_quadrature);
+          on_cell(wind, cell)
+            .vector_value_list(dphi_dn_error_fe_values.get_quadrature_points(),
+                               exact_gradient_at_quadrature);
 
           double cell_true_error_squared          = 0.0;
           double cell_interpolation_error_squared = 0.0;
@@ -1248,8 +1239,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         std::sqrt(true_dphi_dn_error_squared);
       const double dphi_dn_interpolation_L2_error =
         std::sqrt(dphi_dn_interpolation_error_squared);
-      const double projection_L2_error =
-        std::sqrt(projection_error_squared);
+      const double projection_L2_error = std::sqrt(projection_error_squared);
       const double exact_dphi_dn_L2_norm =
         std::sqrt(exact_dphi_dn_norm_squared);
       const double relative_true_dphi_dn_L2_error =
@@ -1262,9 +1252,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         if (std::abs(dphi_dn_node_error[i]) >
             std::abs(dphi_dn_node_error[max_dphi_error_index]))
           max_dphi_error_index = i;
-      const double max_dphi_exact =
-        localized_dphi_dn[max_dphi_error_index] -
-        dphi_dn_node_error[max_dphi_error_index];
+      const double max_dphi_exact = localized_dphi_dn[max_dphi_error_index] -
+                                    dphi_dn_node_error[max_dphi_error_index];
 
       // dphi_dn_node_error.print(std::cout);
       Vector<double> difference_per_cell_2(comp_dom.tria.n_active_cells());
@@ -1276,7 +1265,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         difference_per_cell_2,
         QGauss<(dim - 1)>(2 * (2 * bem.fe->degree + 1)),
         VectorTools::L2_norm);
-      const double dphi_dn_L2_error = difference_per_cell_2.l2_norm();
+      const double   dphi_dn_L2_error = difference_per_cell_2.l2_norm();
       Vector<double> recovered_difference_per_cell(
         comp_dom.tria.n_active_cells());
       VectorTools::integrate_difference(
@@ -1292,19 +1281,22 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
       const double grad_phi_max_error =
         vector_gradients_node_error.linfty_norm();
-      types::global_dof_index gradient_max_node = 0;
-      unsigned int gradient_max_component = 0;
-      double gradient_max_value = -1.;
-      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs(); ++scalar_i)
+      types::global_dof_index gradient_max_node      = 0;
+      unsigned int            gradient_max_component = 0;
+      double                  gradient_max_value     = -1.;
+      for (types::global_dof_index scalar_i = 0; scalar_i < bem.dh.n_dofs();
+           ++scalar_i)
         for (unsigned int d = 0; d < dim; ++d)
           {
             const auto original_i = bem.sub_wise_to_original[scalar_i];
-            const auto vector_i = bem.vec_original_to_sub_wise[
-              d * bem.dh.n_dofs() + original_i];
-            if (std::abs(vector_gradients_node_error[vector_i]) > gradient_max_value)
+            const auto vector_i =
+              bem.vec_original_to_sub_wise[d * bem.dh.n_dofs() + original_i];
+            if (std::abs(vector_gradients_node_error[vector_i]) >
+                gradient_max_value)
               {
-                gradient_max_value = std::abs(vector_gradients_node_error[vector_i]);
-                gradient_max_node = scalar_i;
+                gradient_max_value =
+                  std::abs(vector_gradients_node_error[vector_i]);
+                gradient_max_node      = scalar_i;
                 gradient_max_component = d;
               }
           }
@@ -1312,8 +1304,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         comp_dom.tria.n_active_cells();
       const types::global_dof_index n_dofs = bem.dh.n_dofs();
 
-      unsigned int max_phi_cell_index = 0;
-      unsigned int max_dphi_cell_index = 0;
+      unsigned int max_phi_cell_index       = 0;
+      unsigned int max_dphi_cell_index      = 0;
       unsigned int max_true_dphi_cell_index = 0;
       for (unsigned int cell_index = 1;
            cell_index < comp_dom.tria.n_active_cells();
@@ -1333,10 +1325,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       Point<dim>   max_phi_cell_center;
       Point<dim>   max_dphi_cell_center;
       Point<dim>   max_true_dphi_cell_center;
-      unsigned int max_phi_material_id  = numbers::invalid_unsigned_int;
-      unsigned int max_dphi_material_id = numbers::invalid_unsigned_int;
-      unsigned int max_true_dphi_material_id =
-        numbers::invalid_unsigned_int;
+      unsigned int max_phi_material_id       = numbers::invalid_unsigned_int;
+      unsigned int max_dphi_material_id      = numbers::invalid_unsigned_int;
+      unsigned int max_true_dphi_material_id = numbers::invalid_unsigned_int;
       for (const auto &cell : comp_dom.tria.active_cell_iterators())
         {
           if (cell->active_cell_index() == max_phi_cell_index)
@@ -1374,26 +1365,26 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       pcout << "dPhidN Nodes error L_inf norm: "
             << dphi_dn_node_error.linfty_norm() << std::endl;
       pcout << "dPhidN Nodes error L_2 norm: " << dphi_dn_L2_error << std::endl;
-      pcout << "dPhidN true quadrature L_2 norm: "
-            << true_dphi_dn_L2_error << std::endl;
+      pcout << "dPhidN true quadrature L_2 norm: " << true_dphi_dn_L2_error
+            << std::endl;
       pcout << "dPhidN true relative L_2 error: "
             << relative_true_dphi_dn_L2_error << std::endl;
       pcout << "Exact nodal-normal dPhidN interpolation L_2 norm: "
             << dphi_dn_interpolation_L2_error << std::endl;
       if (has_algebraic_energy_distance)
         pcout << "dPhidN algebraic energy distance to best projection: "
-              << std::sqrt(std::max(algebraic_energy_square, 0.0))
-              << " (raw " << algebraic_energy_square << ")" << std::endl;
+              << std::sqrt(std::max(algebraic_energy_square, 0.0)) << " (raw "
+              << algebraic_energy_square << ")" << std::endl;
       if (bem.compute_energy_norm)
-        pcout << "dPhidN energy norm error: " << energy_norm_error
-              << std::endl;
+        pcout << "dPhidN energy norm error: " << energy_norm_error << std::endl;
       if (has_l2_projection)
         {
-          const std::string projection_name =
-            has_cellwise_l2_projection ? "Best cellwise FE_DGQ" :
-                                         "Best global FE_Q";
-          pcout << projection_name << " dPhidN projection L_2 norm: "
-                << projection_L2_error << std::endl;
+          const std::string projection_name = has_cellwise_l2_projection ?
+                                                "Best cellwise FE_DGQ" :
+                                                "Best global FE_Q";
+          pcout << projection_name
+                << " dPhidN projection L_2 norm: " << projection_L2_error
+                << std::endl;
           pcout << projection_name << " dPhidN relative projection error: "
                 << (exact_dphi_dn_L2_norm > 0.0 ?
                       projection_L2_error / exact_dphi_dn_L2_norm :
@@ -1425,8 +1416,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
           pcout << "Exact dPhidN relative discrete residual: "
                 << relative_exact_residual << std::endl;
           if (exact_residual_uses_l2_projection)
-            pcout << "  (using the L2 projection of grad(phi).n)"
-                  << std::endl;
+            pcout << "  (using the L2 projection of grad(phi).n)" << std::endl;
         }
       else
         pcout << "Dirichlet-only residual diagnostics: not applicable to the "
@@ -1442,13 +1432,12 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         }
       pcout << "Recovered dPhidN error L_inf norm: "
             << recovered_dphi_dn_error.linfty_norm() << std::endl;
-      pcout << "Recovered dPhidN error L_2 norm: "
-            << recovered_dphi_dn_L2_error << std::endl;
+      pcout << "Recovered dPhidN error L_2 norm: " << recovered_dphi_dn_L2_error
+            << std::endl;
       pcout << "dPhidN maximum error at dof " << max_dphi_error_index
             << ", point " << support_points[max_dphi_error_index]
             << ", numerical " << localized_dphi_dn[max_dphi_error_index]
-            << ", exact " << max_dphi_exact
-            << ", duplicates "
+            << ", exact " << max_dphi_exact << ", duplicates "
             << bem.double_nodes_set[max_dphi_error_index].size() << std::endl;
       // Split the gradient error along the surface normal and tangent to it,
       // in the same integral norm as the totals reported below. An earlier
@@ -1456,7 +1445,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       // mesh is refined even when the pointwise error does - the node count
       // grows at the same rate - and so made a converging quantity look flat.
       {
-        const QGauss<dim - 1> split_quadrature(2 * (2 * bem.fe->degree + 1));
+        const QGauss<dim - 1>  split_quadrature(2 * (2 * bem.fe->degree + 1));
         FEValues<dim - 1, dim> split_values(*bem.mapping,
                                             *bem.gradient_fe,
                                             split_quadrature,
@@ -1465,14 +1454,14 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                                               update_quadrature_points |
                                               update_JxW_values);
         const FEValuesExtractors::Vector all(0);
-        std::vector<Tensor<1, dim>> recovered(split_quadrature.size());
-        Vector<double>              exact(dim);
+        std::vector<Tensor<1, dim>>      recovered(split_quadrature.size());
+        Vector<double>                   exact(dim);
         double normal_square = 0.0, tangential_square = 0.0;
         double normal_max = 0.0, tangential_max = 0.0;
         // The same split on each part of the boundary, by material id, and
         // where the normal error is largest.
         std::map<types::material_id, std::array<double, 2>> material_square;
-        Point<dim> normal_max_point;
+        Point<dim>                                          normal_max_point;
         // This block runs on rank 0 only, so it must not reduce across the
         // communicator: the triangulation is shared, so rank 0 simply visits
         // every cell itself.
@@ -1483,8 +1472,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                                                   recovered);
             for (unsigned int q = 0; q < split_quadrature.size(); ++q)
               {
-                on_cell(wind, cell).vector_value(
-                  split_values.quadrature_point(q), exact);
+                on_cell(wind, cell)
+                  .vector_value(split_values.quadrature_point(q), exact);
                 Tensor<1, dim> error = recovered[q];
                 for (unsigned int d = 0; d < dim; ++d)
                   error[d] -= exact(d);
@@ -1503,7 +1492,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                   across.norm_square() * split_values.JxW(q);
                 if (std::abs(along) > normal_max)
                   normal_max_point = split_values.quadrature_point(q);
-                normal_max = std::max(normal_max, std::abs(along));
+                normal_max     = std::max(normal_max, std::abs(along));
                 tangential_max = std::max(tangential_max, across.norm());
               }
           }
@@ -1529,7 +1518,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       // a cell cancels between the two parts of the gradient.
       if (bem.gradient_normal_from_flux)
         {
-          const QGauss<dim - 1> split_quadrature(2 * (2 * bem.fe->degree + 1));
+          const QGauss<dim - 1>  split_quadrature(2 * (2 * bem.fe->degree + 1));
           FEValues<dim - 1, dim> vector_values(*bem.mapping,
                                                *bem.gradient_fe,
                                                split_quadrature,
@@ -1542,9 +1531,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                                                 split_quadrature,
                                                 update_values);
           const FEValuesExtractors::Vector all(0);
-          std::vector<Tensor<1, dim>> projected(split_quadrature.size());
-          std::vector<double>         flux(split_quadrature.size());
-          Vector<double>              exact(dim);
+          std::vector<Tensor<1, dim>>      projected(split_quadrature.size());
+          std::vector<double>              flux(split_quadrature.size());
+          Vector<double>                   exact(dim);
           double normal_square = 0.0, tangential_square = 0.0;
           std::map<types::material_id, std::array<double, 2>> material_square;
           auto vector_cell = bem.gradient_dh.begin_active();
@@ -1557,8 +1546,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
               flux_fe_values.get_function_values(localized_dphi_dn, flux);
               for (unsigned int q = 0; q < split_quadrature.size(); ++q)
                 {
-                  on_cell(wind, cell).vector_value(
-                    vector_values.quadrature_point(q), exact);
+                  on_cell(wind, cell)
+                    .vector_value(vector_values.quadrature_point(q), exact);
                   Tensor<1, dim> normal = vector_values.normal_vector(q);
                   normal /= normal.norm();
                   Tensor<1, dim> error = projected[q] -
@@ -1639,16 +1628,15 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       // A short account of the run, after the detail. Everything above is
       // either optional or a breakdown of these few numbers.
       pcout << "----- summary -----" << std::endl;
-      pcout << "  mesh              " << n_active_cells << " cells, "
-            << n_dofs << " dofs, " << bem.fe->get_name() << std::endl;
+      pcout << "  mesh              " << n_active_cells << " cells, " << n_dofs
+            << " dofs, " << bem.fe->get_name() << std::endl;
       if (mixed_galerkin_problem)
         pcout << "  scope             all-surface postprocessing; unknown "
                  "flux on D and prescribed Neumann data on N. Mixed solve "
                  "errors and row residuals are printed above"
               << std::endl;
-      pcout << "  dPhidN L2 error   " << true_dphi_dn_L2_error
-            << "  (relative " << relative_true_dphi_dn_L2_error << ")"
-            << std::endl;
+      pcout << "  dPhidN L2 error   " << true_dphi_dn_L2_error << "  (relative "
+            << relative_true_dphi_dn_L2_error << ")" << std::endl;
       if (has_l2_projection)
         pcout << "  best L2 projection " << projection_L2_error
               << (mixed_galerkin_problem ? "  (all-surface / best " :

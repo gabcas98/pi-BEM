@@ -1,25 +1,27 @@
 #ifndef GALERKIN_PANEL_PAIR_INTEGRATOR_H
 #define GALERKIN_PANEL_PAIR_INTEGRATOR_H
 
+#include <deal.II/base/function.h>
 #include <deal.II/base/quadrature_lib.h>
-#include "cellwise_function.h"
+
 #include <deal.II/dofs/dof_handler.h>
 
-#include <functional>
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_values.h>
-
-#include <chrono>
-#include <map>
-#include <memory>
-#include <set>
 #include <deal.II/fe/mapping.h>
-#include <deal.II/base/function.h>
 
-#include "projected_mapping.h"
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/vector.h>
+
+#include <chrono>
+#include <functional>
+#include <map>
+#include <memory>
+#include <set>
+
+#include "cellwise_function.h"
+#include "projected_mapping.h"
 
 using namespace dealii;
 
@@ -67,12 +69,12 @@ public:
   GalerkinPanelPairIntegrator(
     const Mapping<spacedim - 1, spacedim>       &mapping,
     const FiniteElement<spacedim - 1, spacedim> &finite_element,
-    const GalerkinSingularQuadrature singular_quadrature =
+    const GalerkinSingularQuadrature             singular_quadrature =
       GalerkinSingularQuadrature::sauter_schwab,
-    const unsigned int singular_order = 0,
-    const unsigned int duffy_outer_subdivisions = 4,
-    const double near_singular_distance_ratio = 0.0,
-    const unsigned int near_singular_maximum_depth = 0,
+    const unsigned int singular_order                 = 0,
+    const unsigned int duffy_outer_subdivisions       = 4,
+    const double       near_singular_distance_ratio   = 0.0,
+    const unsigned int near_singular_maximum_depth    = 0,
     const unsigned int near_singular_quadrature_order = 0);
 
   /** Allow the far field to use a lower quadrature order where the panels are
@@ -108,9 +110,9 @@ public:
    */
   void
   set_material_singular_order(const std::set<types::material_id> &ids,
-                              const unsigned int order)
+                              const unsigned int                  order)
   {
-    singular_material_ids = ids;
+    singular_material_ids   = ids;
     material_singular_order = order;
   }
 
@@ -280,33 +282,33 @@ public:
   /// number of evaluations of the trial function and the seconds they took.
   struct RhsProfile
   {
-    double             far_seconds       = 0.0;
-    double             near_seconds      = 0.0;
-    double             function_seconds  = 0.0;
-    unsigned long long function_calls    = 0;
+    double             far_seconds      = 0.0;
+    double             near_seconds     = 0.0;
+    double             function_seconds = 0.0;
+    unsigned long long function_calls   = 0;
     /// Rule construction (pair quadrature and FEValues) for the pairs that
     /// miss the cache, and how many they were.
-    double             setup_seconds     = 0.0;
-    unsigned long long uncached_pairs    = 0;
+    double             setup_seconds  = 0.0;
+    unsigned long long uncached_pairs = 0;
     /// Everything spent in integrate_pairs, the kernel loops.
-    double             kernel_seconds    = 0.0;
+    double kernel_seconds = 0.0;
     /// On the direct path: leaves integrated with a singular rule and with a
     /// tensor rule, the seconds each took, and the pair points of the former.
-    unsigned long long singular_leaves   = 0;
-    double             singular_seconds  = 0.0;
-    unsigned long long singular_points   = 0;
-    unsigned long long regular_leaves    = 0;
-    double             regular_seconds   = 0.0;
+    unsigned long long singular_leaves  = 0;
+    double             singular_seconds = 0.0;
+    unsigned long long singular_points  = 0;
+    unsigned long long regular_leaves   = 0;
+    double             regular_seconds  = 0.0;
     /// On the direct path: points at which the cell geometry was evaluated,
     /// the seconds it took, and the seconds spent on the shape values.
-    unsigned long long geometry_points   = 0;
-    double             geometry_seconds  = 0.0;
-    double             shape_seconds     = 0.0;
+    unsigned long long geometry_points  = 0;
+    double             geometry_seconds = 0.0;
+    double             shape_seconds    = 0.0;
     /// Parts of the kernel loops of the joint operators on paired rules:
     /// the kernel weights, the surface curls and the sums.
-    double             kernel_weight_seconds = 0.0;
-    double             kernel_curl_seconds   = 0.0;
-    double             kernel_sum_seconds    = 0.0;
+    double kernel_weight_seconds = 0.0;
+    double kernel_curl_seconds   = 0.0;
+    double kernel_sum_seconds    = 0.0;
     /// Singular leaves on patches with the shapes of their kept rule
     /// (LightLeaf::transformed), and those of a panel with itself on half
     /// the rule (LightLeaf::half).
@@ -351,8 +353,7 @@ public:
   }
 
   GalerkinPanelPairType
-  classify(const CellIterator &test_cell,
-           const CellIterator &trial_cell) const;
+  classify(const CellIterator &test_cell, const CellIterator &trial_cell) const;
 
   /** Contribution of one panel pair to the squared energy norm of the flux
    * error, that is to the double integral of the single-layer kernel against
@@ -413,9 +414,9 @@ public:
                          const unsigned int  order) const;
 
   Vector<double>
-  integrate_double_layer(const CellIterator      &test_cell,
-                         const CellIterator      &trial_cell,
-                         const unsigned int       order,
+  integrate_double_layer(const CellIterator       &test_cell,
+                         const CellIterator       &trial_cell,
+                         const unsigned int        order,
                          const Function<spacedim> &trial_function,
                          const bool regularize_trial_function = false) const;
 
@@ -437,11 +438,11 @@ public:
   void
   assemble_single_layer_flux_rhs(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    VectorType                                &rhs,
-    const unsigned int                         order,
-    const Function<spacedim>                  &gradient,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    VectorType                               &rhs,
+    const unsigned int                        order,
+    const Function<spacedim>                 &gradient,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id) const;
 
   /** Contribution of one panel pair to <K' lambda, phi_i>, with the kernel
@@ -461,10 +462,10 @@ public:
                                       const Function<spacedim> &gradient) const;
 
   Vector<double>
-  integrate_hypersingular_rhs(const CellIterator &test_cell,
-                             const CellIterator &trial_cell,
-                             unsigned int order,
-                             const Function<spacedim> &gradient) const;
+  integrate_hypersingular_rhs(const CellIterator       &test_cell,
+                              const CellIterator       &trial_cell,
+                              unsigned int              order,
+                              const Function<spacedim> &gradient) const;
 
   /**
    * Assemble the weak single-layer operator. Constraints are applied to both
@@ -473,31 +474,29 @@ public:
    */
   template <typename MatrixType>
   void
-  assemble_single_layer(
-    const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
-      numbers::invalid_subdomain_id,
-    const types::material_id selected_test_material =
-      numbers::invalid_material_id,
-    const types::material_id selected_trial_material =
-      numbers::invalid_material_id) const;
+  assemble_single_layer(const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+                        const AffineConstraints<double>          &constraints,
+                        MatrixType                               &matrix,
+                        const unsigned int                        order,
+                        const types::subdomain_id locally_owned_subdomain =
+                          numbers::invalid_subdomain_id,
+                        const types::material_id selected_test_material =
+                          numbers::invalid_material_id,
+                        const types::material_id selected_trial_material =
+                          numbers::invalid_material_id) const;
 
   template <typename MatrixType>
   void
-  assemble_double_layer(
-    const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
-      numbers::invalid_subdomain_id,
-    const types::material_id selected_test_material =
-      numbers::invalid_material_id,
-    const types::material_id selected_trial_material =
-      numbers::invalid_material_id) const;
+  assemble_double_layer(const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+                        const AffineConstraints<double>          &constraints,
+                        MatrixType                               &matrix,
+                        const unsigned int                        order,
+                        const types::subdomain_id locally_owned_subdomain =
+                          numbers::invalid_subdomain_id,
+                        const types::material_id selected_test_material =
+                          numbers::invalid_material_id,
+                        const types::material_id selected_trial_material =
+                          numbers::invalid_material_id) const;
 
   /** Assemble the adjoint double-layer operator K' as the transpose weak
    * form of K. Test-cell ownership is retained, so this also works with
@@ -507,10 +506,10 @@ public:
   void
   assemble_adjoint_double_layer(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    MatrixType                               &matrix,
+    const unsigned int                        order,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id,
     const types::material_id selected_test_material =
       numbers::invalid_material_id,
@@ -521,16 +520,15 @@ public:
   void
   assemble_double_layer_rhs(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    VectorType                                &rhs,
-    const unsigned int                         order,
-    const Function<spacedim>                  &trial_function,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    VectorType                               &rhs,
+    const unsigned int                        order,
+    const Function<spacedim>                 &trial_function,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id,
-    const bool regularize_trial_function = false,
-    const std::vector<unsigned int> *trial_cell_components = nullptr,
-    const unsigned int selected_trial_component =
-      numbers::invalid_unsigned_int,
+    const bool                       regularize_trial_function = false,
+    const std::vector<unsigned int> *trial_cell_components     = nullptr,
+    const unsigned int selected_trial_component = numbers::invalid_unsigned_int,
     const types::material_id selected_test_material =
       numbers::invalid_material_id) const;
 
@@ -542,12 +540,11 @@ public:
    * quadrature rule, which the separate assemblies build twice.
    */
   FullMatrix<double>
-  integrate_single_and_double_layer(
-    const CellIterator       &test_cell,
-    const CellIterator       &trial_cell,
-    const unsigned int        order,
-    const Function<spacedim> &trial_function,
-    const bool                regularize_trial_function) const;
+  integrate_single_and_double_layer(const CellIterator       &test_cell,
+                                    const CellIterator       &trial_cell,
+                                    const unsigned int        order,
+                                    const Function<spacedim> &trial_function,
+                                    const bool regularize_trial_function) const;
 
   /** The pair integrated once for both orders of its cells: the result of
    * integrate_single_and_double_layer(), and in the column dofs_per_cell + 1
@@ -576,35 +573,34 @@ public:
   void
   assemble_single_layer_and_double_layer_rhs(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    VectorType                                &rhs,
-    const unsigned int                         order,
-    const Function<spacedim>                  &trial_function,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    MatrixType                               &matrix,
+    VectorType                               &rhs,
+    const unsigned int                        order,
+    const Function<spacedim>                 &trial_function,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id,
     const bool regularize_trial_function = false) const;
 
   template <typename MatrixType>
   void
-  assemble_mass_matrix(
-    const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
-      numbers::invalid_subdomain_id,
-    const types::material_id selected_material =
-      numbers::invalid_material_id) const;
+  assemble_mass_matrix(const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+                       const AffineConstraints<double>          &constraints,
+                       MatrixType                               &matrix,
+                       const unsigned int                        order,
+                       const types::subdomain_id locally_owned_subdomain =
+                         numbers::invalid_subdomain_id,
+                       const types::material_id selected_material =
+                         numbers::invalid_material_id) const;
 
   template <typename MatrixType>
   void
   assemble_weak_hypersingular(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &matrix,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    MatrixType                               &matrix,
+    const unsigned int                        order,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id,
     const types::material_id selected_test_material =
       numbers::invalid_material_id,
@@ -626,12 +622,12 @@ public:
   void
   assemble_single_double_hypersingular(
     const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-    const AffineConstraints<double>           &constraints,
-    MatrixType                                &single_layer,
-    MatrixType                                &double_layer,
-    MatrixType                                &hypersingular,
-    const unsigned int                         order,
-    const types::subdomain_id locally_owned_subdomain =
+    const AffineConstraints<double>          &constraints,
+    MatrixType                               &single_layer,
+    MatrixType                               &double_layer,
+    MatrixType                               &hypersingular,
+    const unsigned int                        order,
+    const types::subdomain_id                 locally_owned_subdomain =
       numbers::invalid_subdomain_id) const;
 
 private:
@@ -697,12 +693,12 @@ private:
    */
   struct EdgeContact
   {
-    bool         found = false;
+    bool found = false;
     /// Whether the test cell (true) or the trial cell holds the edge.
-    bool         test_contains = true;
+    bool test_contains = true;
     /// The face of the containing cell, and the reference coordinates along
     /// it, increasing, of the ends of the edge of the other cell.
-    unsigned int face = 0;
+    unsigned int face  = 0;
     double       begin = 0, end = 1;
   };
 
@@ -737,22 +733,22 @@ private:
            const ReferencePatch &trial_patch) const;
 
   FullMatrix<double>
-  integrate_operator(const CellIterator &test_cell,
-                     const CellIterator &trial_cell,
-                     const unsigned int  order,
-                     const OperatorType  operator_type,
+  integrate_operator(const CellIterator       &test_cell,
+                     const CellIterator       &trial_cell,
+                     const unsigned int        order,
+                     const OperatorType        operator_type,
                      const Function<spacedim> *trial_function = nullptr,
-                     const bool regularize_trial_function = false) const;
+                     const bool regularize_trial_function     = false) const;
 
   FullMatrix<double>
-  integrate(const CellIterator   &test_cell,
-            const ReferencePatch &test_patch,
-            const CellIterator   &trial_cell,
-            const ReferencePatch &trial_patch,
-            const unsigned int    order,
-            const OperatorType    operator_type,
-            const Function<spacedim> *trial_function = nullptr,
-            const bool regularize_trial_function = false) const;
+  integrate(const CellIterator       &test_cell,
+            const ReferencePatch     &test_patch,
+            const CellIterator       &trial_cell,
+            const ReferencePatch     &trial_patch,
+            const unsigned int        order,
+            const OperatorType        operator_type,
+            const Function<spacedim> *trial_function            = nullptr,
+            const bool                regularize_trial_function = false) const;
 
   /** Build the panel-pair quadrature: reference points on each cell and the
    * matching weights, already scaled by the patch jacobians. Shared by every
@@ -796,7 +792,7 @@ private:
                   std::vector<Point<2>> &test_reference_points,
                   std::vector<Point<2>> &trial_reference_points,
                   std::vector<std::array<unsigned int, 2>> &pair_indices,
-                  std::vector<double>   &pair_weights) const;
+                  std::vector<double>                      &pair_weights) const;
 
   void
   unit_pair_rule(const GalerkinPanelPairType      type,
@@ -861,8 +857,7 @@ private:
   // panels, not with their diameter, so these are what the balancing test
   // must look at.
   std::array<double, 2>
-  patch_extents(const CellIterator   &cell,
-                const ReferencePatch &patch) const;
+  patch_extents(const CellIterator &cell, const ReferencePatch &patch) const;
 
   // Halve a patch along one reference direction. Splitting only the long
   // direction keeps the recursion linear: at every level a single half still
@@ -872,14 +867,14 @@ private:
                         const unsigned int    direction) const;
 
   FullMatrix<double>
-  integrate_balanced_singular(const CellIterator   &test_cell,
-                              const ReferencePatch &test_patch,
-                              const CellIterator   &trial_cell,
-                              const ReferencePatch &trial_patch,
-                              const unsigned int    order,
-                              const OperatorType    operator_type,
+  integrate_balanced_singular(const CellIterator       &test_cell,
+                              const ReferencePatch     &test_patch,
+                              const CellIterator       &trial_cell,
+                              const ReferencePatch     &trial_patch,
+                              const unsigned int        order,
+                              const OperatorType        operator_type,
                               const Function<spacedim> *trial_function,
-                              const bool regularize_trial_function,
+                              const bool         regularize_trial_function,
                               const unsigned int depth) const;
 
   double
@@ -896,21 +891,21 @@ private:
   // A touching pair is integrated directly once neither panel is more than
   // this many times the other; the depth cap bounds the recursion for
   // pathological size ratios.
-  static constexpr double       singular_balance_ratio = 2.0;
+  static constexpr double singular_balance_ratio = 2.0;
   /// The largest ratio of the depths of the two patches of a folded pair
   /// from their common edge.
-  static constexpr double       folded_balance_ratio = 1.25;
+  static constexpr double       folded_balance_ratio           = 1.25;
   static constexpr unsigned int singular_balance_maximum_depth = 10;
 
   FullMatrix<double>
-  integrate_adaptive_regular(const CellIterator   &test_cell,
-                             const ReferencePatch &test_patch,
-                             const CellIterator   &trial_cell,
-                             const ReferencePatch &trial_patch,
-                             const unsigned int    order,
-                             const OperatorType    operator_type,
+  integrate_adaptive_regular(const CellIterator       &test_cell,
+                             const ReferencePatch     &test_patch,
+                             const CellIterator       &trial_cell,
+                             const ReferencePatch     &trial_patch,
+                             const unsigned int        order,
+                             const OperatorType        operator_type,
                              const Function<spacedim> *trial_function,
-                             const bool regularize_trial_function,
+                             const bool         regularize_trial_function,
                              const unsigned int depth) const;
 
   CrossLayerMatrices
@@ -929,16 +924,16 @@ private:
                                   const unsigned int    depth) const;
 
   Point<2>
-  orient_from_canonical_vertex(const Point<2>   &point,
+  orient_from_canonical_vertex(const Point<2>    &point,
                                const unsigned int local_vertex) const;
 
   Point<2>
-  orient_from_canonical_edge(const Point<2>   &point,
+  orient_from_canonical_edge(const Point<2>    &point,
                              const unsigned int first_local_vertex,
                              const unsigned int second_local_vertex) const;
 
   Point<2>
-  orient_to_canonical_edge(const Point<2>   &point,
+  orient_to_canonical_edge(const Point<2>    &point,
                            const unsigned int first_local_vertex,
                            const unsigned int second_local_vertex) const;
 
@@ -1010,17 +1005,17 @@ private:
     std::vector<double> test_unique_shapes, trial_unique_shapes;
     std::vector<double> test_unique_derivatives0, test_unique_derivatives1,
       trial_unique_derivatives0, trial_unique_derivatives1;
-    std::vector<double>   weights;
-    std::vector<double>   test_shapes;
-    std::vector<double>   trial_shapes;
+    std::vector<double> weights;
+    std::vector<double> test_shapes;
+    std::vector<double> trial_shapes;
     // The derivatives of the shape functions in the two reference
     // directions, laid out as the values.
-    std::vector<double>   test_derivatives0;
-    std::vector<double>   test_derivatives1;
-    std::vector<double>   trial_derivatives0;
-    std::vector<double>   trial_derivatives1;
+    std::vector<double> test_derivatives0;
+    std::vector<double> test_derivatives1;
+    std::vector<double> trial_derivatives0;
+    std::vector<double> trial_derivatives1;
     /// The last lookup, for the eviction of the rules of raised orders.
-    unsigned long long    last_use = 0;
+    unsigned long long last_use = 0;
 
     std::size_t
     memory_consumption() const;
@@ -1118,16 +1113,16 @@ private:
     void
     reset()
     {
-      tensor             = false;
-      test_shapes        = nullptr;
-      trial_shapes       = nullptr;
-      weights            = nullptr;
-      test_derivatives0  = nullptr;
-      test_derivatives1  = nullptr;
-      trial_derivatives0 = nullptr;
-      trial_derivatives1 = nullptr;
-      transformed        = false;
-      half               = false;
+      tensor                 = false;
+      test_shapes            = nullptr;
+      trial_shapes           = nullptr;
+      weights                = nullptr;
+      test_derivatives0      = nullptr;
+      test_derivatives1      = nullptr;
+      trial_derivatives0     = nullptr;
+      trial_derivatives1     = nullptr;
+      transformed            = false;
+      half                   = false;
       test_derivative_scale  = {{1., 1.}};
       trial_derivative_scale = {{1., 1.}};
       weight_scale           = 1.;
@@ -1148,7 +1143,7 @@ private:
   /// from the four blocks of the joint operators in both directions to the
   /// first n_columns of them).
   FullMatrix<double>
-  complete_light_leaf(const LightLeaf    &leaf,
+  complete_light_leaf(const LightLeaf     &leaf,
                       FullMatrix<double> &&result,
                       const unsigned int   n_columns) const;
 
@@ -1184,45 +1179,45 @@ private:
   // point with every trial point, with product weights, and is contracted
   // one index at a time; a singular rule pairs point q with point q.
   FullMatrix<double>
-  integrate_tensor_sets(const PointSet            &test,
-                        const std::vector<double> &test_weights,
-                        const PointSet            &trial,
-                        const std::vector<double> &trial_weights,
-                        const OperatorType         operator_type,
-                        const Function<spacedim>  *trial_function,
-                        const bool regularize_trial_function,
-                        // the datum at the test points, trial_function
-                        // where null
-                        const Function<spacedim> *test_function =
-                          nullptr) const;
+  integrate_tensor_sets(
+    const PointSet            &test,
+    const std::vector<double> &test_weights,
+    const PointSet            &trial,
+    const std::vector<double> &trial_weights,
+    const OperatorType         operator_type,
+    const Function<spacedim>  *trial_function,
+    const bool                 regularize_trial_function,
+    // the datum at the test points, trial_function
+    // where null
+    const Function<spacedim> *test_function = nullptr) const;
 
   FullMatrix<double>
-  integrate_paired_sets(const PointSet            &test,
-                        const std::vector<double> &test_shapes,
-                        const PointSet            &trial,
-                        const std::vector<double> &trial_shapes,
-                        const std::vector<double> &weights,
-                        const OperatorType         operator_type,
-                        const Function<spacedim>  *trial_function,
-                        const bool regularize_trial_function,
-                        // the datum at the test points, trial_function
-                        // where null
-                        const Function<spacedim> *test_function =
-                          nullptr) const;
+  integrate_paired_sets(
+    const PointSet            &test,
+    const std::vector<double> &test_shapes,
+    const PointSet            &trial,
+    const std::vector<double> &trial_shapes,
+    const std::vector<double> &weights,
+    const OperatorType         operator_type,
+    const Function<spacedim>  *trial_function,
+    const bool                 regularize_trial_function,
+    // the datum at the test points, trial_function
+    // where null
+    const Function<spacedim> *test_function = nullptr) const;
 
-  bool                             light_geometry = false;
-  std::vector<double>              geometry_nodes;
-  std::vector<double>              shape_nodes;
+  bool                light_geometry = false;
+  std::vector<double> geometry_nodes;
+  std::vector<double> shape_nodes;
   /// Position (a, b) of the support point of each basis function in the
   /// tensor grid of shape_nodes: the function is L_a(x) L_b(y).
   std::vector<std::array<unsigned int, 2>> shape_tensor_index;
   /// The Lagrange bases through geometry_nodes and shape_nodes: nodes and
   /// weights of the product form.
-  std::vector<double>              geometry_coefficients;
-  std::vector<double>              shape_coefficients;
-  mutable std::vector<LightCell>   light_cells;
-  mutable std::vector<bool>        light_cell_valid;
-  mutable double                   maximum_light_deviation = 0.0;
+  std::vector<double>                             geometry_coefficients;
+  std::vector<double>                             shape_coefficients;
+  mutable std::vector<LightCell>                  light_cells;
+  mutable std::vector<bool>                       light_cell_valid;
+  mutable double                                  maximum_light_deviation = 0.0;
   mutable std::map<std::array<int, 7>, LightRule> light_rule_cache;
   /// The rules of orders above singular_order (folded, material and skewed
   /// pairs) serve few pairs but are large, 6 n^4 points for a common edge,
@@ -1234,12 +1229,12 @@ private:
   mutable unsigned long long light_rule_clock  = 0;
   // Point sets of the direct path, reused from pair to pair, the FEValues
   // that checks the reconstructed geometry, and the tensor Gauss rules.
-  mutable PointSet                                test_set;
-  mutable PointSet                                trial_set;
+  mutable PointSet test_set;
+  mutable PointSet trial_set;
   /// The geometry at the distinct points of a side of a rule, before it is
   /// gathered to all its points (evaluate_rule_geometry()).
-  mutable PointSet                                unique_set;
-  mutable std::vector<Point<2>>                   unique_points;
+  mutable PointSet              unique_set;
+  mutable std::vector<Point<2>> unique_points;
   /// Work arrays of evaluate_geometry(): basis values and derivatives in
   /// the two directions, node by node, and the coordinates and tangents,
   /// component by component, each over all points.
@@ -1248,11 +1243,11 @@ private:
   /// to pair: allocated anew, arrays of megabytes cost a page fault per
   /// page on every pair. The surface curls of both sides, the kernel weights
   /// and the weighted test shapes of a block of points.
-  mutable std::vector<double> kernel_curls_x, kernel_curls_y,
-    kernel_weights, kernel_block;
+  mutable std::vector<double> kernel_curls_x, kernel_curls_y, kernel_weights,
+    kernel_block;
   /// The points of the subpatches of a leaf, kept for the same reason.
   mutable std::vector<Point<2>> leaf_test_points, leaf_trial_points;
-  mutable std::unique_ptr<FEValues<2, spacedim>>  light_check_values;
+  mutable std::unique_ptr<FEValues<2, spacedim>> light_check_values;
   /// On a mapping onto the exact geometry (ExactGeometry::ProjectedMapping),
   /// the direct path reconstructs the cells of the mesh mapping and projects
   /// every point with this evaluator.
@@ -1260,17 +1255,17 @@ private:
     nullptr;
   mutable std::unique_ptr<
     typename ExactGeometry::ProjectedMapping<2, spacedim>::Evaluator>
-    exact_evaluator;
-  mutable std::map<unsigned int, QGauss<2>>       gauss_rules;
+                                            exact_evaluator;
+  mutable std::map<unsigned int, QGauss<2>> gauss_rules;
 
   const Mapping<spacedim - 1, spacedim>       &mapping;
   const FiniteElement<spacedim - 1, spacedim> &finite_element;
   const GalerkinSingularQuadrature             singular_quadrature;
   const unsigned int                           singular_order;
-  unsigned int folded_singular_order  = 0;
-  double       folded_singular_cosine = -0.5;
-  std::set<types::material_id> singular_material_ids;
-  unsigned int material_singular_order = 0;
+  unsigned int                                 folded_singular_order  = 0;
+  double                                       folded_singular_cosine = -0.5;
+  std::set<types::material_id>                 singular_material_ids;
+  unsigned int                                 material_singular_order = 0;
   /// The order for pairs with a skewed cell, and the angle below which a
   /// cell is skewed (set_skewed_singular_order()).
   unsigned int skewed_singular_order = 0;
@@ -1307,16 +1302,16 @@ private:
   /// The smallest distance of the sample points of two patches over the
   /// larger of their diameters.
   double
-  separation_ratio(const CellIterator   &test_cell,
-                   const ReferencePatch &test_patch,
-                   const CellIterator   &trial_cell,
-                   const ReferencePatch &trial_patch) const;
-  const unsigned int                           duffy_outer_subdivisions;
-  const double                                 near_singular_distance_ratio;
-  const unsigned int                           near_singular_maximum_depth;
-  const unsigned int                           near_singular_quadrature_order;
-  mutable unsigned int                         near_singular_pairs;
-  mutable unsigned int                         near_singular_leaves;
+                       separation_ratio(const CellIterator   &test_cell,
+                                        const ReferencePatch &test_patch,
+                                        const CellIterator   &trial_cell,
+                                        const ReferencePatch &trial_patch) const;
+  const unsigned int   duffy_outer_subdivisions;
+  const double         near_singular_distance_ratio;
+  const unsigned int   near_singular_maximum_depth;
+  const unsigned int   near_singular_quadrature_order;
+  mutable unsigned int near_singular_pairs;
+  mutable unsigned int near_singular_leaves;
   /** A panel-pair quadrature rule together with the FEValues that evaluate
    * it. The reference points of a singular pair depend only on the pair
    * type, the order and which local vertices are shared - never on the cells
@@ -1329,15 +1324,15 @@ private:
                   const std::vector<std::array<unsigned int, 2>> &pair_indices,
                   const std::vector<double>                      &pair_weights,
                   const OperatorType                              operator_type,
-                  const Function<spacedim>                       *trial_function,
-                  const bool regularize_trial_function) const;
+                  const Function<spacedim> *trial_function,
+                  const bool                regularize_trial_function) const;
 
   struct CachedPairRule
   {
-    std::vector<std::array<unsigned int, 2>>   indices;
-    std::vector<double>                        weights;
-    std::unique_ptr<FEValues<2, spacedim>>     test_values;
-    std::unique_ptr<FEValues<2, spacedim>>     trial_values;
+    std::vector<std::array<unsigned int, 2>> indices;
+    std::vector<double>                      weights;
+    std::unique_ptr<FEValues<2, spacedim>>   test_values;
+    std::unique_ptr<FEValues<2, spacedim>>   trial_values;
   };
 
   // Keyed by {pair type, order, gradients wanted, shared local vertices}.
@@ -1346,14 +1341,14 @@ private:
   static constexpr std::size_t maximum_cached_pair_rules = 48;
   mutable std::map<std::array<int, 7>, CachedPairRule> pair_rule_cache;
 
-  double                                      far_field_tolerance = 0.0;
-  double                                      screening           = 0.0;
-  const Function<spacedim>                   *flux_function       = nullptr;
+  double                    far_field_tolerance = 0.0;
+  double                    screening           = 0.0;
+  const Function<spacedim> *flux_function       = nullptr;
   /// The flux function on the test and the trial cell of the pair that
   /// integrate_light() integrates: the pieces of their slots.
   mutable const Function<spacedim> *light_test_flux  = nullptr;
   mutable const Function<spacedim> *light_trial_flux = nullptr;
-  mutable RhsProfile                          profile;
+  mutable RhsProfile                profile;
   std::function<void(const CellIterator &,
                      std::vector<types::global_dof_index> &)>
     dof_index_map;
@@ -1381,15 +1376,15 @@ private:
   double
   screening_factor(const double distance) const
   {
-    return screening == 0.0 ? 1.0 :
-                              (1.0 + screening * distance) *
-                                std::exp(-screening * distance);
+    return screening == 0.0 ?
+             1.0 :
+             (1.0 + screening * distance) * std::exp(-screening * distance);
   }
   // How many far-field pairs each order ended up serving; a diagnostic for
   // whether the reduction is worth its complexity on a given mesh.
-  mutable std::array<unsigned long long, 32>  far_field_order_histogram{};
-  mutable std::vector<CellGeometry>            cell_geometry_cache;
-  mutable std::vector<bool>                    cell_geometry_valid;
+  mutable std::array<unsigned long long, 32> far_field_order_histogram{};
+  mutable std::vector<CellGeometry>          cell_geometry_cache;
+  mutable std::vector<bool>                  cell_geometry_valid;
 };
 
 
@@ -1398,22 +1393,22 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  const unsigned int                         order,
-  const types::subdomain_id locally_owned_subdomain,
-  const types::material_id selected_test_material,
-  const types::material_id selected_trial_material) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &matrix,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const types::material_id                  selected_test_material,
+  const types::material_id                  selected_trial_material) const
 {
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
 
   struct CellQuadratureData
   {
-    CellIterator                              cell;
-    std::vector<Point<spacedim>>              points;
-    std::vector<double>                       jxw;
-    std::vector<std::vector<double>>          shape_values;
+    CellIterator                     cell;
+    std::vector<Point<spacedim>>     points;
+    std::vector<double>              jxw;
+    std::vector<std::vector<double>> shape_values;
   };
 
   // Per-cell quadrature data for every order the far field may select. With
@@ -1430,7 +1425,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
                                               update_values |
                                                 update_quadrature_points |
                                                 update_JxW_values);
-      auto &set = data_by_order[o];
+      auto                            &set = data_by_order[o];
       set.reserve(dof_handler.get_triangulation().n_active_cells());
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
@@ -1450,7 +1445,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
           set.push_back(std::move(data));
         }
     }
-  const QGauss<spacedim - 1>            quadrature(order);
+  const QGauss<spacedim - 1>             quadrature(order);
   const std::vector<CellQuadratureData> &cell_data = data_by_order[order];
 
   // Smallest order whose convergence factor meets the tolerance.
@@ -1458,8 +1453,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
                                    const CellIterator &trial_cell) {
     if (far_field_tolerance <= 0.0)
       return order;
-    const CellGeometry &g1 = full_patch_geometry(test_cell);
-    const CellGeometry &g2 = full_patch_geometry(trial_cell);
+    const CellGeometry &g1         = full_patch_geometry(test_cell);
+    const CellGeometry &g2         = full_patch_geometry(trial_cell);
     const double        separation = g1.centre.distance(g2.centre);
     if (separation <= 0.0)
       return order;
@@ -1506,8 +1501,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
           cell_dof_indices(trial_cell, trial_indices);
           FullMatrix<double> local_matrix(finite_element.dofs_per_cell,
                                           finite_element.dofs_per_cell);
-          const auto pair_start = std::chrono::steady_clock::now();
-          bool       far_pair   = false;
+          const auto         pair_start = std::chrono::steady_clock::now();
+          bool               far_pair   = false;
           if (classify(test_cell, trial_cell) ==
                 GalerkinPanelPairType::regular &&
               !is_near_singular(test_cell,
@@ -1519,7 +1514,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
               const unsigned int pair_order =
                 far_field_order(test_cell, trial_cell);
               ++far_field_order_histogram[pair_order];
-              const std::size_t  index = &test_data - cell_data.data();
+              const std::size_t         index = &test_data - cell_data.data();
               const CellQuadratureData &t_data =
                 data_by_order[pair_order][index];
               const CellQuadratureData &r_data =
@@ -1545,17 +1540,15 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer(
               for (unsigned int i = 0; i < dpc; ++i)
                 for (unsigned int j = 0; j < dpc; ++j)
                   {
-                    const std::vector<double> &v = r_data.shape_values[j];
-                    double acc = 0.0;
+                    const std::vector<double> &v   = r_data.shape_values[j];
+                    double                     acc = 0.0;
                     for (unsigned int qy = 0; qy < m; ++qy)
                       acc += partial[i * m + qy] * v[qy];
                     local_matrix(i, j) += acc;
                   }
             }
           else
-            local_matrix = integrate_single_layer(test_cell,
-                                                  trial_cell,
-                                                  order);
+            local_matrix = integrate_single_layer(test_cell, trial_cell, order);
           (far_pair ? profile.far_seconds : profile.near_seconds) +=
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           pair_start)
@@ -1577,11 +1570,11 @@ template <typename VectorType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_flux_rhs(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  VectorType                                &rhs,
-  const unsigned int                         order,
-  const Function<spacedim>                  &gradient,
-  const types::subdomain_id locally_owned_subdomain) const
+  const AffineConstraints<double>          &constraints,
+  VectorType                               &rhs,
+  const unsigned int                        order,
+  const Function<spacedim>                 &gradient,
+  const types::subdomain_id                 locally_owned_subdomain) const
 {
   AssertDimension(gradient.n_components, spacedim);
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
@@ -1604,7 +1597,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_flux_rhs(
                                             update_normal_vectors |
                                             update_quadrature_points |
                                             update_JxW_values);
-  std::vector<CellQuadratureData> cell_data;
+  std::vector<CellQuadratureData>  cell_data;
   cell_data.reserve(dof_handler.get_triangulation().n_active_cells());
   Vector<double> gradient_value(spacedim);
   for (const auto &cell : dof_handler.active_cell_iterators())
@@ -1671,16 +1664,18 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_flux_rhs(
                 }
               for (unsigned int i = 0; i < dpc; ++i)
                 {
-                  const std::vector<double> &u = test_data.shape_values[i];
-                  double acc = 0.0;
+                  const std::vector<double> &u   = test_data.shape_values[i];
+                  double                     acc = 0.0;
                   for (unsigned int qx = 0; qx < n_q; ++qx)
                     acc += u[qx] * weighted[qx];
                   local_rhs[i] += acc;
                 }
             }
           else
-            local_rhs += integrate_single_layer_flux(test_cell, trial_cell,
-                                                     order, gradient);
+            local_rhs += integrate_single_layer_flux(test_cell,
+                                                     trial_cell,
+                                                     order,
+                                                     gradient);
         }
       test_cell->get_dof_indices(test_indices);
       constraints.distribute_local_to_global(local_rhs, test_indices, rhs);
@@ -1693,36 +1688,36 @@ template <typename VectorType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  VectorType                                &rhs,
-  const unsigned int                         order,
-  const Function<spacedim>                  &trial_function,
-  const types::subdomain_id locally_owned_subdomain,
-  const bool                regularize_trial_function,
-  const std::vector<unsigned int> *trial_cell_components,
-  const unsigned int selected_trial_component,
-  const types::material_id selected_test_material) const
+  const AffineConstraints<double>          &constraints,
+  VectorType                               &rhs,
+  const unsigned int                        order,
+  const Function<spacedim>                 &trial_function,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const bool                                regularize_trial_function,
+  const std::vector<unsigned int>          *trial_cell_components,
+  const unsigned int                        selected_trial_component,
+  const types::material_id                  selected_test_material) const
 {
   struct CellQuadratureData
   {
-    CellIterator                              cell;
-    std::vector<Point<spacedim>>              points;
-    std::vector<Tensor<1, spacedim>>          normals;
-    std::vector<double>                       jxw;
-    std::vector<std::vector<double>>          shape_values;
-    std::vector<double>                       function_values;
-    unsigned int component = numbers::invalid_unsigned_int;
+    CellIterator                     cell;
+    std::vector<Point<spacedim>>     points;
+    std::vector<Tensor<1, spacedim>> normals;
+    std::vector<double>              jxw;
+    std::vector<std::vector<double>> shape_values;
+    std::vector<double>              function_values;
+    unsigned int                     component = numbers::invalid_unsigned_int;
   };
 
-  const QGauss<spacedim - 1> quadrature(order);
+  const QGauss<spacedim - 1>       quadrature(order);
   FEValues<spacedim - 1, spacedim> values(mapping,
-                                           finite_element,
-                                           quadrature,
-                                           update_values |
-                                             update_normal_vectors |
-                                             update_quadrature_points |
-                                             update_JxW_values);
-  std::vector<CellQuadratureData> cell_data;
+                                          finite_element,
+                                          quadrature,
+                                          update_values |
+                                            update_normal_vectors |
+                                            update_quadrature_points |
+                                            update_JxW_values);
+  std::vector<CellQuadratureData>  cell_data;
   cell_data.reserve(dof_handler.get_triangulation().n_active_cells());
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
@@ -1733,10 +1728,9 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
         {
           AssertIndexRange(cell->active_cell_index(),
                            trial_cell_components->size());
-          data.component =
-            (*trial_cell_components)[cell->active_cell_index()];
+          data.component = (*trial_cell_components)[cell->active_cell_index()];
         }
-      data.points = values.get_quadrature_points();
+      data.points  = values.get_quadrature_points();
       data.normals = values.get_normal_vectors();
       data.jxw.resize(quadrature.size());
       data.function_values.resize(quadrature.size());
@@ -1746,7 +1740,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
       const Function<spacedim> &trial_piece = on_cell(trial_function, cell);
       for (unsigned int q = 0; q < quadrature.size(); ++q)
         {
-          data.jxw[q] = values.JxW(q);
+          data.jxw[q]             = values.JxW(q);
           data.function_values[q] = trial_piece.value(data.points[q]);
           for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
             data.shape_values[i][q] = values.shape_value(i, q);
@@ -1781,8 +1775,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
             continue;
 
           const auto &trial_cell = trial_data.cell;
-          const auto pair_start = std::chrono::steady_clock::now();
-          bool       far_pair   = false;
+          const auto  pair_start = std::chrono::steady_clock::now();
+          bool        far_pair   = false;
           if (classify(test_cell, trial_cell) ==
                 GalerkinPanelPairType::regular &&
               !is_near_singular(test_cell,
@@ -1819,8 +1813,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
                 }
               for (unsigned int i = 0; i < dpc; ++i)
                 {
-                  const std::vector<double> &u = test_data.shape_values[i];
-                  double acc = 0.0;
+                  const std::vector<double> &u   = test_data.shape_values[i];
+                  double                     acc = 0.0;
                   for (unsigned int qx = 0; qx < n_q; ++qx)
                     acc += u[qx] * weighted[qx];
                   local_rhs[i] += acc;
@@ -1852,12 +1846,12 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  const unsigned int                         order,
-  const types::subdomain_id locally_owned_subdomain,
-  const types::material_id selected_test_material,
-  const types::material_id selected_trial_material) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &matrix,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const types::material_id                  selected_test_material,
+  const types::material_id                  selected_trial_material) const
 {
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
@@ -1899,12 +1893,12 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_adjoint_double_layer(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  const unsigned int                         order,
-  const types::subdomain_id locally_owned_subdomain,
-  const types::material_id selected_test_material,
-  const types::material_id selected_trial_material) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &matrix,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const types::material_id                  selected_test_material,
+  const types::material_id                  selected_trial_material) const
 {
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
@@ -1918,15 +1912,15 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_adjoint_double_layer(
     std::vector<std::vector<double>> shape_values;
   };
 
-  const QGauss<spacedim - 1> quadrature(order);
+  const QGauss<spacedim - 1>       quadrature(order);
   FEValues<spacedim - 1, spacedim> values(mapping,
-                                           finite_element,
-                                           quadrature,
-                                           update_values |
-                                             update_normal_vectors |
-                                             update_quadrature_points |
-                                             update_JxW_values);
-  std::vector<CellQuadratureData> cell_data;
+                                          finite_element,
+                                          quadrature,
+                                          update_values |
+                                            update_normal_vectors |
+                                            update_quadrature_points |
+                                            update_JxW_values);
+  std::vector<CellQuadratureData>  cell_data;
   cell_data.reserve(dof_handler.get_triangulation().n_active_cells());
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
@@ -1986,19 +1980,16 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_adjoint_double_layer(
                     trial_data.points[qy] - test_data.points[qx];
                   const double distance = displacement.norm();
                   const double factor =
-                    (displacement * test_data.normals[qx]) *
-                    test_data.jxw[qx] * trial_data.jxw[qy] *
-                    screening_factor(distance) /
+                    (displacement * test_data.normals[qx]) * test_data.jxw[qx] *
+                    trial_data.jxw[qy] * screening_factor(distance) /
                     (4.0 * numbers::PI * distance * distance * distance);
-                  for (unsigned int i = 0;
-                       i < finite_element.dofs_per_cell;
+                  for (unsigned int i = 0; i < finite_element.dofs_per_cell;
                        ++i)
-                    for (unsigned int j = 0;
-                         j < finite_element.dofs_per_cell;
+                    for (unsigned int j = 0; j < finite_element.dofs_per_cell;
                          ++j)
-                      local_adjoint(i, j) +=
-                        test_data.shape_values[i][qx] *
-                        trial_data.shape_values[j][qy] * factor;
+                      local_adjoint(i, j) += test_data.shape_values[i][qx] *
+                                             trial_data.shape_values[j][qy] *
+                                             factor;
                 }
           else
             {
@@ -2022,19 +2013,18 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_mass_matrix(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  const unsigned int                         order,
-  const types::subdomain_id locally_owned_subdomain,
-  const types::material_id selected_material) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &matrix,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const types::material_id                  selected_material) const
 {
-  const QGauss<spacedim - 1> quadrature(order);
+  const QGauss<spacedim - 1>       quadrature(order);
   FEValues<spacedim - 1, spacedim> values(mapping,
-                                           finite_element,
-                                           quadrature,
-                                           update_values |
-                                             update_JxW_values);
-  FullMatrix<double> local_matrix(finite_element.dofs_per_cell,
+                                          finite_element,
+                                          quadrature,
+                                          update_values | update_JxW_values);
+  FullMatrix<double>               local_matrix(finite_element.dofs_per_cell,
                                   finite_element.dofs_per_cell);
   std::vector<types::global_dof_index> local_indices(
     finite_element.dofs_per_cell);
@@ -2069,12 +2059,12 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  const unsigned int                         order,
-  const types::subdomain_id locally_owned_subdomain,
-  const types::material_id selected_test_material,
-  const types::material_id selected_trial_material) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &matrix,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain,
+  const types::material_id                  selected_test_material,
+  const types::material_id                  selected_trial_material) const
 {
   // The screened hypersingular operator has a further term,
   // kappa^2 (n_x . n_y) psi(x) phi(y) G, which this assembly does not have.
@@ -2083,21 +2073,21 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
                          "the Laplace kernel only."));
   struct CellQuadratureData
   {
-    CellIterator cell;
-    std::vector<Point<spacedim>> points;
-    std::vector<double>          jxw;
+    CellIterator                                  cell;
+    std::vector<Point<spacedim>>                  points;
+    std::vector<double>                           jxw;
     std::vector<std::vector<Tensor<1, spacedim>>> surface_curls;
   };
 
-  const QGauss<spacedim - 1> quadrature(order);
+  const QGauss<spacedim - 1>       quadrature(order);
   FEValues<spacedim - 1, spacedim> values(mapping,
-                                           finite_element,
-                                           quadrature,
-                                           update_gradients |
-                                             update_normal_vectors |
-                                             update_quadrature_points |
-                                             update_JxW_values);
-  std::vector<CellQuadratureData> cell_data;
+                                          finite_element,
+                                          quadrature,
+                                          update_gradients |
+                                            update_normal_vectors |
+                                            update_quadrature_points |
+                                            update_JxW_values);
+  std::vector<CellQuadratureData>  cell_data;
   cell_data.reserve(dof_handler.get_triangulation().n_active_cells());
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
@@ -2106,15 +2096,16 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
       data.cell   = cell;
       data.points = values.get_quadrature_points();
       data.jxw.resize(quadrature.size());
-      data.surface_curls.assign(
-        finite_element.dofs_per_cell,
-        std::vector<Tensor<1, spacedim>>(quadrature.size()));
+      data.surface_curls.assign(finite_element.dofs_per_cell,
+                                std::vector<Tensor<1, spacedim>>(
+                                  quadrature.size()));
       for (unsigned int q = 0; q < quadrature.size(); ++q)
         {
           data.jxw[q] = values.JxW(q);
           for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
-            data.surface_curls[i][q] = cross_product_3d(
-              values.normal_vector(q), values.shape_grad(i, q));
+            data.surface_curls[i][q] =
+              cross_product_3d(values.normal_vector(q),
+                               values.shape_grad(i, q));
         }
       cell_data.push_back(std::move(data));
     }
@@ -2155,18 +2146,15 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
                 {
                   const double distance =
                     test_data.points[qx].distance(trial_data.points[qy]);
-                  const double factor =
-                    test_data.jxw[qx] * trial_data.jxw[qy] /
-                    (4.0 * numbers::PI * distance);
-                  for (unsigned int i = 0;
-                       i < finite_element.dofs_per_cell;
+                  const double factor = test_data.jxw[qx] * trial_data.jxw[qy] /
+                                        (4.0 * numbers::PI * distance);
+                  for (unsigned int i = 0; i < finite_element.dofs_per_cell;
                        ++i)
-                    for (unsigned int j = 0;
-                         j < finite_element.dofs_per_cell;
+                    for (unsigned int j = 0; j < finite_element.dofs_per_cell;
                          ++j)
-                      local_matrix(i, j) +=
-                        (test_data.surface_curls[i][qx] *
-                         trial_data.surface_curls[j][qy]) * factor;
+                      local_matrix(i, j) += (test_data.surface_curls[i][qx] *
+                                             trial_data.surface_curls[j][qy]) *
+                                            factor;
                 }
           else
             local_matrix =
@@ -2187,12 +2175,12 @@ template <typename MatrixType>
 void
 GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
   const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &single_layer,
-  MatrixType                                &double_layer,
-  MatrixType                                &hypersingular,
-  const unsigned int                         order,
-  const types::subdomain_id                  locally_owned_subdomain) const
+  const AffineConstraints<double>          &constraints,
+  MatrixType                               &single_layer,
+  MatrixType                               &double_layer,
+  MatrixType                               &hypersingular,
+  const unsigned int                        order,
+  const types::subdomain_id                 locally_owned_subdomain) const
 {
   AssertThrow(screening == 0.0,
               ExcMessage("The joint assembly of V, K and W is implemented "
@@ -2225,7 +2213,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                                                 update_normal_vectors |
                                                 update_quadrature_points |
                                                 update_JxW_values);
-      auto &set = data_by_order[o];
+      auto                            &set = data_by_order[o];
       set.reserve(dof_handler.get_triangulation().n_active_cells());
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
@@ -2244,8 +2232,9 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
               for (unsigned int i = 0; i < dpc; ++i)
                 {
                   data.shape_values[i][q] = values.shape_value(i, q);
-                  data.surface_curls[i][q] = cross_product_3d(
-                    values.normal_vector(q), values.shape_grad(i, q));
+                  data.surface_curls[i][q] =
+                    cross_product_3d(values.normal_vector(q),
+                                     values.shape_grad(i, q));
                 }
             }
           set.push_back(std::move(data));
@@ -2280,11 +2269,11 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
 
   // local(i, j) += sum_qx sum_qy u_i(qx) block(qx, qy) v_j(qy), one index at
   // a time.
-  const auto contract = [&](const unsigned int                       m,
-                            const std::vector<double>               &block,
-                            const auto                              &u,
-                            const auto                              &v,
-                            FullMatrix<double>                      &local) {
+  const auto contract = [&](const unsigned int         m,
+                            const std::vector<double> &block,
+                            const auto                &u,
+                            const auto                &v,
+                            FullMatrix<double>        &local) {
     for (unsigned int i = 0; i < dpc; ++i)
       for (unsigned int qy = 0; qy < m; ++qy)
         {
@@ -2326,8 +2315,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
           cell_dof_indices(trial_cell, trial_indices);
           const auto pair_start = std::chrono::steady_clock::now();
           const bool far_pair =
-            classify(test_cell, trial_cell) ==
-              GalerkinPanelPairType::regular &&
+            classify(test_cell, trial_cell) == GalerkinPanelPairType::regular &&
             !is_near_singular(test_cell,
                               {Point<2>(0.0, 0.0), Point<2>(1.0, 1.0)},
                               trial_cell,
@@ -2348,16 +2336,16 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                     const Tensor<1, spacedim> displacement =
                       r.points[qy] - t.points[qx];
                     const double distance = displacement.norm();
-                    const double weight   = t.jxw[qx] * r.jxw[qy] /
-                                          (4.0 * numbers::PI * distance);
+                    const double weight =
+                      t.jxw[qx] * r.jxw[qy] / (4.0 * numbers::PI * distance);
                     single_block[qx * m + qy] = weight;
-                    double_block[qx * m + qy] =
-                      -weight * (displacement * r.normals[qy]) /
-                      (distance * distance);
+                    double_block[qx * m + qy] = -weight *
+                                                (displacement * r.normals[qy]) /
+                                                (distance * distance);
                   }
-              v_local = 0;
-              k_local = 0;
-              w_local = 0;
+              v_local              = 0;
+              k_local              = 0;
+              w_local              = 0;
               const auto values_of = [](const CellQuadratureData &d) {
                 return [&d](const unsigned int i, const unsigned int q) {
                   return d.shape_values[i][q];
@@ -2404,15 +2392,16 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
 template <int spacedim>
 template <typename MatrixType, typename VectorType>
 void
-GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rhs(
-  const DoFHandler<spacedim - 1, spacedim> &dof_handler,
-  const AffineConstraints<double>           &constraints,
-  MatrixType                                &matrix,
-  VectorType                                &rhs,
-  const unsigned int                         order,
-  const Function<spacedim>                  &trial_function,
-  const types::subdomain_id                  locally_owned_subdomain,
-  const bool                                 regularize_trial_function) const
+GalerkinPanelPairIntegrator<spacedim>::
+  assemble_single_layer_and_double_layer_rhs(
+    const DoFHandler<spacedim - 1, spacedim> &dof_handler,
+    const AffineConstraints<double>          &constraints,
+    MatrixType                               &matrix,
+    VectorType                               &rhs,
+    const unsigned int                        order,
+    const Function<spacedim>                 &trial_function,
+    const types::subdomain_id                 locally_owned_subdomain,
+    const bool                                regularize_trial_function) const
 {
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
@@ -2437,13 +2426,14 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
   for (unsigned int o = lowest_order; o <= order; ++o)
     {
       const QGauss<spacedim - 1>       rule(o);
-      FEValues<spacedim - 1, spacedim> values(
-        mapping,
-        finite_element,
-        rule,
-        update_values | update_quadrature_points | update_JxW_values |
-          update_normal_vectors);
-      auto &set = data_by_order[o];
+      FEValues<spacedim - 1, spacedim> values(mapping,
+                                              finite_element,
+                                              rule,
+                                              update_values |
+                                                update_quadrature_points |
+                                                update_JxW_values |
+                                                update_normal_vectors);
+      auto                            &set = data_by_order[o];
       set.reserve(dof_handler.get_triangulation().n_active_cells());
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
@@ -2457,11 +2447,10 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
           data.shape_values.assign(finite_element.dofs_per_cell,
                                    std::vector<double>(rule.size()));
           // The datum of the slot of the cell.
-          const Function<spacedim> &trial_piece =
-            on_cell(trial_function, cell);
+          const Function<spacedim> &trial_piece = on_cell(trial_function, cell);
           for (unsigned int q = 0; q < rule.size(); ++q)
             {
-              data.jxw[q] = values.JxW(q);
+              data.jxw[q]             = values.JxW(q);
               data.function_values[q] = trial_piece.value(data.points[q]);
               for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
                 data.shape_values[i][q] = values.shape_value(i, q);
@@ -2475,8 +2464,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
                                    const CellIterator &trial_cell) {
     if (far_field_tolerance <= 0.0)
       return order;
-    const CellGeometry &g1 = full_patch_geometry(test_cell);
-    const CellGeometry &g2 = full_patch_geometry(trial_cell);
+    const CellGeometry &g1         = full_patch_geometry(test_cell);
+    const CellGeometry &g2         = full_patch_geometry(trial_cell);
     const double        separation = g1.centre.distance(g2.centre);
     if (separation <= 0.0)
       return order;
@@ -2488,14 +2477,14 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
     return std::min(order, std::max(lowest_order, needed));
   };
 
-  const unsigned int dpc = finite_element.dofs_per_cell;
+  const unsigned int                   dpc = finite_element.dofs_per_cell;
   std::vector<types::global_dof_index> test_indices(dpc);
   std::vector<types::global_dof_index> trial_indices(dpc);
-  const unsigned int  n_q = cell_data.front().points.size();
-  std::vector<double> kernel_block(n_q * n_q);
-  std::vector<double> partial(dpc * n_q);
-  std::vector<double> weighted(n_q);
-  FullMatrix<double>  local_matrix(dpc, dpc);
+  const unsigned int                   n_q = cell_data.front().points.size();
+  std::vector<double>                  kernel_block(n_q * n_q);
+  std::vector<double>                  partial(dpc * n_q);
+  std::vector<double>                  weighted(n_q);
+  FullMatrix<double>                   local_matrix(dpc, dpc);
 
   for (const auto &test_data : cell_data)
     {
@@ -2557,10 +2546,10 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
                       kernel_block[qx * m + qy] =
                         weight * exponential / (4.0 * numbers::PI * distance);
                     }
-                  weighted[qx] = sum_weighted -
-                                 (regularize_trial_function ?
-                                    sum_kernel * t_data.function_values[qx] :
-                                    0.0);
+                  weighted[qx] =
+                    sum_weighted - (regularize_trial_function ?
+                                      sum_kernel * t_data.function_values[qx] :
+                                      0.0);
                 }
               for (unsigned int i = 0; i < dpc; ++i)
                 {
@@ -2584,7 +2573,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
               for (unsigned int i = 0; i < dpc; ++i)
                 for (unsigned int j = 0; j < dpc; ++j)
                   {
-                    const std::vector<double> &v = r_data.shape_values[j];
+                    const std::vector<double> &v   = r_data.shape_values[j];
                     double                     acc = 0.0;
                     for (unsigned int qy = 0; qy < m; ++qy)
                       acc += partial[i * m + qy] * v[qy];

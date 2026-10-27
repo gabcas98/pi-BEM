@@ -17,13 +17,18 @@
 
 #include <deal.II/base/function.h>
 #include <deal.II/base/index_set.h>
+
 #include <deal.II/dofs/dof_handler.h>
+
 #include <deal.II/fe/mapping.h>
+
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/vector.h>
+
 #include <deal.II/matrix_free/fe_point_evaluation.h>
+
 #include <deal.II/non_matching/mapping_info.h>
 
 #include <iosfwd>
@@ -242,11 +247,11 @@ private:
   std::vector<FullMatrix<double>>                   patch_inverses;
   double                                            setup_patches = 0;
 
-  unsigned long  n_near_pairs = 0;
-  double         setup_geometry = 0, setup_tree = 0, setup_near = 0,
-         setup_near_imbalance = 0;
-  mutable double time_evaluate = 0, time_fmm = 0, time_test = 0,
-                 time_near = 0, time_rhs = 0;
+  unsigned long n_near_pairs   = 0;
+  double        setup_geometry = 0, setup_tree = 0, setup_near = 0,
+         setup_near_imbalance  = 0;
+  mutable double time_evaluate = 0, time_fmm = 0, time_test = 0, time_near = 0,
+                 time_rhs      = 0;
   mutable unsigned int n_vmult = 0;
 };
 

@@ -14,26 +14,29 @@
 
 #include "../include/galerkin_calderon_fmm_operator.h"
 
-#include <fstream>
-#include <set>
-#include <cstdint>
-#include <iostream>
-#include <deque>
-#include <unordered_map>
 #include <deal.II/base/bounding_box.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/quadrature_lib.h>
+
 #include <deal.II/fe/fe_values.h>
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
+
 #include <deal.II/numerics/rtree.h>
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <deque>
+#include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <ostream>
+#include <set>
+#include <unordered_map>
 
 using namespace dealii;
 
@@ -112,7 +115,7 @@ GalerkinCalderonFMMOperator::reinit(
   for (unsigned int q = 0; q < n_q_points; ++q)
     for (unsigned int i = 0; i < dpc; ++i)
       shape(q, i) = fe.shape_value(i, quadrature.point(q));
-  FEValues<2, 3> values(mapping,
+  FEValues<2, 3>     values(mapping,
                         fe,
                         quadrature,
                         update_gradients | update_normal_vectors |
@@ -160,8 +163,10 @@ GalerkinCalderonFMMOperator::reinit(
   if (separate_relaxed)
     {
       LaplaceFMM::AdditionalData relaxed = fmm_data;
-      relaxed.order = data.relaxed_order > 0 ? data.relaxed_order : coarse.order;
-      relaxed.theta = data.relaxed_theta > 0 ? data.relaxed_theta : coarse.theta;
+      relaxed.order =
+        data.relaxed_order > 0 ? data.relaxed_order : coarse.order;
+      relaxed.theta =
+        data.relaxed_theta > 0 ? data.relaxed_theta : coarse.theta;
       relaxed_fmm.reinit(points, relaxed);
     }
   fmm_data.order += data.dipole_order_increase;
@@ -187,13 +192,15 @@ GalerkinCalderonFMMOperator::reinit(
       box.extend(data.near_distance_ratio * diagonal + 1e-12 * diagonal);
       boxes.emplace_back(box, c);
     }
-  const auto tree = pack_rtree(boxes);
+  const auto tree     = pack_rtree(boxes);
   const auto cell_key = [&](const unsigned int c) {
     return std::array<int, 2>{{cells[c]->level(), cells[c]->index()}};
   };
   const auto pair_key = [&](const unsigned int t, const unsigned int r) {
-    return std::array<int, 4>{
-      {cells[t]->level(), cells[t]->index(), cells[r]->level(), cells[r]->index()}};
+    return std::array<int, 4>{{cells[t]->level(),
+                               cells[t]->index(),
+                               cells[r]->level(),
+                               cells[r]->index()}};
   };
   std::vector<std::array<unsigned int, 3>> found;
   for (unsigned int t = this_mpi_process; t < n_cells; t += n_mpi_processes)
@@ -209,11 +216,12 @@ GalerkinCalderonFMMOperator::reinit(
           const GalerkinPanelPairType type =
             integrator.classify(cells[t], cells[r]);
           const unsigned int cost =
-            type == GalerkinPanelPairType::same_panel        ? 6 :
+            type == GalerkinPanelPairType::same_panel ? 6 :
             type == GalerkinPanelPairType::common_edge ||
-                type == GalerkinPanelPairType::nonconforming_edge ? 5 :
-            type == GalerkinPanelPairType::common_vertex       ? 2 :
-                                                                 1;
+                type == GalerkinPanelPairType::nonconforming_edge ?
+                                                        5 :
+            type == GalerkinPanelPairType::common_vertex ? 2 :
+                                                           1;
           // With a cache, the cells of a pair in the order of their levels
           // and indices, which refinement does not change.
           if (cache != nullptr && cell_key(r) < cell_key(t))
@@ -225,16 +233,20 @@ GalerkinCalderonFMMOperator::reinit(
   std::vector<std::array<unsigned int, 3>> all_pairs;
   for (const auto &part : Utilities::MPI::all_gather(mpi_communicator, found))
     all_pairs.insert(all_pairs.end(), part.begin(), part.end());
-  std::sort(all_pairs.begin(), all_pairs.end(), [](const auto &x, const auto &y) {
-    return x[2] != y[2] ? x[2] > y[2] : x[0] != y[0] ? x[0] < y[0] : x[1] < y[1];
-  });
+  std::sort(all_pairs.begin(),
+            all_pairs.end(),
+            [](const auto &x, const auto &y) {
+              return x[2] != y[2] ? x[2] > y[2] :
+                     x[0] != y[0] ? x[0] < y[0] :
+                                    x[1] < y[1];
+            });
   std::vector<std::pair<unsigned int, unsigned int>> my_pairs;
   // With a cache, each pair goes to the process of a hash of its key, so
   // that it stays there when the mesh is refined around it; there are many
   // pairs of each kind, and the costs even out.
   const auto hashed_process = [&](const unsigned int t, const unsigned int r) {
-    const auto key  = pair_key(t, r);
-    std::uint64_t h = 0x9e3779b97f4a7c15ull;
+    const auto    key = pair_key(t, r);
+    std::uint64_t h   = 0x9e3779b97f4a7c15ull;
     for (const int v : key)
       {
         h ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(v)) +
@@ -251,8 +263,8 @@ GalerkinCalderonFMMOperator::reinit(
   static const bool report_profile =
     std::getenv("PIBEM_NEAR_PROFILE") != nullptr;
   std::set<std::array<int, 4>> used_keys;
-  n_cached_pairs     = 0;
-  n_integrated_pairs = 0;
+  n_cached_pairs                               = 0;
+  n_integrated_pairs                           = 0;
   std::array<double, 7>        profile_seconds = {{0, 0, 0, 0, 0, 0, 0}};
   std::array<unsigned long, 6> profile_count   = {{0, 0, 0, 0, 0, 0}};
   unsigned int                 pairs_done      = 0;
@@ -283,14 +295,14 @@ GalerkinCalderonFMMOperator::reinit(
                      const FullMatrix<double> *,
                      CongruenceHash>
     congruent;
-  n_congruent_pairs = 0;
+  n_congruent_pairs         = 0;
   const auto congruence_key = [&](const unsigned int t, const unsigned int r) {
     const Point<3> &origin = points[t * n_q_points];
     const double    size =
       origin.distance(points[t * n_q_points + n_q_points - 1]);
     const double  quantum = 1e-9 * size;
-    std::uint64_t h1      = 0x9e3779b97f4a7c15ull, h2 = 0xc2b2ae3d27d4eb4full;
-    const auto    mix     = [&](const std::int64_t value) {
+    std::uint64_t h1 = 0x9e3779b97f4a7c15ull, h2 = 0xc2b2ae3d27d4eb4full;
+    const auto    mix = [&](const std::int64_t value) {
       const std::uint64_t v = static_cast<std::uint64_t>(value);
       h1 ^= v + 0x9e3779b97f4a7c15ull + (h1 << 6) + (h1 >> 2);
       h1 *= 0xbf58476d1ce4e5b9ull;
@@ -328,13 +340,13 @@ GalerkinCalderonFMMOperator::reinit(
     if (report_profile)
       {
         const auto type = integrator.classify(cells[t], cells[r]);
-        profile_kind =
-          type == GalerkinPanelPairType::same_panel         ? 0 :
-          type == GalerkinPanelPairType::common_edge        ? 1 :
-          type == GalerkinPanelPairType::nonconforming_edge ? 2 :
-          type == GalerkinPanelPairType::common_vertex      ? 3 :
-          integrator.is_near_singular_pair(cells[t], cells[r]) ? 4 :
-                                                                  5;
+        profile_kind    = type == GalerkinPanelPairType::same_panel  ? 0 :
+                          type == GalerkinPanelPairType::common_edge ? 1 :
+                          type == GalerkinPanelPairType::nonconforming_edge ? 2 :
+                          type == GalerkinPanelPairType::common_vertex ? 3 :
+                          integrator.is_near_singular_pair(cells[t], cells[r]) ?
+                                                                         4 :
+                                                                         5;
       }
     const FullMatrix<double> *exact = nullptr;
     if (cache != nullptr)
@@ -353,7 +365,7 @@ GalerkinCalderonFMMOperator::reinit(
         // PIBEM_NO_CONGRUENCE: every pair integrated, for comparison.
         static const bool use_congruence =
           std::getenv("PIBEM_NO_CONGRUENCE") == nullptr;
-        const auto key   = congruence_key(t, r);
+        const auto key = congruence_key(t, r);
         const auto found =
           use_congruence ? congruent.find(key) : congruent.end();
         if (found != congruent.end())
@@ -451,8 +463,14 @@ GalerkinCalderonFMMOperator::reinit(
   DynamicSparsityPattern dsp(n_indices, n_indices);
   for (const auto &[t, r] : my_pairs)
     {
-      constraints.add_entries_local_to_global(indices[t], indices[r], dsp, true);
-      constraints.add_entries_local_to_global(indices[r], indices[t], dsp, true);
+      constraints.add_entries_local_to_global(indices[t],
+                                              indices[r],
+                                              dsp,
+                                              true);
+      constraints.add_entries_local_to_global(indices[r],
+                                              indices[t],
+                                              dsp,
+                                              true);
     }
   near_sparsity.copy_from(dsp);
   near_single.reinit(near_sparsity);
@@ -487,10 +505,10 @@ GalerkinCalderonFMMOperator::reinit(
   };
   for (unsigned int k = 0; k < my_pairs.size(); ++k)
     {
-      const auto [t, r]                = my_pairs[k];
-      const bool                self   = t == r;
-      const FullMatrix<double> &exact  = *exact_blocks[k];
-      const auto correction_start = std::chrono::steady_clock::now();
+      const auto [t, r]               = my_pairs[k];
+      const bool                self  = t == r;
+      const FullMatrix<double> &exact = *exact_blocks[k];
+      const auto correction_start     = std::chrono::steady_clock::now();
 
       // The part of the point sums: the kernels of the pairs of points,
       // without the coincident points of a cell with itself.
@@ -623,7 +641,7 @@ GalerkinCalderonFMMOperator::reinit(
       // The parts of the direct path of the integrator over the near field,
       // summed over the processes (it holds the totals since its creation;
       // the integrator is created for this operator).
-      const auto  &ip = integrator.rhs_profile();
+      const auto  &ip       = integrator.rhs_profile();
       const double parts[9] = {ip.geometry_seconds,
                                ip.shape_seconds,
                                ip.kernel_seconds,
@@ -636,10 +654,12 @@ GalerkinCalderonFMMOperator::reinit(
       double       sums[9];
       for (unsigned int k = 0; k < 9; ++k)
         sums[k] = Utilities::MPI::sum(parts[k], mpi_communicator);
-      const double points = Utilities::MPI::sum(
-        static_cast<double>(ip.singular_points), mpi_communicator);
-      const double geometry_points = Utilities::MPI::sum(
-        static_cast<double>(ip.geometry_points), mpi_communicator);
+      const double points =
+        Utilities::MPI::sum(static_cast<double>(ip.singular_points),
+                            mpi_communicator);
+      const double geometry_points =
+        Utilities::MPI::sum(static_cast<double>(ip.geometry_points),
+                            mpi_communicator);
       const double leaves[4] = {
         Utilities::MPI::sum(static_cast<double>(ip.singular_leaves),
                             mpi_communicator),
@@ -723,8 +743,8 @@ void
 GalerkinCalderonFMMOperator::test_values(const std::vector<double> &values,
                                          Vector<double>            &y) const
 {
-  const unsigned int  dpc = dofs_per_cell;
-  Vector<double>      local(dpc);
+  const unsigned int dpc = dofs_per_cell;
+  Vector<double>     local(dpc);
   for (const unsigned int c : own_cells)
     {
       for (unsigned int i = 0; i < dpc; ++i)
@@ -933,12 +953,12 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
   // With the same expansions for charges and dipoles, all the sums from one
   // pass: V t and K^T t, K u, and the three components of the curl of u;
   // relaxed, always so, through the expansions of the preconditioner.
-  const bool         use_relaxed =
+  const bool use_relaxed =
     relaxed && (separate_relaxed || separate_preconditioner);
-  const LaplaceFMM &fmm = !use_relaxed    ? charge_fmm :
-                          separate_relaxed ? relaxed_fmm :
-                                             preconditioner_fmm;
-  const bool         fused = use_relaxed || fused_rows;
+  const LaplaceFMM                  &fmm   = !use_relaxed     ? charge_fmm :
+                                             separate_relaxed ? relaxed_fmm :
+                                                                preconditioner_fmm;
+  const bool                         fused = use_relaxed || fused_rows;
   std::vector<double>                dipole_potentials;
   std::array<std::vector<double>, 3> curl_potentials;
   if (fused)
@@ -951,12 +971,12 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
             curl_charges[c][p] = inverse_4pi * JxW[p] * curls_u[p][c];
         }
       fmm.evaluate_mixed(charges,
-                                dipoles,
-                                curl_charges,
-                                potentials,
-                                gradients,
-                                dipole_potentials,
-                                curl_potentials);
+                         dipoles,
+                         curl_charges,
+                         potentials,
+                         gradients,
+                         dipole_potentials,
+                         curl_potentials);
     }
   else
     charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
@@ -1054,7 +1074,10 @@ GalerkinCalderonFMMOperator::vmult_preconditioner(
   const Vector<double> &src) const
 {
   const auto start = std::chrono::steady_clock::now();
-  apply(op, dst, src, separate_preconditioner ? preconditioner_fmm : charge_fmm);
+  apply(op,
+        dst,
+        src,
+        separate_preconditioner ? preconditioner_fmm : charge_fmm);
   time_product[5] += seconds_since(start);
   ++n_products[5];
 }
@@ -1068,10 +1091,10 @@ GalerkinCalderonFMMOperator::vmult_preconditioner_pair(
   Vector<double>       &v,
   Vector<double>       &w) const
 {
-  const auto         start = std::chrono::steady_clock::now();
-  const LaplaceFMM  &fmm   = separate_preconditioner ? preconditioner_fmm :
-                                                       charge_fmm;
-  const unsigned int np    = points.size();
+  const auto        start = std::chrono::steady_clock::now();
+  const LaplaceFMM &fmm =
+    separate_preconditioner ? preconditioner_fmm : charge_fmm;
+  const unsigned int np = points.size();
   Vector<double>     x_v(v_src), x_w(w_src);
   if (constraints.n_constraints() > 0)
     {
@@ -1142,13 +1165,13 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
     Utilities::MPI::sum(n_integrated_pairs, mpi_communicator);
   const unsigned long congruent_pairs =
     Utilities::MPI::sum(n_congruent_pairs, mpi_communicator);
-  const unsigned long entries = Utilities::MPI::sum(
-    static_cast<unsigned long>(near_sparsity.n_nonzero_elements()),
-    mpi_communicator);
+  const unsigned long entries =
+    Utilities::MPI::sum(static_cast<unsigned long>(
+                          near_sparsity.n_nonzero_elements()),
+                        mpi_communicator);
   std::array<double, 7> mean;
   for (unsigned int k = 0; k < 7; ++k)
-    mean[k] = Utilities::MPI::max(time_product[k] /
-                                    std::max(1u, n_products[k]),
+    mean[k] = Utilities::MPI::max(time_product[k] / std::max(1u, n_products[k]),
                                   mpi_communicator);
   const double sg = Utilities::MPI::max(setup_geometry, mpi_communicator);
   const double st = Utilities::MPI::max(setup_tree, mpi_communicator);
@@ -1159,7 +1182,7 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
     preconditioner_fmm.print_statistics(out);
   if (separate_relaxed)
     relaxed_fmm.print_statistics(out);
-  const auto   precision = out.precision();
+  const auto precision = out.precision();
   if (this_mpi_process == 0)
     out << std::setprecision(3) << "Galerkin Calderon FMM: " << n_cells
         << " cells, " << n_q_points << " points each; " << pairs
@@ -1171,9 +1194,9 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
                            std::to_string(integrated) + " integrated" :
                          std::string())
         << "\n"
-        << "  setup: geometry " << sg << " s, trees " << st
-        << " s, near field " << sn << " s (slowest process "
-        << setup_near_imbalance << " times the mean)\n";
+        << "  setup: geometry " << sg << " s, trees " << st << " s, near field "
+        << sn << " s (slowest process " << setup_near_imbalance
+        << " times the mean)\n";
   if (this_mpi_process == 0 &&
       near_profile_count[0] + near_profile_count[1] > 0)
     {
@@ -1192,8 +1215,8 @@ GalerkinCalderonFMMOperator::print_statistics(std::ostream &out) const
   if (this_mpi_process == 0)
     out << "  seconds per product, slowest process: V " << mean[0] << " ("
         << n_products[0] << "), K " << mean[1] << " (" << n_products[1]
-        << "), K^T " << mean[2] << " (" << n_products[2] << "), W "
-        << mean[3] << " (" << n_products[3] << "), both rows of the mixed "
+        << "), K^T " << mean[2] << " (" << n_products[2] << "), W " << mean[3]
+        << " (" << n_products[3] << "), both rows of the mixed "
         << "problem " << mean[4] << " (" << n_products[4]
         << "), preconditioner V or W " << mean[5] << " (" << n_products[5]
         << "), relaxed rows " << mean[6] << " (" << n_products[6] << ")\n"
