@@ -43,14 +43,28 @@ The samples cover real/complex potentials, DN (Dirichlet/Neumann), DR
 mean a dense direct factorization. FMA is supported in 3D only.
 
 The results of this fork on the samples differ from those of upstream pi-BEM
-in two ways, both of them changes to the collocation code. The nodal normals
-are normalised after their projection, which moves them by up to 3e-3 on the
-coarse sphere and the Neumann datum with them: up to 1e-2 in the flux of the
-DN and NR samples. Real problems with `Direct` assemble the cells near a
+in two ways. Real problems with `Direct` assemble the cells near a
 collocation point with the quasi-singular rules (`Quasi singular distance
-ratio = 2.0`), which changes alpha by 2e-6. With the normalisation removed and
-`Quasi singular distance ratio = 0`, the twelve samples give the solutions of
-upstream to round-off.
+ratio = 2.0`), which changes alpha by 2e-6; with `Quasi singular distance
+ratio = 0` the assembly is that of upstream. And the type of a degree of
+freedom shared by cells of two types no longer depends on the partition:
+upstream classified the dofs of a process only from the cells it owns, so
+that on 4 and 8 processes the same problem had different unknowns at the
+edges between the parts. A shared dof is now a Dirichlet dof if one of its
+cells is Dirichlet, else a Neumann dof if one is Neumann, else a Robin dof.
+
+Two errors of upstream are corrected. With `FMA`, the Robin datum `g/b` of a
+real problem entered only the near field of the right-hand side: on the
+sphere with `phi + dphi_dn = 2(x+y+z)` the potential was wrong by 0.18
+(0.0008 after the correction, as with `Direct`). In 2D the Robin functions
+had two entries instead of three.
+
+The projected nodal normals are not normalised, as in upstream: the Neumann
+datum is then consistent with the discrete surface. On the DN sample the
+potential converges at order 3 with them and at order 2 with normalised
+normals (Direct, three refinements: 3.0e-5 against 5.2e-4). The normals of
+`Nodal normals = interpolation`, sums over the cells at a node, are
+normalised.
 
 ## Hosted CI environment
 
@@ -148,9 +162,8 @@ end
 
 This uses slot 0 on manifold 1 and slot 1 on manifold 2, for every component.
 Supply the corresponding potential/wind/Robin functions for each selected slot.
-The bundled Robin samples are 3D: the present 2D parser allocates Robin
-functions with two entries while Robin preparation requires three. Do not use
-2D Robin conditions without resolving that implementation limitation.
+The Robin function has the three entries `a; b; g` in 2D as well
+(`RUN_REGRESSION/base/circle_robin_2d.prm`).
 
 ## C++ API migration
 

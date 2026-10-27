@@ -122,19 +122,21 @@ BoundaryConditions<dim>::declare_parameters(ParameterHandler &prm)
                     }
                   else
                     {
-                      // other are vectors
+                      // other are vectors: the wind has one entry per
+                      // direction, the Robin coefficients a; b; g three in
+                      // every dimension
+                      const unsigned int n_entries =
+                        cond == BoundaryConditionType::robin ? 3 : d + 2;
                       if (!d)
                         {
-                          Functions::ParsedFunction<2>::declare_parameters(prm,
-                                                                           d +
-                                                                             2);
+                          Functions::ParsedFunction<2>::declare_parameters(
+                            prm, n_entries);
                           prm.set("Function expression", defaults_2d[cond]);
                         }
                       else
                         {
-                          Functions::ParsedFunction<3>::declare_parameters(prm,
-                                                                           d +
-                                                                             3);
+                          Functions::ParsedFunction<3>::declare_parameters(
+                            prm, n_entries);
                           prm.set("Function expression", defaults_3d[cond]);
                         }
                     }
@@ -199,8 +201,9 @@ BoundaryConditions<dim>::parse_parameters(ParameterHandler &prm)
                     winds[pos]->parse_parameters(prm);
                     break;
                   case BoundaryConditionType::robin:
+                    // a; b; g of a phi + b dphi_dn = g, in 2D as in 3D
                     robin_coeffs[pos].reset(
-                      new Functions::ParsedFunction<dim>(dim));
+                      new Functions::ParsedFunction<dim>(3));
                     robin_coeffs[pos]->parse_parameters(prm);
                     break;
                   case BoundaryConditionType::invalid:

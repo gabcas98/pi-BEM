@@ -126,5 +126,25 @@
  "representation_p2": {
   "flux": "0.00242896",
   "gradient": "0.0140551"
+ },
+ "robin_2d": {
+  "iterations": "21",
+  "phi_nodes": "0",
+  "robin_residual": "0.0780134"
+ },
+ "robin_complex_direct": {
+  "phi_nodes": "0",
+  "robin_residual": "0.0185763",
+  "steps": "31"
+ },
+ "robin_complex_fma": {
+  "phi_nodes": "0",
+  "robin_residual": "0.0126805",
+  "steps": "30"
+ },
+ "robin_real_fma": {
+  "iterations": "28",
+  "phi_nodes": "0",
+  "robin_residual": "0.0107809"
  }
 }

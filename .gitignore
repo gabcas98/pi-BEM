@@ -20,8 +20,8 @@ __pycache__/
 !/RUN_REGRESSION/
 /RUN_REGRESSION/*.log
 /RUN_REGRESSION/*.inp
-/RUN_REGRESSION/parameters_bem_3.prm
-/RUN_REGRESSION/used_parameters_bem_3.prm
+/RUN_REGRESSION/parameters_bem_[23].prm
+/RUN_REGRESSION/used_parameters_bem_[23].prm
 
 # Old tarball checkpoints, superseded by git
 /checkpoints/

@@ -6,9 +6,9 @@
                                          as the new reference
     python3 run_regression.py CASE ...   run only the named cases
 
-Each case writes parameters_bem_3.prm from a frozen base file in base/, runs
-the solver built in ../build on 8 processes, and reads a few quantities from
-the log. They are compared with reference.json: the load vector and the
+Each case writes parameters_bem_3.prm (parameters_bem_2.prm in 2D) from a
+frozen base file in base/, runs the solver built in ../build on 8 processes,
+and reads a few quantities from the log. They are compared with reference.json: the load vector and the
 Frobenius norm of V, printed with sixteen digits, to 1e-12 relative; the
 errors, printed with six, to 1e-5 relative; Gauss's identity of the mixed
 problem, a difference of nearly equal sums, to 1e-3; the peak memory of a
@@ -17,7 +17,10 @@ checks also cover what went wrong before: an executable in a run folder
 older than the library, and runs that fail or hang instead of finishing.
 
 The mixed problem runs on the NACA wing of the report, whose coarse mesh and
-CAD files are frozen in naca/.
+CAD files are frozen in naca/. The Robin and complex problems of upstream
+pi-BEM run on the sphere of its samples, frozen in sphere/, and in 2D on
+the decagon of circle/; their errors are those of the boundary conditions,
+material by material.
 
 The base files are copies, so later edits to the study files in RUN_EXP do
 not move the reference. The run folder sits next to RUN_EXP because the
@@ -59,6 +62,10 @@ QUANTITIES = {
                         r'(\S+)', 'six'),
     'mixed_gauss': (r'\|\(1/2 M \+ K\) 1\| / \|1/2 M 1\| = (\S+),', 'loose'),
     'memory_kb': (r'RSS (\d+) kB', 'ceiling'),
+    # The errors by material of the Robin and complex problems.
+    'phi_nodes': (r'Phi Nodes error L_inf norm: (\S+)', 'six'),
+    'robin_residual': (r'Robin Nodes Residual error L_2 norm: (\S+)', 'six'),
+    'steps': (r'Solve terminated at step (\d+)', 'exact'),
 }
 
 # The mixed problem on the NACA wing: flux on the lower surface, potential
@@ -66,7 +73,8 @@ QUANTITIES = {
 MIXED = ['mixed_flux', 'mixed_potential', 'mixed_gauss', 'iterations',
          'memory_kb']
 
-# name: (base file, settings in BEMProblem<3>, quantities to compare)
+# name: (base file, settings in BEMProblem<dim>, quantities to compare
+#        [, dim, 3 if absent])
 CASES = {
     'dg_laplace_p1': ('g_p1_bal0_weak.prm',
                       {'Preconditioner': 'BlockJacobi',
@@ -223,38 +231,55 @@ CASES = {
                                     'Mixed Galerkin error indicator': 'jumps',
                                     'Mixed Galerkin refinement fraction': '0.5'},
                                    MIXED),
+    # A Robin datum that is not zero with the multipole method: it enters
+    # the far field through the expansions of the right-hand side.
+    'robin_real_fma': ('sphere_real_robin.prm', {},
+                       ['phi_nodes', 'robin_residual', 'iterations']),
+    # The complex problem, real and imaginary parts as two blocks, with the
+    # matrices and with the multipole method; the errors of the imaginary
+    # part.
+    'robin_complex_direct': ('sphere_complex_robin.prm', {},
+                             ['phi_nodes', 'robin_residual', 'steps']),
+    'robin_complex_fma': ('sphere_complex_robin.prm',
+                          {'Solution method': 'FMA'},
+                          ['phi_nodes', 'robin_residual', 'steps']),
+    # Dirichlet and Robin conditions in 2D.
+    'robin_2d': ('circle_robin_2d.prm', {},
+                 ['phi_nodes', 'robin_residual', 'iterations'], 2),
 }
 
 
-def set_value(text, key, value):
-    """Set every occurrence of a parameter; add it to BEMProblem<3> if the
+def set_value(text, key, value, dim=3):
+    """Set every occurrence of a parameter; add it to BEMProblem<dim> if the
     file does not have it."""
     pattern = re.compile(r'(\n\s*set ' + re.escape(key) + r'\s*=)[^\n]*')
     text, n = pattern.subn(lambda m: m.group(1) + ' ' + value, text)
     if n == 0:
-        text += (f'\nsubsection BEMProblem<3>\n  set {key} = {value}\n'
+        text += (f'\nsubsection BEMProblem<{dim}>\n  set {key} = {value}\n'
                  f'end\n')
     return text
 
 
 def run_case(name):
-    base, settings, _ = CASES[name]
+    base, settings, quantities = CASES[name][:3]
+    dim = CASES[name][3] if len(CASES[name]) > 3 else 3
     text = open(os.path.join(HERE, 'base', base)).read()
     for key, value in settings.items():
-        text = set_value(text, key, value)
-    with open(os.path.join(HERE, 'parameters_bem_3.prm'), 'w') as fh:
+        text = set_value(text, key, value, dim)
+    with open(os.path.join(HERE, f'parameters_bem_{dim}.prm'), 'w') as fh:
         fh.write(text)
+    executable = os.path.join(ROOT, 'build', f'bem_fma_{dim}d')
     log = os.path.join(HERE, f'{name}.log')
     start = time.time()
     with open(log, 'w') as fh:
         status = subprocess.run(['/usr/bin/time', '-f', 'WALL %e s RSS %M kB',
                                  'timeout', '-k', '30', '900', 'mpirun',
-                                 '-np', '8', EXECUTABLE, '1'],
+                                 '-np', '8', executable, '1'],
                                 cwd=HERE, stdout=fh, stderr=subprocess.STDOUT)
     seconds = time.time() - start
     t = open(log, errors='ignore').read()
     values = {}
-    for q in CASES[name][2]:
+    for q in quantities:
         pattern, _ = QUANTITIES[q]
         found = re.findall(pattern, t)
         values[q] = found[-1] if found else None

@@ -117,6 +117,10 @@ them changes the solution.
 - `naca_mixed_tips_dirichlet_p1_fmm`: a Dirichlet part in several pieces,
   relaxed products, and a coarse preconditioner with separate relaxed
   expansions.
+- `robin_real_fma`, `robin_complex_direct`, `robin_complex_fma`, `robin_2d`:
+  the Robin and complex problems of upstream pi-BEM on the sphere of its
+  samples (a Robin datum that is not zero with the multipole method) and on
+  a decagon in 2D.
 
 ## Environment switches
 

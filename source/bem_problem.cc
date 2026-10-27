@@ -2333,76 +2333,60 @@ BEMProblem<dim>::compute_dirichlet_and_neumann_dofs_vectors()
   std::vector<types::global_dof_index> dofs(fe->dofs_per_cell);
   unsigned int                         local_can_determine_phi = 0;
 
+  // Every process looks at all the cells around its dofs, so that the type of
+  // a dof does not depend on the partition: a dof shared by cells of
+  // different types is a Dirichlet dof if one of them is Dirichlet, else a
+  // Neumann dof if one of them is Neumann, else a Robin dof.
   for (const auto &cell : dh.active_cell_iterators())
     {
-      if (cell->subdomain_id() == this_mpi_process)
+      const auto has_material = [&](const std::vector<unsigned int> &ids) {
+        return std::find(ids.begin(), ids.end(), cell->material_id()) !=
+               ids.end();
+      };
+      cell->get_dof_indices(dofs);
+      if (has_material(comp_dom.dirichlet_boundary_ids))
         {
-          bool is_dirichlet = std::find(comp_dom.dirichlet_boundary_ids.begin(),
-                                        comp_dom.dirichlet_boundary_ids.end(),
-                                        cell->material_id()) !=
-                              comp_dom.dirichlet_boundary_ids.end();
-
-          if (is_dirichlet)
+          for (auto i : dofs)
             {
-              cell->get_dof_indices(dofs);
-              for (auto i : dofs)
-                {
-                  non_partitioned_dirichlet_flags(i) = 1;
+              non_partitioned_dirichlet_flags(i) = 1;
 
-                  // mark dofs on masking vectors
-                  non_partitioned_dirichlet_nodes(i) = 1;
-                  non_partitioned_neumann_nodes(i)   = 0;
-                  non_partitioned_robin_nodes(i)     = 0;
-                }
-
-              local_can_determine_phi = 1;
+              // mark dofs on masking vectors
+              non_partitioned_dirichlet_nodes(i) = 1;
+              non_partitioned_neumann_nodes(i)   = 0;
+              non_partitioned_robin_nodes(i)     = 0;
             }
-          else
+
+          local_can_determine_phi = 1;
+        }
+      else if (has_material(comp_dom.neumann_boundary_ids))
+        {
+          for (auto i : dofs)
             {
-              bool is_neumann = std::find(comp_dom.neumann_boundary_ids.begin(),
-                                          comp_dom.neumann_boundary_ids.end(),
-                                          cell->material_id()) !=
-                                comp_dom.neumann_boundary_ids.end();
-              if (is_neumann)
+              non_partitioned_neumann_flags(i) = 1;
+
+              // mark dofs on masking vectors
+              if (!non_partitioned_dirichlet_nodes(i))
                 {
-                  cell->get_dof_indices(dofs);
-                  for (auto i : dofs)
-                    {
-                      non_partitioned_neumann_flags(i) = 1;
-
-                      // mark dofs on masking vectors
-                      non_partitioned_dirichlet_nodes(i) = 0;
-                      non_partitioned_neumann_nodes(i)   = 1;
-                      non_partitioned_robin_nodes(i)     = 0;
-                    }
-                }
-              else
-                {
-#ifdef DEBUG
-                  bool is_robin = std::find(comp_dom.robin_boundary_ids.begin(),
-                                            comp_dom.robin_boundary_ids.end(),
-                                            cell->material_id()) !=
-                                  comp_dom.robin_boundary_ids.end();
-                  Assert(is_robin, ExcInternalError());
-#endif
-                  cell->get_dof_indices(dofs);
-                  for (auto i : dofs)
-                    {
-                      non_partitioned_robin_flags(i) = 1;
-
-                      // mark dofs on masking vectors
-                      if (!non_partitioned_dirichlet_nodes(i) &&
-                          !non_partitioned_neumann_nodes(i))
-                        {
-                          non_partitioned_dirichlet_nodes(i) = 0;
-                          non_partitioned_neumann_nodes(i)   = 0;
-                          non_partitioned_robin_nodes(i)     = 1;
-                        }
-
-                      local_can_determine_phi = 1;
-                    }
+                  non_partitioned_neumann_nodes(i) = 1;
+                  non_partitioned_robin_nodes(i)   = 0;
                 }
             }
+        }
+      else
+        {
+          Assert(has_material(comp_dom.robin_boundary_ids),
+                 ExcInternalError());
+          for (auto i : dofs)
+            {
+              non_partitioned_robin_flags(i) = 1;
+
+              // mark dofs on masking vectors
+              if (!non_partitioned_dirichlet_nodes(i) &&
+                  !non_partitioned_neumann_nodes(i))
+                non_partitioned_robin_nodes(i) = 1;
+            }
+
+          local_can_determine_phi = 1;
         }
     }
 
@@ -5949,8 +5933,10 @@ BEMProblem<dim>::compute_rhs(TrilinosWrappers::MPI::Vector       &dst,
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
+      // The Robin datum before the expansions: the far field needs it as
+      // well as the near field.
       serv_dphi_dn += serv_phi_robin;
+      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
 
       static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
                                                          mpi_communicator);
@@ -11840,28 +11826,39 @@ BEMProblem<dim>::compute_normals()
 
   vector_constraints.distribute(vector_normals_solution);
 
-  for (const auto i : this_cpu_set)
+  // The summed normals of the interpolation are normalised. The projection
+  // is not: it is the normal of the discrete surface in the space of the
+  // gradients, and only with it is the Neumann datum of the collocation
+  // consistent with that surface. Normalised, the potential of the DN
+  // sample on the sphere converges at order 2 instead of 3 (Direct, three
+  // refinements: 5.2e-4 against 3.0e-5).
+  if (nodal_normals == "interpolation")
     {
-      const types::global_dof_index original_index = sub_wise_to_original[i];
-      std::vector<types::global_dof_index> component_indices(dim);
-      double normal_norm_square = 0.0;
-      for (unsigned int d = 0; d < dim; ++d)
+      for (const auto i : this_cpu_set)
         {
-          component_indices[d] =
-            vec_original_to_sub_wise[d * dh.n_dofs() + original_index];
-          Assert(vector_this_cpu_set.is_element(component_indices[d]),
-                 ExcInternalError());
-          const double component = vector_normals_solution[component_indices[d]];
-          normal_norm_square += component * component;
-        }
+          const types::global_dof_index original_index =
+            sub_wise_to_original[i];
+          std::vector<types::global_dof_index> component_indices(dim);
+          double normal_norm_square = 0.0;
+          for (unsigned int d = 0; d < dim; ++d)
+            {
+              component_indices[d] =
+                vec_original_to_sub_wise[d * dh.n_dofs() + original_index];
+              Assert(vector_this_cpu_set.is_element(component_indices[d]),
+                     ExcInternalError());
+              const double component =
+                vector_normals_solution[component_indices[d]];
+              normal_norm_square += component * component;
+            }
 
-      const double normal_norm = std::sqrt(normal_norm_square);
-      AssertThrow(normal_norm > 1e-14,
-                  ExcMessage("Cannot normalize a zero nodal normal."));
-      for (unsigned int d = 0; d < dim; ++d)
-        vector_normals_solution[component_indices[d]] /= normal_norm;
+          const double normal_norm = std::sqrt(normal_norm_square);
+          AssertThrow(normal_norm > 1e-14,
+                      ExcMessage("Cannot normalize a zero nodal normal."));
+          for (unsigned int d = 0; d < dim; ++d)
+            vector_normals_solution[component_indices[d]] /= normal_norm;
+        }
+      vector_normals_solution.compress(VectorOperation::insert);
     }
-  vector_normals_solution.compress(VectorOperation::insert);
 }
 
 template <int dim>

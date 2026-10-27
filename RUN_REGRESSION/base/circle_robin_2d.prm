@@ -1,0 +1,35 @@
+# Two-dimensional problem in the decagon of grids/circle.inp, without a
+# curved manifold: u = x + y, Dirichlet on the upper four cells (material 1),
+# Robin u + du/dn = 2 (x + y) on the lower six (material 2), four global
+# refinements. The Robin coefficients a; b; g have three entries in 2D too.
+
+subsection BEMProblem<2>
+  set Solution method = Direct
+end
+
+subsection ComputationalDomain<2>
+  set Input grid name   = circle/circle_halves
+  set Input grid format = inp
+  set Number of cycles  = 4
+  subsection Boundary Conditions ID Numbers
+    set Dirichlet boundary ids = 1
+    set Neumann boundary ids   =
+    set Robin boundary ids     = 2
+  end
+end
+
+subsection BoundaryConditions<2>
+  subsection Potential 0 0 2d
+    set Function expression = x+y
+  end
+  subsection Wind function 0 0 2d
+    set Function expression = 1; 1
+  end
+  subsection Robin coefficients 0 0 2d
+    set Function expression = 1; 1; 2*(x+y)
+  end
+end
+
+subsection Driver<2>
+  set Set Global Refinement = true
+end

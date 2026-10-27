@@ -198,7 +198,7 @@ ComputationalDomain<dim>::declare_parameters(ParameterHandler &prm)
                     Patterns::List(Patterns::Integer(0)));
 
   prm.declare_entry("Graded refinement focus",
-                    "0,0,0",
+                    dim == 2 ? "0,0" : "0,0,0",
                     Patterns::List(Patterns::Double(), dim, dim));
 
   prm.declare_entry("Graded refinement size ratio",
