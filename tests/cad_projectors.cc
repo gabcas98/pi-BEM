@@ -23,6 +23,11 @@
 //    and the trimming curves; the transfinite map of the cells along the
 //    curves covers them, with Jacobians checked against central
 //    differences;
+//  - a surface of two faces: the lateral surface of a cylinder split into
+//    two halves, each converted to NURBS so that its surface ends at its
+//    edges, under a mesh whose cells straddle the two junctions, whose
+//    points take the closest of the two faces, and the knots of the NURBS,
+//    across which the parametric map takes the projection;
 //  - curves: a circle and an ellipse in space, and the two rims of the
 //    cylinder, picked out of the edges of the solid.
 
@@ -44,6 +49,10 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Pln.hxx>
@@ -456,6 +465,47 @@ plate()
 
 
 void
+split_cylinder()
+{
+  // The lateral surface along the x-axis, its halves z > 0 and z < 0 as two
+  // NURBS faces; the cells of the mesh turned by 0.3 about the axis, so
+  // that columns of cells straddle the junctions z = 0, and the knots of
+  // the two rational arcs of each half, a quarter turn from the junctions,
+  // where a map linear in the parameters has a kink.
+  const double        R = 1, length = 3, turn = 0.3;
+  const unsigned int  n_around = 12;
+  Triangulation<2>    flat;
+  GridGenerator::subdivided_hyper_rectangle(flat,
+                                            {n_around, 3},
+                                            Point<2>(turn, -length / 2),
+                                            Point<2>(turn + 2 * numbers::PI,
+                                                     length / 2));
+  const Triangulation<2, 3> tria = lift(
+    flat,
+    [&](const Point<2> &p) {
+      return Point<3>(p[1], R * std::cos(p[0]), R * std::sin(p[0]));
+    },
+    false);
+
+  const gp_Cylinder cylinder(gp_Ax3(gp_Pnt(-length / 2, 0, 0),
+                                    gp_Dir(1, 0, 0),
+                                    gp_Dir(0, 1, 0)),
+                             R);
+  BRep_Builder    builder;
+  TopoDS_Compound shape;
+  builder.MakeCompound(shape);
+  for (const double start : {0., numbers::PI})
+    builder.Add(shape,
+                BRepBuilderAPI_NurbsConvert(
+                  BRepBuilderAPI_MakeFace(
+                    cylinder, start, start + numbers::PI, 0, length)
+                    .Face())
+                  .Shape());
+  trimmed("split cylinder", tria, shape, 2 * numbers::PI * R * length, 0);
+}
+
+
+void
 spherical_cap()
 {
   // The part of a sphere above the latitude of 45 degrees, closed by a
@@ -599,6 +649,7 @@ main()
   cylinder();
   plate();
   spherical_cap();
+  split_cylinder();
   deallog << std::endl;
   curves();
 }

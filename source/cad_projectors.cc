@@ -27,7 +27,9 @@
 #  include <BRep_Tool.hxx>
 #  include <Bnd_Box.hxx>
 #  include <Geom2d_Curve.hxx>
+#  include <Geom_BSplineSurface.hxx>
 #  include <Geom_Curve.hxx>
+#  include <Geom_RectangularTrimmedSurface.hxx>
 #  include <Geom_Surface.hxx>
 #  include <ShapeAnalysis_Curve.hxx>
 #  include <ShapeAnalysis_Surface.hxx>
@@ -151,6 +153,29 @@ namespace OpenCASCADE
       std::vector<unsigned int> trims;
       std::vector<Point<3>>     poles;
 
+      /// Faces: the parameters of the interior knot lines of a B-spline
+      /// surface across which its parametrization is only continuous (a
+      /// knot of multiplicity at least the degree) while the surface itself
+      /// is smooth, its normal continuous, per direction. A map linear in
+      /// the parameters has a kink there, which the closest point does not
+      /// have. Knot lines along which the surface has an edge are left out:
+      /// every map has a kink there.
+      std::array<std::vector<double>, dim> kinks;
+
+      /// Whether the open interval between a and b in the parameter a
+      /// direction contains a kink.
+      bool
+      crosses_kink(const unsigned int direction,
+                   const double       a,
+                   const double       b) const
+      {
+        const double slack = 1e-9 * (upper[direction] - lower[direction]);
+        for (const double k : kinks[direction])
+          if (k > std::min(a, b) + slack && k < std::max(a, b) - slack)
+            return true;
+        return false;
+      }
+
       void
       evaluate(const Point<dim>          &theta,
                Point<3>                  &S,
@@ -247,6 +272,53 @@ namespace OpenCASCADE
       patch->first    = patch->lower;
       patch->last     = patch->upper;
       patch->set_box();
+      Handle(Geom_Surface) basis = patch->surface;
+      if (const auto trimmed =
+            Handle(Geom_RectangularTrimmedSurface)::DownCast(basis);
+          !trimmed.IsNull())
+        basis = trimmed->BasisSurface();
+      if (const auto spline = Handle(Geom_BSplineSurface)::DownCast(basis);
+          !spline.IsNull())
+        {
+          // The normal on the two sides of a knot line, at points along it.
+          const auto smooth = [&](const unsigned int a, const double knot) {
+            const double eps = 1e-8 * (patch->upper[a] - patch->lower[a]);
+            const unsigned int b = 1 - a;
+            for (unsigned int j = 0; j <= 20; ++j)
+              {
+                const double t = patch->lower[b] +
+                                 (patch->upper[b] - patch->lower[b]) * j / 20.;
+                std::array<Tensor<1, 3>, 2> normal;
+                for (const int side : {0, 1})
+                  {
+                    Point<2> theta;
+                    theta[a] = knot + (side == 0 ? -eps : eps);
+                    theta[b] = t;
+                    Point<3>                S;
+                    DerivativeForm<1, 2, 3> dS;
+                    DerivativeForm<2, 2, 3> d2S;
+                    patch->evaluate(theta, S, dS, d2S);
+                    const Tensor<1, 3> n = cross_product_3d(
+                      Tensor<1, 3>({dS[0][0], dS[1][0], dS[2][0]}),
+                      Tensor<1, 3>({dS[0][1], dS[1][1], dS[2][1]}));
+                    if (n.norm() < 1e-300)
+                      return false;
+                    normal[side] = n / n.norm();
+                  }
+                if ((normal[0] - normal[1]).norm() > 1e-4)
+                  return false;
+              }
+            return true;
+          };
+          for (int i = 2; i < spline->NbUKnots(); ++i)
+            if (spline->UMultiplicity(i) >= spline->UDegree() &&
+                smooth(0, spline->UKnot(i)))
+              patch->kinks[0].push_back(spline->UKnot(i));
+          for (int i = 2; i < spline->NbVKnots(); ++i)
+            if (spline->VMultiplicity(i) >= spline->VDegree() &&
+                smooth(1, spline->VKnot(i)))
+              patch->kinks[1].push_back(spline->VKnot(i));
+        }
       return patch;
     }
 
@@ -292,10 +364,25 @@ namespace OpenCASCADE
       /// of the reference cell in each direction, numbered
       /// lexicographically: their quadratic interpolation at a point of
       /// the cell starts Newton's method close to the solution.
-      std::array<Point<dim>, dim == 2 ? 9 : 3> node_theta;
+      using NodeTheta = std::array<Point<dim>, dim == 2 ? 9 : 3>;
+      NodeTheta node_theta;
+
+      /// A cell whose points have feet outside its face, as across the
+      /// junction of two faces: the faces close to it, onto the closest of
+      /// which each point is projected, and the parameters of the feet of
+      /// the nodes on each; under the parametric map, its own face for a
+      /// cell across a kink of the parametrization; empty otherwise.
+      std::vector<unsigned int> faces;
+      std::vector<NodeTheta>    face_node_theta;
 
       Point<dim>
       start(const Point<dim> &unit_point) const
+      {
+        return start(unit_point, node_theta);
+      }
+
+      static Point<dim>
+      start(const Point<dim> &unit_point, const NodeTheta &nodes)
       {
         const auto basis = [](const double t) {
           return std::array<double, 3>{{2 * (t - 0.5) * (t - 1),
@@ -306,13 +393,13 @@ namespace OpenCASCADE
         const std::array<double, 3> b0 = basis(unit_point[0]);
         if constexpr (dim == 1)
           for (unsigned int i = 0; i < 3; ++i)
-            result += b0[i] * node_theta[i];
+            result += b0[i] * nodes[i];
         else
           {
             const std::array<double, 3> b1 = basis(unit_point[1]);
             for (unsigned int j = 0; j < 3; ++j)
               for (unsigned int i = 0; i < 3; ++i)
-                result += b0[i] * b1[j] * node_theta[i + 3 * j];
+                result += b0[i] * b1[j] * nodes[i + 3 * j];
           }
         return result;
       }
@@ -341,8 +428,21 @@ namespace OpenCASCADE
         Handle(Geom2d_Curve)        pcurve;
         Tensor<1, 2>                offset;
         std::array<Tensor<1, 2>, 2> shift;
+
+        /// A cell on several faces under the parametric map: the face on
+        /// which the edge is the segment between the parameters theta of
+        /// its ends, as for the cell of that face along it, or none.
+        unsigned int face = none;
       };
-      unsigned int                                       n_trimmed = 0;
+      unsigned int                                       n_trimmed  = 0;
+      unsigned int                                       n_segments = 0;
+
+      /// The images of the points of the edges by their projection, for
+      /// the parameters r met so far on the current cell: the points of a
+      /// tensor rule share them. Kept for the closest point only, whose
+      /// image does not depend on the Jacobian of the cell.
+      std::array<std::vector<std::pair<double, ProjectionResult<3>>>, 4>
+        edge_images;
       std::array<Edge, 4>                                edges;
       std::array<Point<3>, 4>                            corners;
 
@@ -482,6 +582,54 @@ namespace OpenCASCADE
 
 
 
+    // Whether S, where Newton's method stopped, is the foot of x on the
+    // surface of the patch: x - S normal to it, unlike a point of the
+    // boundary of the parameters to which the iterate was clamped, as for a
+    // point beyond an edge of a face that is not trimmed there.
+    bool
+    is_foot(const CADPatch<2>             &patch,
+            const Point<3>                &x,
+            const Point<3>                &S,
+            const DerivativeForm<1, 2, 3> &dS)
+    {
+      const Tensor<1, 3> r = x - S;
+      for (unsigned int a = 0; a < 2; ++a)
+        {
+          double g = 0, t = 0;
+          for (unsigned int i = 0; i < 3; ++i)
+            {
+              g += r[i] * dS[i][a];
+              t += dS[i][a] * dS[i][a];
+            }
+          t = std::sqrt(t);
+          if (std::abs(g) >
+              (1e-6 * r.norm() + 1e-8 * std::max(1., patch.diameter)) * t)
+            return false;
+        }
+      return true;
+    }
+
+
+
+    // Whether the closest point of x is a strict local minimum at S, from
+    // the Hessian G - H of |S - x|^2 / 2: x lies closer to the surface than
+    // its centres of curvature, where the projection of a cell does not
+    // fold.
+    bool
+    within_reach(const Point<3>                &x,
+                 const Point<3>                &S,
+                 const DerivativeForm<1, 2, 3> &dS,
+                 const DerivativeForm<2, 2, 3> &d2S)
+    {
+      const Tensor<1, 3> r = x - S;
+      Tensor<2, 2>       H;
+      for (unsigned int i = 0; i < 3; ++i)
+        H += r[i] * d2S[i];
+      return positive_definite(Tensor<2, 2>(gram(dS) - H));
+    }
+
+
+
     /// The closest point on a trimming curve, from the parameter t.
     ProjectionResult<3>
     project_onto_curve(const CADPatch<1> &curve,
@@ -540,13 +688,15 @@ namespace OpenCASCADE
     template <int dim>
     ProjectionResult<3>
     project_onto_patch(const CADPatch<dim>     &patch,
+                       const unsigned int       index,
                        ShapeCache<dim>         &data,
                        const Direction<3>      &direction,
                        const double             tolerance,
                        const MeshPoint<dim, 3> &x,
                        Point<dim>              &theta,
                        const bool               closest_only = false,
-                       const bool               allow_stencil = true)
+                       const bool               allow_stencil = true,
+                       const bool               allow_restart = true)
     {
       ProjectionResult<3>       result;
       Point<3>                  S;
@@ -554,7 +704,7 @@ namespace OpenCASCADE
       DerivativeForm<2, dim, 3> d2S;
       result.regular = closest_point(patch, x.point, theta, S, dS, d2S) &&
                        regular_minimum(patch, x.point, S, dS, d2S);
-      if (!result.regular)
+      if (!result.regular && allow_restart)
         {
           // Start again from the global projection of the point: Newton's
           // method may stop on a degenerate boundary of the parameters, as a
@@ -562,8 +712,10 @@ namespace OpenCASCADE
           // foot on the other side of the pole.
           if constexpr (dim == 2)
             {
+              if (data.analysis[index].IsNull())
+                data.analysis[index] = new ShapeAnalysis_Surface(patch.surface);
               const gp_Pnt2d uv =
-                data.analysis[data.patch]->ValueOfUV(to_gp(x.point), tolerance);
+                data.analysis[index]->ValueOfUV(to_gp(x.point), tolerance);
               theta = Point<2>(uv.X(), uv.Y());
             }
           else
@@ -690,7 +842,7 @@ namespace OpenCASCADE
                     y.point += (level + 1) * delta * t;
                     Point<dim> theta_y = theta;
                     const ProjectionResult<3> r = project_onto_patch(
-                      patch, data, direction, tolerance, y, theta_y,
+                      patch, index, data, direction, tolerance, y, theta_y,
                       closest_only, false);
                     mean_J[level] += 0.25 * r.jacobian;
                     mean_n[level] += 0.25 * r.normal;
@@ -707,12 +859,12 @@ namespace OpenCASCADE
         {
           if (!patch.trims.empty())
             {
-              if (!data.classifiers[data.patch])
-                data.classifiers[data.patch] =
+              if (!data.classifiers[index])
+                data.classifiers[index] =
                   std::make_unique<BRepTopAdaptor_FClass2d>(
                     TopoDS::Face(patch.shape), tolerance);
               if (!std::isfinite(theta.norm_square()) ||
-                  data.classifiers[data.patch]->Perform(
+                  data.classifiers[index]->Perform(
                     gp_Pnt2d(theta[0], theta[1])) == TopAbs_OUT)
                 result.regular = false;
             }
@@ -730,6 +882,77 @@ namespace OpenCASCADE
             result.regular = false;
         }
       return result;
+    }
+
+
+
+    /**
+     * The projection of x, at the given point of the reference cell, onto
+     * the faces of the current cell: onto its face; or, for a cell whose
+     * points have feet on several faces, onto the closest of those faces
+     * that contain the foot, else onto the closest of all, as onto the
+     * union of the faces. The parameters of the feet of the nodes on each
+     * face start Newton's method.
+     */
+    template <int dim>
+    ProjectionResult<3>
+    project_onto_faces(
+      const std::vector<std::unique_ptr<CADPatch<dim>>> &patches,
+      ShapeCache<dim>                                   &data,
+      const Direction<3>                                &direction,
+      const double                                       tolerance,
+      const MeshPoint<dim, 3>                           &x,
+      const Point<dim>                                  &unit_point,
+      const bool                                         closest_only = false)
+    {
+      if (data.faces.empty())
+        {
+          Point<dim> theta = data.start(unit_point);
+          return project_onto_patch(*patches[data.patch],
+                                    data.patch,
+                                    data,
+                                    direction,
+                                    tolerance,
+                                    x,
+                                    theta,
+                                    closest_only);
+        }
+      // A face that does not contain the foot stops Newton's method on its
+      // boundary: the global restart of the projection, meant for the poles
+      // of a parametrization, is tried only if no face contains it.
+      ProjectionResult<3> best;
+      double              best_distance = std::numeric_limits<double>::max();
+      bool                best_inside   = false;
+      for (const bool restart : {false, true})
+        {
+          for (unsigned int k = 0; k < data.faces.size(); ++k)
+            {
+              const unsigned int p = data.faces[k];
+              Point<dim>         theta =
+                ShapeCache<dim>::start(unit_point, data.face_node_theta[k]);
+              const ProjectionResult<3> r = project_onto_patch(*patches[p],
+                                                               p,
+                                                               data,
+                                                               direction,
+                                                               tolerance,
+                                                               x,
+                                                               theta,
+                                                               closest_only,
+                                                               true,
+                                                               restart);
+              const double distance = (r.point - x.point).norm();
+              if ((r.regular && !best_inside) ||
+                  (r.regular == best_inside && distance < best_distance))
+                {
+                  best          = r;
+                  best_distance = distance;
+                  best_inside   = r.regular;
+                }
+            }
+          if (best_inside)
+            break;
+        }
+      return best;
     }
 
 
@@ -1030,20 +1253,27 @@ namespace OpenCASCADE
           }
       }
     data.patch     = (inside != none) ? inside : any;
-    data.theta     = (inside != none) ? theta_inside : theta_any;
-    data.n_trimmed = 0;
+    data.theta      = (inside != none) ? theta_inside : theta_any;
+    data.n_trimmed  = 0;
+    data.n_segments = 0;
+    if constexpr (dim == 2)
+      for (auto &images : data.edge_images)
+        images.clear();
 
-    // The feet of the mapping at the nodes of the cell, unwrapped on
-    // periodic parameters to the period of the centre.
-    {
-      const auto &patch = *patches[data.patch];
-      for (unsigned int k = 0; k < data.node_theta.size(); ++k)
+    // The feet of the mapping at the nodes of the cell on a patch, from
+    // the parameters of the foot of the centre, unwrapped on periodic
+    // parameters to the period of the centre.
+    const auto node_feet = [&](const unsigned int     p,
+                               const Point<dim>      &theta_center,
+                               typename ShapeCache<dim>::NodeTheta &feet) {
+      const auto &patch = *patches[p];
+      for (unsigned int k = 0; k < feet.size(); ++k)
         {
           Point<dim> unit;
           unit[0] = 0.5 * (k % 3);
           if constexpr (dim == 2)
             unit[1] = 0.5 * (k / 3);
-          Point<dim>                theta = data.theta;
+          Point<dim>                theta = theta_center;
           Point<3>                  S;
           DerivativeForm<1, dim, 3> dS;
           DerivativeForm<2, dim, 3> d2S;
@@ -1054,17 +1284,141 @@ namespace OpenCASCADE
                              dS,
                              d2S) ||
               !std::isfinite(theta.norm_square()))
-            theta = data.theta;
+            theta = theta_center;
           for (unsigned int a = 0; a < dim; ++a)
             if (patch.periodic[a])
               {
                 const double period = patch.upper[a] - patch.lower[a];
-                theta[a] -= period * std::round((theta[a] - data.theta[a]) /
+                theta[a] -= period * std::round((theta[a] - theta_center[a]) /
                                                 period);
               }
-          data.node_theta[k] = theta;
+          feet[k] = theta;
         }
-    }
+    };
+    node_feet(data.patch, data.theta, data.node_theta);
+
+    // Whether the nodes of the cell lie within reach of the closest point
+    // of their face, closer to it than its centres of curvature, so that
+    // its projection does not fold the cell, as it does where a coarse cell
+    // spans a strongly curved part of the surface.
+    const auto within_reach_of_face = [&]() {
+      if constexpr (dim == 2)
+        {
+          const auto &patch = *patches[data.patch];
+          for (unsigned int k = 0; k < data.node_theta.size(); ++k)
+            {
+              Point<3>                S;
+              DerivativeForm<1, 2, 3> dS;
+              DerivativeForm<2, 2, 3> d2S;
+              patch.evaluate(data.node_theta[k], S, dS, d2S);
+              if (!within_reach(mapping.transform_unit_to_real_cell(
+                                  cell, Point<2>(0.5 * (k % 3), 0.5 * (k / 3))),
+                                S,
+                                dS,
+                                d2S))
+                return false;
+            }
+        }
+      return true;
+    };
+
+    // A cell of a shape of several faces with a node (a vertex, the middle
+    // of an edge or the centre) whose foot lies off its face, beyond a trimming curve or at an edge of the
+    // parameters where Newton's method stopped, as across the junction of
+    // two faces, lies on several faces: those whose boxes come within a
+    // diameter of the cell, the closest of which each point then takes, by
+    // projection; the foot may lie off the other faces as well, in a gap
+    // between them. The parametric map holds on one face only, and on the
+    // bow of a hull it lost 3e-4 of the area on cells that leave their face
+    // along a free edge, with no other face close, which are then mapped by
+    // projection too. Only a cell within a diameter of a trimming curve of
+    // its face can leave it.
+    data.faces.clear();
+    data.face_node_theta.clear();
+    if constexpr (dim == 2)
+      if (const double reach = cell->diameter() + tolerance;
+          patches.size() > 1 &&
+          std::any_of(patches[data.patch]->trims.begin(),
+                      patches[data.patch]->trims.end(),
+                      [&](const unsigned int k) {
+                        return trimming_curves[k]->box_distance(center) <=
+                               reach;
+                      }))
+        {
+          const auto &patch = *patches[data.patch];
+          if (!data.classifiers[data.patch])
+            data.classifiers[data.patch] =
+              std::make_unique<BRepTopAdaptor_FClass2d>(
+                TopoDS::Face(patch.shape), tolerance);
+          bool several = false;
+          for (unsigned int k = 0; k < data.node_theta.size() && !several; ++k)
+            {
+              const Point<2> unit(0.5 * (k % 3), 0.5 * (k / 3));
+              const Point<3> y = mapping.transform_unit_to_real_cell(cell, unit);
+              const Point<2> &theta = data.node_theta[k];
+              Point<3>                S;
+              DerivativeForm<1, 2, 3> dS;
+              DerivativeForm<2, 2, 3> d2S;
+              patch.evaluate(theta, S, dS, d2S);
+              several = !std::isfinite(theta.norm_square()) ||
+                        !is_foot(patch, y, S, dS) ||
+                        data.classifiers[data.patch]->Perform(
+                          gp_Pnt2d(theta[0], theta[1])) == TopAbs_OUT;
+            }
+          // At a free edge, with no other face close, the parametric map
+          // remains if the projection would fold the cell.
+          if (several && parametric &&
+              std::count_if(order.begin(), order.end(), [&](const auto &o) {
+                return o.first <= reach;
+              }) <= 1 &&
+              !within_reach_of_face())
+            several = false;
+          if (several)
+            for (const auto &[box_distance, p] : order)
+              {
+                if (box_distance > reach)
+                  break;
+                if (data.analysis[p].IsNull())
+                  data.analysis[p] =
+                    new ShapeAnalysis_Surface(patches[p]->surface);
+                const gp_Pnt2d uv =
+                  data.analysis[p]->ValueOfUV(to_gp(center), tolerance);
+                data.faces.push_back(p);
+                data.face_node_theta.emplace_back();
+                node_feet(p,
+                          Point<dim>(uv.X(), uv.Y()),
+                          data.face_node_theta.back());
+              }
+        }
+
+    // Under the parametric map, a cell on one face whose parameters cross a
+    // kink of the parametrization of the face takes the same way as a cell
+    // on several faces, with its face only: the projection of the
+    // transfinite map of its edges, whose closest point does not depend on
+    // the parametrization; unless that projection would fold the cell, which
+    // is worse than the kink.
+    if constexpr (dim == 2)
+      if (parametric && data.faces.empty())
+        {
+          const auto &patch = *patches[data.patch];
+          bool        kink  = false;
+          for (unsigned int a = 0; a < 2 && !kink; ++a)
+            if (!patch.kinks[a].empty())
+              {
+                double low = data.node_theta[0][a], high = low;
+                for (const auto &theta : data.node_theta)
+                  {
+                    low  = std::min(low, theta[a]);
+                    high = std::max(high, theta[a]);
+                  }
+                kink = patch.crosses_kink(a, low, high);
+              }
+          if (kink && within_reach_of_face())
+            {
+              data.faces.push_back(data.patch);
+              data.face_node_theta.push_back(data.node_theta);
+            }
+        }
 
     if constexpr (dim == 2)
       {
@@ -1072,10 +1426,16 @@ namespace OpenCASCADE
         data.parametric_cell = false;
         if (cell->reference_cell() != ReferenceCells::Quadrilateral)
           return;
-        if (parametric)
+        // The trimming curves of the faces of the cell.
+        std::vector<unsigned int> trims = face.trims;
+        for (const unsigned int p : data.faces)
+          for (const unsigned int k : patches[p]->trims)
+            if (std::find(trims.begin(), trims.end(), k) == trims.end())
+              trims.push_back(k);
+        if (parametric && data.faces.empty())
           data.parametric_cell = true;
         else if (!follow_trimming_curves || direction.is_mesh_normal() ||
-                 face.trims.empty())
+                 trims.empty())
           return;
 
         // The edges of the cell on trimming curves: vertices on the curve,
@@ -1088,11 +1448,12 @@ namespace OpenCASCADE
           {
             auto &edge = data.edges[e];
             edge.curve = none;
+            edge.face  = none;
             const Point<3> &a      = vertices[edge_vertices[e][0]];
             const Point<3> &b      = vertices[edge_vertices[e][1]];
             const double    length = (b - a).norm();
             const double    near   = 1e-3 * length + 10 * tolerance;
-            for (const unsigned int k : face.trims)
+            for (const unsigned int k : trims)
               {
                 const auto &curve = *trimming_curves[k];
                 if (curve.box_distance(a) > near ||
@@ -1148,7 +1509,67 @@ namespace OpenCASCADE
             reinit_parametric(mapping, cell, vertices, data);
             return;
           }
-        if (data.n_trimmed == 0)
+
+        // A cell on several faces under the parametric map: an edge whose
+        // points have their feet on one face is the segment between the
+        // parameters of its ends on that face, as for the cell of that face
+        // on its other side, so that the images of the two cells meet; the
+        // other edges are projected, as by the cells on their other side.
+        // The cell is then the projection of the transfinite interpolation
+        // of its edges onto its faces.
+        if (parametric && !data.faces.empty())
+          {
+            constexpr unsigned int vertex_node[4] = {0, 2, 6, 8};
+            for (unsigned int e = 0; e < 4; ++e)
+              {
+                auto &edge = data.edges[e];
+                if (edge.curve != none)
+                  continue;
+                for (unsigned int k = 0;
+                     k < data.faces.size() && edge.face == none;
+                     ++k)
+                  {
+                    const unsigned int p      = data.faces[k];
+                    const auto        &patch  = *patches[p];
+                    bool               inside = true;
+                    if (!data.classifiers[p])
+                      data.classifiers[p] =
+                        std::make_unique<BRepTopAdaptor_FClass2d>(
+                          TopoDS::Face(patch.shape), tolerance);
+                    for (unsigned int i = 0; i <= 4 && inside; ++i)
+                      {
+                        const Point<2> unit = edge_point(e, 0.25 * i);
+                        Point<2>       theta =
+                          ShapeCache<2>::start(unit, data.face_node_theta[k]);
+                        Point<3>                S;
+                        DerivativeForm<1, 2, 3> dS;
+                        DerivativeForm<2, 2, 3> d2S;
+                        const Point<3> y =
+                          mapping.transform_unit_to_real_cell(cell, unit);
+                        closest_point(patch, y, theta, S, dS, d2S);
+                        inside = std::isfinite(theta.norm_square()) &&
+                                 is_foot(patch, y, S, dS) &&
+                                 data.classifiers[p]->Perform(
+                                   gp_Pnt2d(theta[0], theta[1])) != TopAbs_OUT;
+                      }
+                    // Nor across a kink of the parametrization, where the
+                    // segment would have a kink.
+                    const auto &ends = data.face_node_theta[k];
+                    const auto &a    = ends[vertex_node[edge_vertices[e][0]]];
+                    const auto &b    = ends[vertex_node[edge_vertices[e][1]]];
+                    if (!inside || patch.crosses_kink(0, a[0], b[0]) ||
+                        patch.crosses_kink(1, a[1], b[1]))
+                      continue;
+                    edge.face  = p;
+                    edge.theta = {
+                      {data.face_node_theta[k][vertex_node[edge_vertices[e][0]]],
+                       data.face_node_theta[k]
+                                           [vertex_node[edge_vertices[e][1]]]}};
+                    ++data.n_segments;
+                  }
+              }
+          }
+        if (data.n_trimmed + data.n_segments == 0)
           return;
 
         // The Lagrange basis of the Gauss-Lobatto points, as many as the
@@ -1191,10 +1612,9 @@ namespace OpenCASCADE
             x.unit_point   = unit_vertices[v];
             x.point        = vertices[v];
             x.jacobian     = vertex_jacobian(v);
-            Point<2> theta = data.start(unit_vertices[v]);
-            data.corners[v] =
-              project_onto_patch(face, data, direction, tolerance, x, theta)
-                .point;
+            data.corners[v] = project_onto_faces(
+                                patches, data, direction, tolerance, x, unit_vertices[v])
+                                .point;
           }
         for (unsigned int e = 0; e < 4; ++e)
           {
@@ -1206,7 +1626,15 @@ namespace OpenCASCADE
                                                     edge_point(e,
                                                                nodes[j][0]));
             for (unsigned int i = 0; i < 2; ++i)
-              if (edge.curve == none)
+              if (edge.face != none)
+                {
+                  Point<3>                S;
+                  DerivativeForm<1, 2, 3> dS;
+                  DerivativeForm<2, 2, 3> d2S;
+                  patches[edge.face]->evaluate(edge.theta[i], S, dS, d2S);
+                  edge.end[i] = S;
+                }
+              else if (edge.curve == none)
                 edge.end[i] = data.corners[edge_vertices[e][i]];
               else
                 edge.end[i] =
@@ -1227,14 +1655,13 @@ namespace OpenCASCADE
   {
     auto &data = static_cast<ShapeCache<dim> &>(cache);
     Assert(data.patch != none, ExcMessage("Call reinit() first."));
-    const auto &patch = *patches[data.patch];
 
     if constexpr (dim == 2)
       if (data.parametric_cell)
         return project_parametric(x, cache);
 
     if constexpr (dim == 2)
-      if (data.n_trimmed > 0)
+      if (data.n_trimmed + data.n_segments > 0)
         {
           // The transfinite interpolation of the images of the four edges,
           // X(s, t) = sum of the edges blended linearly - bilinear
@@ -1249,7 +1676,37 @@ namespace OpenCASCADE
               const double r    = (e < 2) ? t : s;
               const auto [p, dp] = interpolate(edge.nodes, *data.basis, r);
               ProjectionResult<3> image;
-              if (edge.curve == none)
+              if (edge.face != none)
+                {
+                  // The segment between the parameters of the ends, whose
+                  // derivative in r is that of the edge.
+                  const Tensor<1, 2> dtheta = edge.theta[1] - edge.theta[0];
+                  DerivativeForm<1, 2, 3> dS;
+                  DerivativeForm<2, 2, 3> d2S;
+                  patches[edge.face]->evaluate(Point<2>(edge.theta[0] +
+                                                        r * dtheta),
+                                               image.point,
+                                               dS,
+                                               d2S);
+                  Tensor<1, 3> tangent;
+                  for (unsigned int i = 0; i < 3; ++i)
+                    tangent[i] = dS[i][0] * dtheta[0] + dS[i][1] * dtheta[1];
+                  const Tensor<1, 3> shift_a =
+                    data.corners[edge_vertices[e][0]] - edge.end[0];
+                  const Tensor<1, 3> shift_b =
+                    data.corners[edge_vertices[e][1]] - edge.end[1];
+                  c[e]  = image.point + (1 - r) * shift_a + r * shift_b;
+                  dc[e] = tangent + shift_b - shift_a;
+                  continue;
+                }
+              auto      &images = data.edge_images[e];
+              const auto known  = std::find_if(
+                images.begin(), images.end(), [r](const auto &image) {
+                  return image.first == r;
+                });
+              if (known != images.end())
+                image = known->second;
+              else if (edge.curve == none)
                 {
                   // A Jacobian of the cell at the point of the edge for the
                   // direction: the tangent of the edge and, across it, the
@@ -1263,9 +1720,8 @@ namespace OpenCASCADE
                   const unsigned int along = (e < 2) ? 1 : 0;
                   for (unsigned int i = 0; i < 3; ++i)
                     y.jacobian[i][along] = dp[i];
-                  Point<2> theta = data.start(edge_point(e, r));
-                  image =
-                    project_onto_patch(patch, data, direction, tolerance, y, theta);
+                  image = project_onto_faces(
+                    patches, data, direction, tolerance, y, edge_point(e, r));
                 }
               else
                 {
@@ -1276,6 +1732,8 @@ namespace OpenCASCADE
                                              parameter,
                                              tolerance);
                 }
+              if (known == images.end() && direction.is_closest_point())
+                images.emplace_back(r, image);
               regular = regular && image.regular;
               // Shift the edge linearly to end at the images of the
               // vertices; zero unless the vertices lie off the curve.
@@ -1299,10 +1757,9 @@ namespace OpenCASCADE
             ((1 - s) * (V[2] - V[0]) + s * (V[3] - V[1]));
 
           MeshPoint<2, 3> y;
-          y.point        = X;
-          Point<2> theta = data.start(x.unit_point);
-          ProjectionResult<3> result =
-            project_onto_patch(patch, data, direction, tolerance, y, theta, true);
+          y.point                    = X;
+          ProjectionResult<3> result = project_onto_faces(
+            patches, data, direction, tolerance, y, x.unit_point, true);
           result.regular = result.regular && regular;
 
           // The derivative of the map with respect to the reference
@@ -1326,8 +1783,8 @@ namespace OpenCASCADE
           return result;
         }
 
-    Point<dim> theta = data.start(x.unit_point);
-    return project_onto_patch(patch, data, direction, tolerance, x, theta);
+    return project_onto_faces(
+      patches, data, direction, tolerance, x, x.unit_point);
   }
 
 
@@ -1359,7 +1816,7 @@ namespace OpenCASCADE
             x.point        = vertices[v];
             Point<2> theta = data.node_theta[vertex_node[v]];
             project_onto_patch(
-              face, data, direction, tolerance, x, theta, true, false);
+              face, data.patch, data, direction, tolerance, x, theta, true, false);
             for (unsigned int a = 0; a < 2; ++a)
               if (face.periodic[a])
                 {
@@ -1638,7 +2095,7 @@ namespace OpenCASCADE
                     y.point        = p;
                     Point<2> theta = data.start(edge_point(e, r));
                     const ProjectionResult<3> projection = project_onto_patch(
-                      face, data, direction, tolerance, y, theta, true);
+                      face, data.patch, data, direction, tolerance, y, theta, true);
                     image[e]   = projection.point;
                     d_image[e] = projection.jacobian * dp;
                     continue;
@@ -1664,7 +2121,7 @@ namespace OpenCASCADE
             y.point        = X;
             Point<2> theta = data.start(x.unit_point);
             result         = project_onto_patch(
-              face, data, direction, tolerance, y, theta, true);
+              face, data.patch, data, direction, tolerance, y, theta, true);
             for (unsigned int i = 0; i < 3; ++i)
               for (unsigned int j = 0; j < 3; ++j)
                 {

@@ -47,6 +47,16 @@ DEAL::  irregular projections: 0
 DEAL::spherical cap: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::spherical cap, interpolated normal: 32 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::spherical cap, parametric: 160 cells with 32 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::split cylinder: 2 faces, 36 flat cells; relative errors of area and volume, 8 x 8 points
+DEAL::  mesh: 1.1e-02
+DEAL::  projection: <1e-13 
+DEAL::  trimming curves: <1e-13 
+DEAL::  trimming curves, interpolated normal: <1e-13 
+DEAL::  parametric: <1e-13 
+DEAL::  irregular projections: 0
+DEAL::split cylinder: 20 cells with 20 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::split cylinder, interpolated normal: 20 cells with 20 edges on trimming curves; difference of J V to central differences below 1e-6
+DEAL::split cylinder, parametric: 36 cells with 20 edges on trimming curves; difference of J V to central differences below 1e-6
 DEAL::
 DEAL::circle, 24 segments: relative error of the length
 DEAL::points   mesh       projected
