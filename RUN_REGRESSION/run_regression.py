@@ -257,6 +257,19 @@ CASES = {
                             'Preconditioner': 'BlockJacobi'},
                            ['mixed_flux', 'mixed_potential',
                             'mixed_robin_flux', 'iterations']),
+    # Two slots, each exact on its manifold and wrong on the other: the
+    # Galerkin data of every cell from the slot of its manifold, in the mixed
+    # problem with the multipole method, and with Dirichlet conditions on
+    # both manifolds, dense and multipole, where the load vector is that of
+    # the single function x+y+z.
+    'slots_mixed_fma': ('sphere_slots_mixed.prm', {},
+                        ['mixed_flux', 'mixed_potential', 'iterations']),
+    'slots_dirichlet_dg': ('sphere_slots_dirichlet.prm', {},
+                           ['rhs_norm', 'iterations']),
+    'slots_dirichlet_fma': ('sphere_slots_dirichlet.prm',
+                            {'Solution method': 'FMA',
+                             'Mapping Type': 'Q'},
+                            ['rhs_norm', 'iterations']),
 }
 
 

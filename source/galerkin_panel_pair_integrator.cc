@@ -1,4 +1,5 @@
 #include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/cellwise_function.h"
 #include "../include/tensor_map_kernel.h"
 
 #include <sstream>
@@ -2312,6 +2313,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
   const auto function_start = std::chrono::steady_clock::now();
   if (trial_function != nullptr)
     {
+      // The datum at the points of each cell: the function of its slot.
+      const auto                trial_cell  = trial_values.get_cell();
+      const auto                test_cell   = test_values.get_cell();
+      const Function<spacedim> &trial_piece = on_cell(*trial_function, trial_cell);
+      const Function<spacedim> &test_piece  = on_cell(*trial_function, test_cell);
       profile.function_calls +=
         n_trial_points + (regularize_trial_function ? n_test_points : 0);
       if (operator_type == OperatorType::double_layer ||
@@ -2320,13 +2326,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
           trial_scalar.resize(n_trial_points);
           for (unsigned int k = 0; k < n_trial_points; ++k)
             trial_scalar[k] =
-              trial_function->value(trial_values.quadrature_point(k));
+              trial_piece.value(trial_values.quadrature_point(k));
           if (regularize_trial_function)
             {
               test_scalar.resize(n_test_points);
               for (unsigned int k = 0; k < n_test_points; ++k)
                 test_scalar[k] =
-                  trial_function->value(test_values.quadrature_point(k));
+                  test_piece.value(test_values.quadrature_point(k));
             }
         }
       else if (operator_type == OperatorType::single_layer ||
@@ -2338,7 +2344,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
               Tensor<1, spacedim> gradient;
               for (unsigned int d = 0; d < spacedim; ++d)
                 gradient[d] =
-                  trial_function->value(trial_values.quadrature_point(k), d);
+                  trial_piece.value(trial_values.quadrature_point(k), d);
               trial_flux[k] = gradient * trial_values.normal_vector(k);
             }
         }
@@ -2348,7 +2354,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
           for (unsigned int k = 0; k < n_trial_points; ++k)
             for (unsigned int d = 0; d < spacedim; ++d)
               trial_gradient[k][d] =
-                trial_function->value(trial_values.quadrature_point(k), d);
+                trial_piece.value(trial_values.quadrature_point(k), d);
         }
     }
 
@@ -2598,7 +2604,8 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_leaf(
     Vector<double>      gradient(spacedim);
     for (unsigned int q = 0; q < n_points; ++q)
       {
-        exact_gradient.vector_value(values.quadrature_point(q), gradient);
+        on_cell(exact_gradient, values.get_cell())
+          .vector_value(values.quadrature_point(q), gradient);
         Tensor<1, spacedim> normal = values.normal_vector(q);
         const double        norm   = normal.norm();
         AssertThrow(norm > 1e-14,
@@ -3632,6 +3639,18 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
   profile.setup_seconds += std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - setup_start)
                              .count();
+  // The datum at the points of each cell: the function of its slot.
+  const Function<spacedim> *trial_piece =
+    trial_function != nullptr ? &on_cell(*trial_function, trial_cell) :
+                                nullptr;
+  const Function<spacedim> *test_piece =
+    trial_function != nullptr ? &on_cell(*trial_function, test_cell) :
+                                nullptr;
+  if (flux_function != nullptr)
+    {
+      light_trial_flux = &on_cell(*flux_function, trial_cell);
+      light_test_flux  = &on_cell(*flux_function, test_cell);
+    }
   // On half a rule, the joint operators need K the other way for K.
   FullMatrix<double> result =
     curls       ? complete_light_leaf(
@@ -3646,16 +3665,18 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light(
                                         trial_set,
                                         leaf.trial_weights,
                                         operator_type,
-                                        trial_function,
-                                        regularize_trial_function) :
+                                        trial_piece,
+                                        regularize_trial_function,
+                                        test_piece) :
                   integrate_paired_sets(test_set,
                                         *leaf.test_shapes,
                                         trial_set,
                                         *leaf.trial_shapes,
                                         *leaf.weights,
                                         operator_type,
-                                        trial_function,
-                                        regularize_trial_function);
+                                        trial_piece,
+                                        regularize_trial_function,
+                                        test_piece);
   const double seconds = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - setup_start)
                            .count();
@@ -4038,13 +4059,14 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_light(
   const auto         errors_at = [&](const PointSet            &set,
                                      const std::vector<double> &shapes,
                                      const std::vector<double> &coefficients,
-                                     std::vector<double>       &error) {
+                                     std::vector<double>       &error,
+                                     const Function<spacedim>  &piece) {
     const unsigned int n = set.n;
     error.resize(n);
     Vector<double> gradient(spacedim);
     for (unsigned int q = 0; q < n; ++q)
       {
-        exact_gradient.vector_value(set.points[q], gradient);
+        piece.vector_value(set.points[q], gradient);
         double exact = 0.0;
         for (unsigned int d = 0; d < spacedim; ++d)
           exact += gradient[d] * set.normals[q][d];
@@ -4055,8 +4077,16 @@ GalerkinPanelPairIntegrator<spacedim>::error_energy_light(
       }
   };
   std::vector<double> test_error, trial_error;
-  errors_at(test_set, *leaf.test_shapes, test_coefficients, test_error);
-  errors_at(trial_set, *leaf.trial_shapes, trial_coefficients, trial_error);
+  errors_at(test_set,
+            *leaf.test_shapes,
+            test_coefficients,
+            test_error,
+            on_cell(exact_gradient, test_cell));
+  errors_at(trial_set,
+            *leaf.trial_shapes,
+            trial_coefficients,
+            trial_error,
+            on_cell(exact_gradient, trial_cell));
 
   double contribution = 0.0;
   if (leaf.tensor)
@@ -4089,8 +4119,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
   const std::vector<double> &trial_weights,
   const OperatorType         operator_type,
   const Function<spacedim>  *trial_function,
-  const bool                 regularize_trial_function) const
+  const bool                 regularize_trial_function,
+  const Function<spacedim>  *test_function) const
 {
+  if (test_function == nullptr)
+    test_function = trial_function;
   const auto         kernel_start = std::chrono::steady_clock::now();
   const unsigned int nx           = test.n;
   const unsigned int ny           = trial.n;
@@ -4119,13 +4152,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
       trial_flux.resize(ny);
       for (unsigned int qy = 0; qy < ny; ++qy)
         trial_flux[qy] =
-          normal_trace(*flux_function, trial.points[qy], trial.normals[qy]);
+          normal_trace(*light_trial_flux, trial.points[qy], trial.normals[qy]);
       if (both)
         {
           test_flux.resize(nx);
           for (unsigned int qx = 0; qx < nx; ++qx)
             test_flux[qx] =
-              normal_trace(*flux_function, test.points[qx], test.normals[qx]);
+              normal_trace(*light_test_flux, test.points[qx], test.normals[qx]);
         }
       profile.function_calls += ny + (both ? nx : 0);
       profile.function_seconds +=
@@ -4148,7 +4181,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
         {
           test_values.resize(nx);
           for (unsigned int qx = 0; qx < nx; ++qx)
-            test_values[qx] = trial_function->value(test.points[qx]);
+            test_values[qx] = test_function->value(test.points[qx]);
         }
       profile.function_calls += ny + (regularize || both ? nx : 0);
       profile.function_seconds +=
@@ -4317,8 +4350,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
   const std::vector<double> &weights,
   const OperatorType         operator_type,
   const Function<spacedim>  *trial_function,
-  const bool                 regularize_trial_function) const
+  const bool                 regularize_trial_function,
+  const Function<spacedim>  *test_function) const
 {
+  if (test_function == nullptr)
+    test_function = trial_function;
   const auto         kernel_start = std::chrono::steady_clock::now();
   const unsigned int n            = weights.size();
   const unsigned int dpc          = finite_element.dofs_per_cell;
@@ -4344,13 +4380,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
       trial_flux.resize(n);
       for (unsigned int p = 0; p < n; ++p)
         trial_flux[p] =
-          normal_trace(*flux_function, trial.points[p], trial.normals[p]);
+          normal_trace(*light_trial_flux, trial.points[p], trial.normals[p]);
       if (both)
         {
           test_flux.resize(n);
           for (unsigned int p = 0; p < n; ++p)
             test_flux[p] =
-              normal_trace(*flux_function, test.points[p], test.normals[p]);
+              normal_trace(*light_test_flux, test.points[p], test.normals[p]);
         }
       profile.function_calls += (both ? 2 : 1) * n;
       profile.function_seconds +=
@@ -4373,7 +4409,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
         {
           test_values.resize(n);
           for (unsigned int p = 0; p < n; ++p)
-            test_values[p] = trial_function->value(test.points[p]);
+            test_values[p] = test_function->value(test.points[p]);
         }
       profile.function_calls += n + (regularize || both ? n : 0);
       profile.function_seconds +=

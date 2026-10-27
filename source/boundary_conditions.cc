@@ -261,13 +261,23 @@ BoundaryConditions<dim>::solve_problem(bool reset_matrix)
   prepare_bem_vectors(tmp_rhs);
   prepare_robin_datastructs(bem.robin_matrix_diagonal, bem.robin_rhs);
 
-  // The analytical data of the first slot: the Galerkin formulation
-  // integrates them on the cells.
+  // The analytical data: the Galerkin formulation integrates them on the
+  // cells, with the function of the slot of each.
+  std::vector<const Function<dim> *> potential_pieces, wind_pieces;
+  for (unsigned int slot = 0; slot < MAX_CONDITION_SLOTS; ++slot)
+    {
+      potential_pieces.push_back(&get_potential(current_component, slot));
+      wind_pieces.push_back(&get_wind(current_component, slot));
+    }
+  cellwise_potential = std::make_unique<CellwiseFunction<dim>>(
+    potential_pieces, comp_dom.manifold2bcondition_slot_map);
+  cellwise_wind = std::make_unique<CellwiseFunction<dim>>(
+    wind_pieces, comp_dom.manifold2bcondition_slot_map);
   bem.solve(get_phi(),
             get_dphi_dn(),
             tmp_rhs,
-            &get_potential(current_component, 0),
-            &get_wind(current_component, 0),
+            cellwise_potential.get(),
+            cellwise_wind.get(),
             reset_matrix);
 
   if (!bem.can_determine_phi)

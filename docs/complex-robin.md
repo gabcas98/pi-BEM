@@ -116,11 +116,26 @@ and appends `_i` for later components.
 
 The earlier names `Potential <dim>d` and `Wind function <dim>d` are still
 read: when a file sets them, they take the place of slot 0 of component 0.
-The Galerkin formulation uses the functions of slot 0. `compute_errors()`
-reports the errors of the Galerkin and collocation solutions for a real
-component whose data are all in slot 0 and which has no Robin part; complex
-components, Robin parts and other slots get the errors by material described
-here.
+The Galerkin formulation takes on every cell the functions of the slot of
+its manifold (`CellwiseFunction`, `include/cellwise_function.h`): the
+Dirichlet datum and the Neumann datum of the mixed problem, the load vector
+of the Dirichlet problem, dense or with the multipole method, and the errors
+of the mixed solver. A point is evaluated with the function of the cell it
+lies on, also in the regularised integrals, where the datum at the test point
+follows the test cell; a node of the Dirichlet part takes the function of
+its Dirichlet cells. With two slots that are each exact on their own
+manifold and wrong by 7 on the other, the sphere of the samples gives the
+numbers of a single function to the last digit (mixed and Dirichlet
+problems, continuous and discontinuous elements, dense and multipole).
+
+`compute_errors()` reports the errors of the Galerkin and collocation
+solutions for a real component whose data are all in slot 0 and which has
+no Robin part; complex components, Robin parts and other slots get the
+errors by material described here.
+
+The Galerkin multipole method of the Dirichlet problem needs `Mapping Type =
+Q`: it evaluates the geometry of the near field directly. The mixed problem
+also runs with `Mapping Type = FE`.
 
 The mixed Galerkin problem takes Robin parts too. On their cells the
 potential is unknown, as on the Neumann part, and the flux is

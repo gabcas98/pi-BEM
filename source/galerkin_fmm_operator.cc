@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------
 
 #include "../include/galerkin_fmm_operator.h"
+#include "../include/cellwise_function.h"
 
 #include <deal.II/base/bounding_box.h>
 #include <deal.II/base/mpi.h>
@@ -94,10 +95,13 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
     }
   const QGauss<2> quadrature(data.quadrature_order);
   n_q_points   = quadrature.size();
+  // The cells are stored for the mappings that FEPointEvaluation evaluates
+  // on the cell, as MappingFEField (Mapping Type = FE).
   mapping_info = std::make_unique<NonMatching::MappingInfo<2, 3>>(
     mapping,
     update_values | update_JxW_values | update_quadrature_points |
-      update_normal_vectors);
+      update_normal_vectors,
+    NonMatching::MappingInfo<2, 3>::AdditionalData(false, true));
   std::vector<Triangulation<2, 3>::cell_iterator> tria_cells(cells.begin(),
                                                              cells.end());
   mapping_info->reinit_cells(tria_cells,
@@ -122,9 +126,11 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
   dirichlet_values.clear();
   if (rhs.dirichlet != nullptr)
     {
+      // The datum of the slot of the cell of every point.
       dirichlet_values.resize(n_points);
       for (unsigned int p = 0; p < n_points; ++p)
-        dirichlet_values[p] = rhs.dirichlet->value(points[p]);
+        dirichlet_values[p] =
+          on_cell(*rhs.dirichlet, cells[p / n_q_points]).value(points[p]);
     }
   flux_values.clear();
   if (rhs.gradient != nullptr)
@@ -133,7 +139,8 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
       Vector<double> gradient(3);
       for (unsigned int p = 0; p < n_points; ++p)
         {
-          rhs.gradient->vector_value(points[p], gradient);
+          on_cell(*rhs.gradient, cells[p / n_q_points])
+            .vector_value(points[p], gradient);
           flux_values[p] = gradient[0] * normals[p][0] +
                            gradient[1] * normals[p][1] +
                            gradient[2] * normals[p][2];

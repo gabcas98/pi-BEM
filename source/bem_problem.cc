@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
 #include "mapping_hanging_constraints.h"
 #include "../include/galerkin_calderon_fmm_operator.h"
 
@@ -3113,8 +3114,8 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
                 for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
                   local_rhs[i] +=
                     0.5 * mass_values.shape_value(i, q) *
-                    dirichlet_function.value(
-                      mass_values.quadrature_point(q)) *
+                    on_cell(dirichlet_function, test_cell)
+                      .value(mass_values.quadrature_point(q)) *
                     mass_values.JxW(q);
 
               local_rhs *= -1.0;
@@ -9584,7 +9585,8 @@ BEMProblem<dim>::compute_energy_norm_error(
             {
               cell_points[q] = values.quadrature_point(q);
               cell_jxw[q]    = values.JxW(q);
-              exact_gradient.vector_value(cell_points[q], gradient);
+              on_cell(exact_gradient, cell).vector_value(cell_points[q],
+                                                         gradient);
               Tensor<1, dim> normal = values.normal_vector(q);
               const double   norm   = normal.norm();
               AssertThrow(norm > 1e-14,

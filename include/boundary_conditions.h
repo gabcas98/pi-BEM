@@ -59,6 +59,7 @@
 #include <string>
 
 #include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
 #include "../include/computational_domain.h"
 
 using namespace dealii;
@@ -386,6 +387,10 @@ protected:
   std::vector<std::unique_ptr<Functions::ParsedFunction<dim>>> winds;
   std::vector<std::unique_ptr<Functions::ParsedFunction<dim>>> potentials;
   std::vector<std::unique_ptr<Functions::ParsedFunction<dim>>> robin_coeffs;
+
+  /// The potentials and winds of the slots of the current component, for
+  /// the Galerkin solve: each manifold takes the function of its slot.
+  std::unique_ptr<CellwiseFunction<dim>> cellwise_potential, cellwise_wind;
 
   std::string node_displacement_type;
 

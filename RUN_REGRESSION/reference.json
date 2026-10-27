@@ -152,5 +152,18 @@
   "iterations": "28",
   "phi_nodes": "0",
   "robin_residual": "0.0107809"
+ },
+ "slots_dirichlet_dg": {
+  "iterations": "28",
+  "rhs_norm": "0.1058830260899982"
+ },
+ "slots_dirichlet_fma": {
+  "iterations": "30",
+  "rhs_norm": "0.1058830270672579"
+ },
+ "slots_mixed_fma": {
+  "iterations": "64",
+  "mixed_flux": "0.0728705",
+  "mixed_potential": "0.000199358"
  }
 }

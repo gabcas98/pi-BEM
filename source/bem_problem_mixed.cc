@@ -19,6 +19,7 @@
 // adaptive refinement.
 
 #include "../include/bem_problem.h"
+#include "../include/cellwise_function.h"
 #include "../include/galerkin_calderon_fmm_operator.h"
 #include "../include/galerkin_panel_pair_integrator.h"
 #include "../include/inexact_gmres.h"
@@ -341,10 +342,34 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       const auto point = [&](const types::global_dof_index e) {
         return original_points[original[e]];
       };
+      // The potential of the slot of each node: at a node of the Dirichlet
+      // part, and at its copies and double nodes next to it, that of its
+      // Dirichlet cells; elsewhere that of any of its cells.
+      std::vector<const Function<dim> *> potential_at(n, &potential),
+        dirichlet_potential_at(n_original, nullptr);
+      for (const auto &cell : dh.active_cell_iterators())
+        {
+          const Function<dim> &piece = on_cell(potential, cell);
+          for (const auto e : indices_of(cell))
+            potential_at[e] = &piece;
+          if (is_dirichlet_cell(cell))
+            {
+              cell->get_dof_indices(cell_dofs);
+              for (const auto i : cell_dofs)
+                dirichlet_potential_at[i] = &piece;
+            }
+        }
+      for (types::global_dof_index e = 0; e < n; ++e)
+        for (const auto o : double_nodes_set[original[e]])
+          if (dirichlet_potential_at[o] != nullptr)
+            {
+              potential_at[e] = dirichlet_potential_at[o];
+              break;
+            }
       Vector<double> u_data(n), g_data(n);
       for (types::global_dof_index e = 0; e < n; ++e)
         if (role[e] == flux || role[e] == known_potential)
-          u_data[e] = potential.value(point(e));
+          u_data[e] = potential_at[e]->value(point(e));
       constraints.distribute(u_data);
 
       DynamicSparsityPattern dsp(n, n);
@@ -386,10 +411,12 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               {
                 double flux_value = 0;
                 if (potential_values)
-                  flux_value = potential.value(data.quadrature_point(q));
+                  flux_value =
+                    on_cell(potential, cell).value(data.quadrature_point(q));
                 else
                   {
-                    gradient.vector_value(data.quadrature_point(q), g);
+                    on_cell(gradient, cell).vector_value(
+                      data.quadrature_point(q), g);
                     for (unsigned int d = 0; d < dim; ++d)
                       flux_value += g[d] * data.normal_vector(q)[d];
                   }
@@ -879,7 +906,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         Vector<double> exact = project_flux(true, nullptr);
         for (types::global_dof_index e = 0; e < n; ++e)
           if (role[e] == free_potential)
-            exact[e] = potential.value(point(e));
+            exact[e] = potential_at[e]->value(point(e));
           else if (role[e] != flux)
             exact[e] = 0;
         Vector<double> residual;
@@ -1495,7 +1522,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                 double exact_value;
                 if (dirichlet)
                   {
-                    gradient.vector_value(error_data.quadrature_point(q), g);
+                    on_cell(gradient, cell).vector_value(
+                      error_data.quadrature_point(q), g);
                     exact_value = 0;
                     for (unsigned int d = 0; d < dim; ++d)
                       exact_value += g[d] * error_data.normal_vector(q)[d];
@@ -1534,8 +1562,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                   }
                 else
                   {
-                    exact_value =
-                      potential.value(error_data.quadrature_point(q));
+                    exact_value = on_cell(potential, cell).value(
+                      error_data.quadrature_point(q));
                     potential_error += (value - exact_value) *
                                        (value - exact_value) * error_values.JxW(q);
                     potential_norm +=
@@ -1552,8 +1580,8 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                         for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
                           flux_value += error_values.shape_value(i, q) *
                                         t_full[cell_dofs[i]];
-                        gradient.vector_value(error_data.quadrature_point(q),
-                                              g);
+                        on_cell(gradient, cell).vector_value(
+                          error_data.quadrature_point(q), g);
                         for (unsigned int d = 0; d < dim; ++d)
                           exact_flux += g[d] * error_data.normal_vector(q)[d];
                         robin_flux_error += (flux_value - exact_flux) *

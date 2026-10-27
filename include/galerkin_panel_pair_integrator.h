@@ -2,6 +2,7 @@
 #define GALERKIN_PANEL_PAIR_INTEGRATOR_H
 
 #include <deal.II/base/quadrature_lib.h>
+#include "cellwise_function.h"
 #include <deal.II/dofs/dof_handler.h>
 
 #include <functional>
@@ -1189,7 +1190,11 @@ private:
                         const std::vector<double> &trial_weights,
                         const OperatorType         operator_type,
                         const Function<spacedim>  *trial_function,
-                        const bool regularize_trial_function) const;
+                        const bool regularize_trial_function,
+                        // the datum at the test points, trial_function
+                        // where null
+                        const Function<spacedim> *test_function =
+                          nullptr) const;
 
   FullMatrix<double>
   integrate_paired_sets(const PointSet            &test,
@@ -1199,7 +1204,11 @@ private:
                         const std::vector<double> &weights,
                         const OperatorType         operator_type,
                         const Function<spacedim>  *trial_function,
-                        const bool regularize_trial_function) const;
+                        const bool regularize_trial_function,
+                        // the datum at the test points, trial_function
+                        // where null
+                        const Function<spacedim> *test_function =
+                          nullptr) const;
 
   bool                             light_geometry = false;
   std::vector<double>              geometry_nodes;
@@ -1340,6 +1349,10 @@ private:
   double                                      far_field_tolerance = 0.0;
   double                                      screening           = 0.0;
   const Function<spacedim>                   *flux_function       = nullptr;
+  /// The flux function on the test and the trial cell of the pair that
+  /// integrate_light() integrates: the pieces of their slots.
+  mutable const Function<spacedim> *light_test_flux  = nullptr;
+  mutable const Function<spacedim> *light_trial_flux = nullptr;
   mutable RhsProfile                          profile;
   std::function<void(const CellIterator &,
                      std::vector<types::global_dof_index> &)>
@@ -1604,10 +1617,12 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_flux_rhs(
       data.flux.resize(quadrature.size());
       data.shape_values.assign(finite_element.dofs_per_cell,
                                std::vector<double>(quadrature.size()));
+      // The datum of the slot of the cell.
+      const Function<spacedim> &gradient_piece = on_cell(gradient, cell);
       for (unsigned int q = 0; q < quadrature.size(); ++q)
         {
           data.jxw[q] = values.JxW(q);
-          gradient.vector_value(data.points[q], gradient_value);
+          gradient_piece.vector_value(data.points[q], gradient_value);
           double trace = 0.0;
           for (unsigned int d = 0; d < spacedim; ++d)
             trace += gradient_value[d] * values.normal_vector(q)[d];
@@ -1727,10 +1742,12 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
       data.function_values.resize(quadrature.size());
       data.shape_values.assign(finite_element.dofs_per_cell,
                                std::vector<double>(quadrature.size()));
+      // The datum of the slot of the cell.
+      const Function<spacedim> &trial_piece = on_cell(trial_function, cell);
       for (unsigned int q = 0; q < quadrature.size(); ++q)
         {
           data.jxw[q] = values.JxW(q);
-          data.function_values[q] = trial_function.value(data.points[q]);
+          data.function_values[q] = trial_piece.value(data.points[q]);
           for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
             data.shape_values[i][q] = values.shape_value(i, q);
         }
@@ -2439,10 +2456,13 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_layer_and_double_layer_rh
           data.jxw.resize(rule.size());
           data.shape_values.assign(finite_element.dofs_per_cell,
                                    std::vector<double>(rule.size()));
+          // The datum of the slot of the cell.
+          const Function<spacedim> &trial_piece =
+            on_cell(trial_function, cell);
           for (unsigned int q = 0; q < rule.size(); ++q)
             {
               data.jxw[q] = values.JxW(q);
-              data.function_values[q] = trial_function.value(data.points[q]);
+              data.function_values[q] = trial_piece.value(data.points[q]);
               for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
                 data.shape_values[i][q] = values.shape_value(i, q);
             }
