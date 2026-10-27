@@ -4,6 +4,12 @@
   "gradient": "0.301983",
   "iterations": "47"
  },
+ "complex_collocation_errors": {
+  "flux": "0.0682755",
+  "gradient": "0.0615189",
+  "phi_nodes": "0.00626694",
+  "steps": "32"
+ },
  "complex_galerkin_dense": {
   "iterations": "76",
   "mixed_flux": "0.0678791",
@@ -182,6 +188,11 @@
   "iterations": "28",
   "phi_nodes": "0",
   "robin_residual": "0.0107809"
+ },
+ "slots_collocation": {
+  "flux": "0.0754984",
+  "gradient": "0.0141814",
+  "phi_nodes": "0.00507607"
  },
  "slots_dirichlet_dg": {
   "iterations": "28",

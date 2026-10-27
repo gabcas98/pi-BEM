@@ -1,4 +1,6 @@
 #include "../include/surface_potential_evaluator.h"
+
+#include "../include/cellwise_function.h"
 #include "../include/tensor_map_kernel.h"
 
 #include <deal.II/base/exceptions.h>
@@ -337,8 +339,8 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
                 }
               else
                 {
-                  densities.flux_gradient->vector_value(s.point,
-                                                        gradient_buffer);
+                  on_cell(*densities.flux_gradient, cell)
+                    .vector_value(s.point, gradient_buffer);
                   s.flux = 0.0;
                   for (unsigned int d = 0; d < 3; ++d)
                     s.flux += gradient_buffer[d] * s.normal[d];
@@ -350,11 +352,12 @@ SurfacePotentialEvaluator::SurfacePotentialEvaluator(
                     s.trace += data.trace_local[k] * values.shape_value(k, q);
                 }
               else
-                s.trace = densities.trace_function->value(s.point);
+                s.trace =
+                  on_cell(*densities.trace_function, cell).value(s.point);
               if (wants_curl)
                 {
-                  densities.trace_gradient->vector_value(s.point,
-                                                         gradient_buffer);
+                  on_cell(*densities.trace_gradient, cell)
+                    .vector_value(s.point, gradient_buffer);
                   Tensor<1, 3> g;
                   for (unsigned int d = 0; d < 3; ++d)
                     g[d] = gradient_buffer[d];
@@ -614,16 +617,18 @@ SurfacePotentialEvaluator::complete_source(const CellData &data,
     }
   if (densities.flux_gradient != nullptr)
     {
-      densities.flux_gradient->vector_value(s.point, gradient_buffer);
+      on_cell(*densities.flux_gradient, data.cell)
+        .vector_value(s.point, gradient_buffer);
       s.flux = 0.0;
       for (unsigned int d = 0; d < 3; ++d)
         s.flux += gradient_buffer[d] * s.normal[d];
     }
   if (densities.trace_function != nullptr)
-    s.trace = densities.trace_function->value(s.point);
+    s.trace = on_cell(*densities.trace_function, data.cell).value(s.point);
   if (wants_curl)
     {
-      densities.trace_gradient->vector_value(s.point, gradient_buffer);
+      on_cell(*densities.trace_gradient, data.cell)
+        .vector_value(s.point, gradient_buffer);
       Tensor<1, 3> grad;
       for (unsigned int d = 0; d < 3; ++d)
         grad[d] = gradient_buffer[d];

@@ -128,10 +128,25 @@ manifold and wrong by 7 on the other, the sphere of the samples gives the
 numbers of a single function to the last digit (mixed and Dirichlet
 problems, continuous and discontinuous elements, dense and multipole).
 
-`compute_errors()` reports the errors of the Galerkin and collocation
-solutions for a real component whose data are all in slot 0 and which has
-no Robin part; complex components, Robin parts and other slots get the
-errors by material described here.
+A node takes its datum from the slot of a cell of its kind: a Dirichlet
+node from a Dirichlet cell, a Neumann node from a Neumann cell, a Robin node
+from a Robin cell (`BoundaryConditions::dof_slots()`). Before, it was the
+slot of the last of its cells, of whatever kind.
+
+`compute_errors()` gives either the errors against the exact solution or the
+errors of the boundary conditions by material of upstream pi-BEM
+(`compute_errors_by_material()`), as `BoundaryConditions<dim>/Errors` says:
+
+- `exact solution`: the potential and the wind function are taken as the
+  solution on the whole surface, on every cell those of its slot and at
+  every node those of the slot above. A complex problem compares each
+  component with its own functions, and Robin parts are measured like the
+  rest of the surface.
+- `boundary conditions`: on each material the residual of its condition,
+  which needs only the boundary data (on Dirichlet parts it is zero by
+  construction; the Robin residual is the informative number).
+- `auto` (default): the exact solution for a real component without a Robin
+  part, with any slots, and the boundary conditions otherwise.
 
 The Galerkin multipole method of the Dirichlet problem needs `Mapping Type =
 Q`: it evaluates the geometry of the near field directly. The mixed problem

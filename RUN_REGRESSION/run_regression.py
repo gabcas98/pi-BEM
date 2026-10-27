@@ -311,6 +311,19 @@ CASES = {
                              ['mixed_flux_real', 'mixed_potential_real',
                               'mixed_flux', 'mixed_potential',
                               'mixed_robin_flux', 'iterations']),
+    # The errors against the exact solution: with two slots in the
+    # collocation problem (Dirichlet and Neumann data of the slot of a cell
+    # of the kind of each node), the numbers of the single function x+y+z;
+    # and for the two components of a complex problem.
+    'slots_collocation': ('sphere_slots_mixed.prm',
+                          {'Boundary integral formulation': 'collocation',
+                           'Preconditioner': 'ILU',
+                           'Linear solver': 'GMRES'},
+                          ['phi_nodes', 'flux', 'gradient']),
+    'complex_collocation_errors': ('sphere_complex_galerkin.prm',
+                                   {'Errors': 'exact solution'},
+                                   ['phi_nodes', 'flux', 'gradient',
+                                    'steps']),
     'complex_galerkin_dirichlet': ('sphere_complex_galerkin.prm',
                                    dict(GALERKIN_COMPLEX,
                                         **{'Dirichlet boundary ids': '1,2',
@@ -319,13 +332,18 @@ CASES = {
 }
 
 
+# The parameters of other sections than BEMProblem<dim>.
+SECTIONS = {'Errors': 'BoundaryConditions'}
+
+
 def set_value(text, key, value, dim=3):
-    """Set every occurrence of a parameter; add it to BEMProblem<dim> if the
-    file does not have it."""
+    """Set every occurrence of a parameter; add it to BEMProblem<dim>, or to
+    its section in SECTIONS, if the file does not have it."""
     pattern = re.compile(r'(\n\s*set ' + re.escape(key) + r'\s*=)[^\n]*')
     text, n = pattern.subn(lambda m: m.group(1) + ' ' + value, text)
     if n == 0:
-        text += (f'\nsubsection BEMProblem<{dim}>\n  set {key} = {value}\n'
+        section = SECTIONS.get(key, 'BEMProblem')
+        text += (f'\nsubsection {section}<{dim}>\n  set {key} = {value}\n'
                  f'end\n')
     return text
 

@@ -10284,7 +10284,7 @@ BEMProblem<dim>::compute_gradients_weak(
           localized_normals, total_curvature);
       if (analytic_phi != nullptr)
         for (unsigned int q = 0; q < vector_n_q_points; ++q)
-          trace_values[q] = analytic_phi->value(fe_v.quadrature_point(q));
+          trace_values[q] = on_cell(*analytic_phi, cell).value(fe_v.quadrature_point(q));
       else
         fe_v.get_function_values(phi, trace_values);
 
@@ -10330,7 +10330,7 @@ BEMProblem<dim>::compute_gradients_weak(
           if (analytic_phi != nullptr)
             for (unsigned int q = 0; q < face_quadrature.size(); ++q)
               face_trace_values[q] =
-                analytic_phi->value(fe_face.quadrature_point(q));
+                on_cell(*analytic_phi, cell).value(fe_face.quadrature_point(q));
           else
             fe_face.get_function_values(phi, face_trace_values);
 
@@ -10800,7 +10800,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   double flux = 0.0;
                   if (self_check)
                     {
-                      trace_gradient.vector_value(cached_points[c][q], exact);
+                      on_cell(trace_gradient, cell).vector_value(cached_points[c][q], exact);
                       for (unsigned int d = 0; d < dim; ++d)
                         flux += exact[d] * cached_normals[c][q][d];
                     }
@@ -11019,7 +11019,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
               const Tensor<1, dim> &normal = vector_values.normal_vector(q);
               const double          JxW    = vector_values.JxW(q);
               const double trace =
-                discrete_trace ? trace_q[q] : analytic_phi.value(x);
+                discrete_trace ? trace_q[q] : on_cell(analytic_phi, cell).value(x);
               const auto potentials = evaluator.evaluate(x, normal, trace);
               n_targets += 1.0;
               const double residual =
@@ -11051,7 +11051,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                         v * vector_values.shape_value(j, q) * JxW;
                 }
 
-              trace_gradient.vector_value(x, gradient_value);
+              on_cell(trace_gradient, cell).vector_value(x, gradient_value);
               double exact_flux = 0.0;
               for (unsigned int d = 0; d < dim; ++d)
                 exact_flux += gradient_value[d] * normal[d];
@@ -11108,7 +11108,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                   m /= m.norm();
 
                   const double trace =
-                    discrete_trace ? edge_trace[q] : analytic_phi.value(x);
+                    discrete_trace ? edge_trace[q] : on_cell(analytic_phi, cell).value(x);
                   const auto potentials = evaluator.evaluate(x, normal, trace);
                   n_targets += 1.0;
                   const double residual =
@@ -11220,7 +11220,7 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
                 for (unsigned int k = 0; k < nv; ++k)
                   g[component[k]] +=
                     coef_full(k) * vector_values.shape_value(k, q);
-                trace_gradient.vector_value(x, gradient_value);
+                on_cell(trace_gradient, cell).vector_value(x, gradient_value);
                 Tensor<1, dim> e;
                 for (unsigned int d = 0; d < dim; ++d)
                   e[d] = g[d] - gradient_value[d];

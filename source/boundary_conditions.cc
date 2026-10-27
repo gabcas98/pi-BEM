@@ -84,6 +84,16 @@ void
 BoundaryConditions<dim>::declare_parameters(ParameterHandler &prm)
 {
   prm.declare_entry("Output file name", "result", Patterns::Anything());
+  // The errors after the solve: against the exact solution, the potential
+  // and the wind function of the slot of each cell taken as the solution on
+  // the whole surface, or the residual of the boundary conditions on each
+  // material (upstream pi-BEM), which needs only the boundary data. auto:
+  // the exact solution for a real component without a Robin part, the
+  // boundary conditions otherwise.
+  prm.declare_entry("Errors",
+                    "auto",
+                    Patterns::Selection(
+                      "auto|exact solution|boundary conditions"));
 
   std::vector<std::string> bcond_names = {"Potential",
                                           "Wind function",
@@ -170,6 +180,7 @@ void
 BoundaryConditions<dim>::parse_parameters(ParameterHandler &prm)
 {
   output_file_name = prm.get("Output file name");
+  errors           = prm.get("Errors");
 
   std::vector<std::string> bcond_names = {"Potential",
                                           "Wind function",
@@ -412,6 +423,51 @@ BoundaryConditions<dim>::solve_complex_problem(bool reset_matrix)
 }
 
 template <int dim>
+std::vector<unsigned int>
+BoundaryConditions<dim>::dof_slots() const
+{
+  const Vector<double> dirichlet(bem.dirichlet_nodes),
+    neumann(bem.neumann_nodes), robin(bem.robin_nodes);
+  const auto has_material = [](const std::vector<unsigned int> &ids,
+                               const auto                      &cell) {
+    return std::find(ids.begin(), ids.end(), cell->material_id()) != ids.end();
+  };
+  const types::global_dof_index        n_dofs = bem.dh.n_dofs();
+  std::vector<unsigned int>            slot(n_dofs, 0);
+  std::vector<char>                    matched(n_dofs, 0);
+  std::vector<types::global_dof_index> dofs(bem.fe->dofs_per_cell);
+  for (const auto &cell : bem.dh.active_cell_iterators())
+    {
+      const auto found =
+        comp_dom.manifold2bcondition_slot_map.find(cell->manifold_id());
+      const unsigned int cell_slot =
+        found == comp_dom.manifold2bcondition_slot_map.end() ? 0 :
+                                                               found->second;
+      // The kind of the cell, with the precedence of the kinds of nodes.
+      const int kind =
+        has_material(comp_dom.dirichlet_boundary_ids, cell) ? 0 :
+        has_material(comp_dom.neumann_boundary_ids, cell)   ? 1 :
+        has_material(comp_dom.robin_boundary_ids, cell)     ? 2 :
+                                                              -1;
+      cell->get_dof_indices(dofs);
+      for (const auto i : dofs)
+        {
+          const int node_kind = dirichlet[i] == 1 ? 0 :
+                                neumann[i] == 1   ? 1 :
+                                robin[i] == 1     ? 2 :
+                                                    -1;
+          const bool match = node_kind == kind;
+          if (match || !matched[i])
+            {
+              slot[i]    = cell_slot;
+              matched[i] = matched[i] || match;
+            }
+        }
+    }
+  return slot;
+}
+
+template <int dim>
 void
 BoundaryConditions<dim>::prepare_bem_vectors(TrilinosWrappers::MPI::Vector &rhs)
 {
@@ -448,7 +504,9 @@ BoundaryConditions<dim>::prepare_bem_vectors(TrilinosWrappers::MPI::Vector &rhs)
   // pcout << "support_points elements: " << support_points.size() << std::endl;
   // pcout << "vec_support_points elements: " << vec_support_points.size()
 
-  Vector<double> coeffs(3);
+  // The datum of a node from the slot of a cell of its kind.
+  const std::vector<unsigned int> slots = dof_slots();
+  Vector<double>                  coeffs(3);
   for (const auto &cell : bem.dh.active_cell_iterators())
     {
       fe_v.reinit(cell);
@@ -457,8 +515,7 @@ BoundaryConditions<dim>::prepare_bem_vectors(TrilinosWrappers::MPI::Vector &rhs)
         {
           if (this_cpu_set.is_element(local_dof_indices[j]))
             {
-              auto slot =
-                comp_dom.manifold2bcondition_slot_map[cell->manifold_id()];
+              const unsigned int slot = slots[local_dof_indices[j]];
 
               bool dirichlet = bem.dirichlet_nodes(local_dof_indices[j]) == 1;
               if (dirichlet)
@@ -633,12 +690,14 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
     ExcMessage(
       "Called compute errors for a real problem, but specified that the current component is imaginary"));
 
-  // A real problem with the data of the first slot: the errors below, of the
-  // collocation and of the Galerkin solutions. Complex problems, Robin parts
-  // and the other slots: the errors of the boundary conditions by material.
-  bool by_material = complex || bem.robin_nodes.linfty_norm() > 0;
-  for (const auto &pair : comp_dom.manifold2bcondition_slot_map)
-    by_material = by_material || pair.second != 0;
+  // The errors against the exact solution below, of the collocation and of
+  // the Galerkin solutions, for each component of a complex problem the
+  // functions of that component; or the errors of the boundary conditions by
+  // material. Without a choice, the exact solution for a real component
+  // without a Robin part.
+  const bool by_material =
+    errors == "boundary conditions" ||
+    (errors == "auto" && (complex || bem.robin_nodes.linfty_norm() > 0));
   if (by_material)
     {
       compute_errors_by_material(complex, current_is_real);
@@ -647,10 +706,32 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
   Teuchos::TimeMonitor LocalTimer(*ErrorsTime);
 
-  TrilinosWrappers::MPI::Vector        &phi       = get_phi();
-  TrilinosWrappers::MPI::Vector        &dphi_dn   = get_dphi_dn();
-  const Functions::ParsedFunction<dim> &potential = get_potential(current_component, 0);
-  const Functions::ParsedFunction<dim> &wind      = get_wind(current_component, 0);
+  TrilinosWrappers::MPI::Vector &phi     = get_phi();
+  TrilinosWrappers::MPI::Vector &dphi_dn = get_dphi_dn();
+  // The exact solution: on every cell the potential and the wind function
+  // of its slot (on_cell()), at every node those of its slot (dof_slots()).
+  std::vector<const Function<dim> *> potential_pieces, wind_pieces;
+  for (unsigned int slot = 0; slot < MAX_CONDITION_SLOTS; ++slot)
+    {
+      potential_pieces.push_back(&get_potential(current_component, slot));
+      wind_pieces.push_back(&get_wind(current_component, slot));
+    }
+  const CellwiseFunction<dim> potential(potential_pieces,
+                                        comp_dom.manifold2bcondition_slot_map);
+  const CellwiseFunction<dim> wind(wind_pieces,
+                                   comp_dom.manifold2bcondition_slot_map);
+  const std::vector<unsigned int> slots = dof_slots();
+  // The slots of the cells, for the errors integrated by VectorTools: one
+  // integration for each slot.
+  std::set<unsigned int> cell_slots;
+  for (const auto &cell : bem.dh.active_cell_iterators())
+    {
+      const auto found =
+        comp_dom.manifold2bcondition_slot_map.find(cell->manifold_id());
+      cell_slots.insert(
+        found == comp_dom.manifold2bcondition_slot_map.end() ? 0 :
+                                                               found->second);
+    }
 
   // The mixed solver has its own block operator and row residuals. The
   // Dirichlet-only operator below is not its operator (and may be empty).
@@ -665,6 +746,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       mixed_galerkin_problem = mixed_galerkin_problem ||
         Utilities::MPI::sum(locally_dirichlet, mpi_communicator) != bem.dh.n_dofs();
     }
+  // A complex problem solves its block system: the residuals of the
+  // operator below do not apply to it either.
+  const bool own_system = mixed_galerkin_problem || complex;
 
   // We still need to communicate our results to compute the errors.
   bem.gradient_normal_from_flux = false;
@@ -708,7 +792,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
   std::vector<Vector<double>> exact_gradient_values(bem.dh.n_dofs(),
                                                      Vector<double>(dim));
-  wind.vector_value_list(support_points, exact_gradient_values);
+  for (types::global_dof_index i = 0; i < bem.dh.n_dofs(); ++i)
+    get_wind(current_component, slots[i])
+      .vector_value(support_points[i], exact_gradient_values[i]);
   Vector<double> exact_dphi_dn(bem.dh.n_dofs());
   for (types::global_dof_index scalar_i = 0;
        scalar_i < bem.dh.n_dofs();
@@ -766,8 +852,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       for (const auto &cell : bem.dh.active_cell_iterators())
         {
           projection_values.reinit(cell);
-          wind.vector_value_list(projection_values.get_quadrature_points(),
-                                 exact_gradient_at_quadrature);
+          on_cell(wind, cell).vector_value_list(
+            projection_values.get_quadrature_points(),
+            exact_gradient_at_quadrature);
           local_mass = 0.0;
           local_rhs  = 0.0;
           for (unsigned int q = 0; q < projection_quadrature.size(); ++q)
@@ -821,8 +908,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
       for (const auto &cell : bem.dh.active_cell_iterators())
         {
           projection_values.reinit(cell);
-          wind.vector_value_list(projection_values.get_quadrature_points(),
-                                 exact_gradient_at_quadrature);
+          on_cell(wind, cell).vector_value_list(
+            projection_values.get_quadrature_points(),
+            exact_gradient_at_quadrature);
           FullMatrix<double> local_mass(bem.fe->dofs_per_cell,
                                         bem.fe->dofs_per_cell);
           Vector<double> local_rhs(bem.fe->dofs_per_cell);
@@ -874,7 +962,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                          bem.constraints,
                          bem.constr_cpu_set,
                          mpi_communicator);
-  if (!mixed_galerkin_problem)
+  if (!own_system)
     {
       constrained_operator.vmult(exact_residual, parallel_exact_dphi_dn);
       exact_residual.add(-1.0, bem.system_rhs);
@@ -973,7 +1061,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
   double algebraic_energy_square = 0.0;
   // The mixed Galerkin problem frees the single-layer matrix of the
   // Dirichlet path.
-  const bool has_algebraic_energy_distance = !mixed_galerkin_problem &&
+  const bool has_algebraic_energy_distance = !own_system &&
     exact_residual_uses_l2_projection && bem.dirichlet_matrix.m() > 0;
   if (has_algebraic_energy_distance)
     {
@@ -1108,24 +1196,38 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
             else
               {
       */
-      VectorTools::integrate_difference(*bem.mapping,
-                                        bem.dh,
-                                        localized_phi,
-                                        potential,
-                                        difference_per_cell,
-                                        QGauss<(dim - 1)>(
-                                          2 * (2 * bem.fe->degree + 1)),
-                                        VectorTools::L2_norm);
-
-      //        }
-      VectorTools::integrate_difference(*bem.mapping,
-                                        bem.gradient_dh,
-                                        localized_gradient_solution,
-                                        wind,
-                                        grad_difference_per_cell,
-                                        QGauss<(dim - 1)>(
-                                          2 * (2 * bem.fe->degree + 1)),
-                                        VectorTools::L2_norm);
+      // For each slot, its functions on the cells of that slot.
+      for (const unsigned int slot : cell_slots)
+        {
+          Vector<double> slot_difference(comp_dom.tria.n_active_cells()),
+            slot_grad_difference(comp_dom.tria.n_active_cells());
+          VectorTools::integrate_difference(*bem.mapping,
+                                            bem.dh,
+                                            localized_phi,
+                                            get_potential(current_component,
+                                                          slot),
+                                            slot_difference,
+                                            QGauss<(dim - 1)>(
+                                              2 * (2 * bem.fe->degree + 1)),
+                                            VectorTools::L2_norm);
+          VectorTools::integrate_difference(*bem.mapping,
+                                            bem.gradient_dh,
+                                            localized_gradient_solution,
+                                            get_wind(current_component, slot),
+                                            slot_grad_difference,
+                                            QGauss<(dim - 1)>(
+                                              2 * (2 * bem.fe->degree + 1)),
+                                            VectorTools::L2_norm);
+          for (const auto &cell : bem.dh.active_cell_iterators())
+            if (&on_cell(potential, cell) ==
+                &get_potential(current_component, slot))
+              {
+                difference_per_cell[cell->active_cell_index()] =
+                  slot_difference[cell->active_cell_index()];
+                grad_difference_per_cell[cell->active_cell_index()] =
+                  slot_grad_difference[cell->active_cell_index()];
+              }
+        }
       const double grad_L2_error = grad_difference_per_cell.l2_norm();
 
       const double L2_error = difference_per_cell.l2_norm();
@@ -1149,7 +1251,9 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
 
       Vector<double>      phi_node_error(bem.dh.n_dofs());
       std::vector<double> phi_nodes_errs(bem.dh.n_dofs());
-      potential.value_list(support_points, phi_nodes_errs);
+      for (types::global_dof_index i = 0; i < bem.dh.n_dofs(); ++i)
+        phi_nodes_errs[i] =
+          get_potential(current_component, slots[i]).value(support_points[i]);
       for (types::global_dof_index scalar_i = 0;
            scalar_i < bem.dh.n_dofs();
            ++scalar_i)
@@ -1337,7 +1441,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
           if (has_l2_projection)
             dphi_dn_error_fe_values.get_function_values(
               l2_projected_exact_dphi_dn, projected_exact_dphi_dn);
-          wind.vector_value_list(
+          on_cell(wind, cell).vector_value_list(
             dphi_dn_error_fe_values.get_quadrature_points(),
             exact_gradient_at_quadrature);
 
@@ -1888,7 +1992,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
             << difference_per_cell_2.linfty_norm() << ", at cell "
             << max_dphi_cell_index << ", material " << max_dphi_material_id
             << ", center " << max_dphi_cell_center << std::endl;
-      if (!mixed_galerkin_problem)
+      if (!own_system)
         {
           pcout << "Exact dPhidN discrete residual L_inf norm: "
                 << exact_residual_linf << std::endl;
@@ -1902,9 +2006,10 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
         }
       else
         pcout << "Dirichlet-only residual diagnostics: not applicable to the "
-                 "mixed problem; use the flux/potential row residuals above"
+                 "mixed and complex problems (the mixed Galerkin solver "
+                 "prints its flux/potential row residuals above)"
               << std::endl;
-      if (!mixed_galerkin_problem &&
+      if (!own_system &&
           bem.boundary_integral_formulation == "galerkin" &&
           bem.detailed_error_diagnostics &&
           (sphere_box_grid ||
@@ -1970,7 +2075,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                                                   recovered);
             for (unsigned int q = 0; q < split_quadrature.size(); ++q)
               {
-                wind.vector_value(split_values.quadrature_point(q), exact);
+                on_cell(wind, cell).vector_value(
+                  split_values.quadrature_point(q), exact);
                 Tensor<1, dim> error = recovered[q];
                 for (unsigned int d = 0; d < dim; ++d)
                   error[d] -= exact(d);
@@ -2043,7 +2149,8 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
               flux_fe_values.get_function_values(localized_dphi_dn, flux);
               for (unsigned int q = 0; q < split_quadrature.size(); ++q)
                 {
-                  wind.vector_value(vector_values.quadrature_point(q), exact);
+                  on_cell(wind, cell).vector_value(
+                    vector_values.quadrature_point(q), exact);
                   Tensor<1, dim> normal = vector_values.normal_vector(q);
                   normal /= normal.norm();
                   Tensor<1, dim> error = projected[q] -
@@ -2150,7 +2257,7 @@ BoundaryConditions<dim>::compute_errors(bool complex, bool current_is_real)
                   << std::sqrt(std::max(algebraic_energy_square, 0.0)) << ")";
           pcout << std::endl;
         }
-      if (!mixed_galerkin_problem)
+      if (!own_system)
         pcout << "  discrete residual " << relative_exact_residual
               << " relative" << std::endl;
       pcout << "-------------------" << std::endl;

@@ -399,7 +399,16 @@ protected:
   void
   set_cellwise_data(unsigned int component, unsigned int part);
 
+  /// The slot of every degree of freedom: that of a cell of its kind (a
+  /// Dirichlet node on a Dirichlet cell, and so on), the last one in the
+  /// order of the cells, or else of the last of its cells.
+  std::vector<unsigned int>
+  dof_slots() const;
+
   std::string node_displacement_type;
+
+  /// Errors: auto, exact solution or boundary conditions (by material).
+  std::string errors;
 
   SolverControl solver_control;
 
