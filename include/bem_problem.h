@@ -108,6 +108,7 @@
 
 #include <mpi.h>
 
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -165,7 +166,8 @@ public:
   /// system. All ranks in the communicator must participate. With
   /// reset_matrix=false, reuse previously assembled integral operators; mesh,
   /// mapping, quadrature and discretization must be unchanged. Boundary data
-  /// must already be prepared.
+  /// must already be prepared. The Galerkin formulation needs the analytical
+  /// data of the real and of the imaginary part, as the real overload.
   void
   solve(TrilinosWrappers::MPI::Vector       &phi,
         TrilinosWrappers::MPI::Vector       &phi_imag,
@@ -173,7 +175,11 @@ public:
         TrilinosWrappers::MPI::Vector       &dphi_dn_imag,
         const TrilinosWrappers::MPI::Vector &tmp_rhs,
         const TrilinosWrappers::MPI::Vector &tmp_rhs_imag,
-        bool                                 reset_matrix = true);
+        const std::array<const Function<dim> *, 2> &dirichlet_functions =
+          {{nullptr, nullptr}},
+        const std::array<const Function<dim> *, 2> &dirichlet_gradients =
+          {{nullptr, nullptr}},
+        bool reset_matrix = true);
 
   /// This function takes care of the proper initialization of all the elements
   /// needed by the bem problem class. Since we need to sum elements associated
@@ -334,11 +340,16 @@ public:
   ///   [ K'  W ] [u] = [ (1/2 M - K') g_N - W u_D ],
   /// tested on the Dirichlet and on the Neumann part, with K' the transpose
   /// of K. Dense matrices; the Laplace kernel.
+  /// With two parts, the real and the imaginary part of a complex problem,
+  /// one system for both: the operators act on each part, and the parts are
+  /// coupled by the complex coefficient a/b of the Robin part
+  /// (robin_matrix_diagonal and robin_matrix_diagonal_imag).
   void
-  solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
-                       TrilinosWrappers::MPI::Vector &dphi_dn,
-                       const Function<dim>           &potential,
-                       const Function<dim>           &gradient);
+  solve_galerkin_mixed(
+    const std::vector<TrilinosWrappers::MPI::Vector *> &phi,
+    const std::vector<TrilinosWrappers::MPI::Vector *> &dphi_dn,
+    const std::vector<const Function<dim> *>           &potential,
+    const std::vector<const Function<dim> *>           &gradient);
   /// Form the boundary integral right hand side. The four-vector overload
   /// uses separate real and imaginary parts and the current Robin data.
   void

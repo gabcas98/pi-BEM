@@ -388,9 +388,16 @@ protected:
   std::vector<std::unique_ptr<Functions::ParsedFunction<dim>>> potentials;
   std::vector<std::unique_ptr<Functions::ParsedFunction<dim>>> robin_coeffs;
 
-  /// The potentials and winds of the slots of the current component, for
-  /// the Galerkin solve: each manifold takes the function of its slot.
-  std::unique_ptr<CellwiseFunction<dim>> cellwise_potential, cellwise_wind;
+  /// The potentials and winds of the slots of the current component, and of
+  /// the next one for the imaginary part of a complex problem, for the
+  /// Galerkin solve: each manifold takes the function of its slot.
+  std::array<std::unique_ptr<CellwiseFunction<dim>>, 2> cellwise_potential,
+    cellwise_wind;
+
+  /// Set cellwise_potential[part] and cellwise_wind[part] from the slots of
+  /// component.
+  void
+  set_cellwise_data(unsigned int component, unsigned int part);
 
   std::string node_displacement_type;
 

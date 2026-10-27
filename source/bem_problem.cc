@@ -8778,8 +8778,10 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
                                  "gradient of the solution for the Neumann "
                                  "datum."));
           galerkin_reuse_operators = !reset_matrix;
-          solve_galerkin_mixed(phi, dphi_dn, *dirichlet_function,
-                               *dirichlet_gradient);
+          solve_galerkin_mixed({&phi},
+                               {&dphi_dn},
+                               {dirichlet_function},
+                               {dirichlet_gradient});
           return;
         }
     }
@@ -8992,14 +8994,68 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
 
 template <int dim>
 void
-BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
-                       TrilinosWrappers::MPI::Vector       &phi_imag,
-                       TrilinosWrappers::MPI::Vector       &dphi_dn,
-                       TrilinosWrappers::MPI::Vector       &dphi_dn_imag,
-                       const TrilinosWrappers::MPI::Vector &tmp_rhs,
-                       const TrilinosWrappers::MPI::Vector &tmp_rhs_imag,
-                       bool                                 reset_matrix)
+BEMProblem<dim>::solve(
+  TrilinosWrappers::MPI::Vector              &phi,
+  TrilinosWrappers::MPI::Vector              &phi_imag,
+  TrilinosWrappers::MPI::Vector              &dphi_dn,
+  TrilinosWrappers::MPI::Vector              &dphi_dn_imag,
+  const TrilinosWrappers::MPI::Vector        &tmp_rhs,
+  const TrilinosWrappers::MPI::Vector        &tmp_rhs_imag,
+  const std::array<const Function<dim> *, 2> &dirichlet_functions,
+  const std::array<const Function<dim> *, 2> &dirichlet_gradients,
+  bool                                        reset_matrix)
 {
+  if (boundary_integral_formulation == "galerkin")
+    {
+      AssertThrow(dirichlet_functions[0] != nullptr &&
+                    dirichlet_functions[1] != nullptr,
+                  ExcMessage("The complex Galerkin problem requires the "
+                             "analytical boundary functions of the real and "
+                             "of the imaginary part."));
+      unsigned int locally_dirichlet = 0;
+      for (const auto i : this_cpu_set)
+        if (dirichlet_nodes[i] > 0.5)
+          ++locally_dirichlet;
+      const unsigned int globally_dirichlet =
+        Utilities::MPI::sum(locally_dirichlet, mpi_communicator);
+      // Without a Robin part the two parts are not coupled: on the whole
+      // surface Dirichlet conditions are two real problems, the second with
+      // the single layer of the first; otherwise one mixed system for both.
+      if (globally_dirichlet == dh.n_dofs() &&
+          std::getenv("PIBEM_FORCE_MIXED") == nullptr)
+        {
+          pcout << "Complex Galerkin problem: the real part" << std::endl;
+          solve(phi,
+                dphi_dn,
+                tmp_rhs,
+                dirichlet_functions[0],
+                dirichlet_gradients[0],
+                reset_matrix);
+          pcout << "Complex Galerkin problem: the imaginary part"
+                << std::endl;
+          set_current_phi_component(current_component + 1);
+          solve(phi_imag,
+                dphi_dn_imag,
+                tmp_rhs_imag,
+                dirichlet_functions[1],
+                dirichlet_gradients[1],
+                false);
+          set_current_phi_component(current_component - 1);
+          return;
+        }
+      AssertThrow(dirichlet_gradients[0] != nullptr &&
+                    dirichlet_gradients[1] != nullptr,
+                  ExcMessage("The mixed Galerkin problem needs the "
+                             "gradient of the solution for the Neumann "
+                             "datum."));
+      galerkin_reuse_operators = !reset_matrix;
+      solve_galerkin_mixed({&phi, &phi_imag},
+                           {&dphi_dn, &dphi_dn_imag},
+                           {dirichlet_functions[0], dirichlet_functions[1]},
+                           {dirichlet_gradients[0], dirichlet_gradients[1]});
+      return;
+    }
+
   if (reset_matrix)
     {
       if (solution_method == "Direct")

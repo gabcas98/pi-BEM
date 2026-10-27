@@ -127,6 +127,10 @@ them changes the solution.
   each exact on its manifold and wrong on the other, in the Galerkin data.
 - `components_mixed_dense`, `components_dirichlet_dg`: two components, the
   second with the operators of the first.
+- `complex_galerkin_dense`, `complex_galerkin_fma`,
+  `complex_galerkin_dirichlet`: the complex sample in the Galerkin
+  formulation, real and imaginary part in one mixed system coupled on the
+  Robin part, and with Dirichlet conditions everywhere.
 
 ## Environment switches
 

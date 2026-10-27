@@ -4,6 +4,26 @@
   "gradient": "0.301983",
   "iterations": "47"
  },
+ "complex_galerkin_dense": {
+  "iterations": "76",
+  "mixed_flux": "0.0678791",
+  "mixed_flux_real": "0.0747613",
+  "mixed_potential": "0.0104098",
+  "mixed_potential_real": "0.000592501",
+  "mixed_robin_flux": "0.068535"
+ },
+ "complex_galerkin_dirichlet": {
+  "iterations": "20",
+  "rhs_norm": "0.1326830116392819"
+ },
+ "complex_galerkin_fma": {
+  "iterations": "29",
+  "mixed_flux": "0.0678796",
+  "mixed_flux_real": "0.0747627",
+  "mixed_potential": "0.0104093",
+  "mixed_potential_real": "0.000592954",
+  "mixed_robin_flux": "0.068535"
+ },
  "components_dirichlet_dg": {
   "flux": "0.000114057",
   "iterations": "28",

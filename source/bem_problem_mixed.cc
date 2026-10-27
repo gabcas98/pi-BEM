@@ -41,13 +41,24 @@ using namespace std;
 
 template <int dim>
 void
-BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
-                                      TrilinosWrappers::MPI::Vector &dphi_dn,
-                                      const Function<dim>           &potential,
-                                      const Function<dim>           &gradient)
+BEMProblem<dim>::solve_galerkin_mixed(
+  const std::vector<TrilinosWrappers::MPI::Vector *> &phi,
+  const std::vector<TrilinosWrappers::MPI::Vector *> &dphi_dn,
+  const std::vector<const Function<dim> *>           &potential,
+  const std::vector<const Function<dim> *>           &gradient)
 {
   if constexpr (dim == 3)
     {
+      // One part for a real problem, two for the real and the imaginary
+      // part of a complex one: vectors of all parts, one after the other.
+      const unsigned int n_parts = phi.size();
+      AssertThrow((n_parts == 1 || n_parts == 2) &&
+                    dphi_dn.size() == n_parts &&
+                    potential.size() == n_parts && gradient.size() == n_parts,
+                  ExcMessage("The mixed Galerkin problem has one part, or "
+                             "two for a complex problem."));
+      const std::string part_name[2] = {n_parts == 2 ? ", real part" : "",
+                                        ", imaginary part"};
       AssertThrow(solution_method == "Direct" || solution_method == "FMA",
                   ExcMessage("The mixed Galerkin problem needs Solution "
                              "method = Direct or FMA."));
@@ -288,7 +299,9 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
             << n - n_original << " on degrees of freedom of both parts, "
             << counts[hanging] << " hanging nodes" << std::endl;
 
-      // The nodes of the Robin part, with a/b and g/b there.
+      // The nodes of the Robin part, with a/b and g/b there; for a complex
+      // problem a/b is complex, the coupling of the two parts, and g/b has a
+      // real and an imaginary part.
       std::vector<char> robin(n, 0);
       unsigned int      n_robin_unknowns = 0;
       for (types::global_dof_index e = 0; e < n; ++e)
@@ -301,23 +314,60 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           }
       const bool     has_robin = std::find(robin.begin(), robin.end(), 1) !=
                              robin.end();
-      Vector<double> robin_coefficient(n), robin_datum(n);
+      Vector<double> robin_coefficient(n), robin_coefficient_imag(n);
+      std::vector<Vector<double>> robin_datum(n_parts, Vector<double>(n));
       if (has_robin)
         {
           AssertThrow(robin_matrix_diagonal.size() == n_original &&
-                        robin_rhs.size() == n_original,
+                        robin_rhs.size() == n_original &&
+                        (n_parts == 1 ||
+                         (robin_matrix_diagonal_imag.size() == n_original &&
+                          robin_rhs_imag.size() == n_original)),
                       ExcMessage("The Robin data are not prepared."));
           const Vector<double> coefficient(robin_matrix_diagonal),
             datum(robin_rhs);
+          Vector<double> coefficient_imag, datum_imag;
+          if (n_parts == 2)
+            {
+              coefficient_imag = robin_matrix_diagonal_imag;
+              datum_imag       = robin_rhs_imag;
+            }
           for (types::global_dof_index e = 0; e < n; ++e)
             if (robin[e])
               {
                 robin_coefficient[e] = coefficient[original[e]];
-                robin_datum[e]       = datum[original[e]];
+                robin_datum[0][e]    = datum[original[e]];
+                if (n_parts == 2)
+                  {
+                    robin_coefficient_imag[e] = coefficient_imag[original[e]];
+                    robin_datum[1][e]         = datum_imag[original[e]];
+                  }
               }
           pcout << "Mixed Galerkin problem: " << n_robin_unknowns
-                << " of the potential unknowns on the Robin part" << std::endl;
+                << " of the potential unknowns on the Robin part";
+          if (n_parts == 2)
+            pcout << ", largest imaginary part of a/b "
+                  << robin_coefficient_imag.linfty_norm();
+          pcout << std::endl;
         }
+      // The flux (a/b) u of the Robin part, at the nodes where the function
+      // takes u, in the complex product for two parts.
+      const auto robin_product = [&](const std::vector<Vector<double>> &u,
+                                     const auto &where) {
+        std::vector<Vector<double>> r(n_parts, Vector<double>(n));
+        for (types::global_dof_index e = 0; e < n; ++e)
+          if (robin[e] && where(e))
+            {
+              r[0][e] = robin_coefficient[e] * u[0][e];
+              if (n_parts == 2)
+                {
+                  r[0][e] -= robin_coefficient_imag[e] * u[1][e];
+                  r[1][e] = robin_coefficient_imag[e] * u[0][e] +
+                            robin_coefficient[e] * u[1][e];
+                }
+            }
+        return r;
+      };
 
       // The data: the Dirichlet datum interpolated at the nodes of the
       // Dirichlet part and at the copies next to it, the Neumann datum
@@ -345,32 +395,38 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // The potential of the slot of each node: at a node of the Dirichlet
       // part, and at its copies and double nodes next to it, that of its
       // Dirichlet cells; elsewhere that of any of its cells.
-      std::vector<const Function<dim> *> potential_at(n, &potential),
-        dirichlet_potential_at(n_original, nullptr);
-      for (const auto &cell : dh.active_cell_iterators())
+      std::vector<std::vector<const Function<dim> *>> potential_at(n_parts);
+      std::vector<Vector<double>> u_data(n_parts, Vector<double>(n)),
+        g_data(n_parts, Vector<double>(n));
+      for (unsigned int p = 0; p < n_parts; ++p)
         {
-          const Function<dim> &piece = on_cell(potential, cell);
-          for (const auto e : indices_of(cell))
-            potential_at[e] = &piece;
-          if (is_dirichlet_cell(cell))
+          potential_at[p].assign(n, potential[p]);
+          std::vector<const Function<dim> *> dirichlet_potential_at(n_original,
+                                                                    nullptr);
+          for (const auto &cell : dh.active_cell_iterators())
             {
-              cell->get_dof_indices(cell_dofs);
-              for (const auto i : cell_dofs)
-                dirichlet_potential_at[i] = &piece;
+              const Function<dim> &piece = on_cell(*potential[p], cell);
+              for (const auto e : indices_of(cell))
+                potential_at[p][e] = &piece;
+              if (is_dirichlet_cell(cell))
+                {
+                  cell->get_dof_indices(cell_dofs);
+                  for (const auto i : cell_dofs)
+                    dirichlet_potential_at[i] = &piece;
+                }
             }
+          for (types::global_dof_index e = 0; e < n; ++e)
+            for (const auto o : double_nodes_set[original[e]])
+              if (dirichlet_potential_at[o] != nullptr)
+                {
+                  potential_at[p][e] = dirichlet_potential_at[o];
+                  break;
+                }
+          for (types::global_dof_index e = 0; e < n; ++e)
+            if (role[e] == flux || role[e] == known_potential)
+              u_data[p][e] = potential_at[p][e]->value(point(e));
+          constraints.distribute(u_data[p]);
         }
-      for (types::global_dof_index e = 0; e < n; ++e)
-        for (const auto o : double_nodes_set[original[e]])
-          if (dirichlet_potential_at[o] != nullptr)
-            {
-              potential_at[e] = dirichlet_potential_at[o];
-              break;
-            }
-      Vector<double> u_data(n), g_data(n);
-      for (types::global_dof_index e = 0; e < n; ++e)
-        if (role[e] == flux || role[e] == known_potential)
-          u_data[e] = potential_at[e]->value(point(e));
-      constraints.distribute(u_data);
 
       DynamicSparsityPattern dsp(n, n);
       for (const auto &cell : dh.active_cell_iterators())
@@ -391,9 +447,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                                            update_quadrature_points);
       const bool             separate_data = data_mapping != &*mapping;
       // The mass matrix of the cells of one part, and the projection of the
-      // normal trace of the gradient on them.
+      // normal trace of the gradient of the part p on them.
       const auto project_flux = [&](const bool on_dirichlet_part,
                                     SparseMatrix<double> *whole_mass,
+                                    const unsigned int    p,
                                     const bool potential_values = false) {
         SparseMatrix<double> part_mass(pattern);
         Vector<double>       part_rhs(n), result(n);
@@ -411,11 +468,11 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               {
                 double flux_value = 0;
                 if (potential_values)
-                  flux_value =
-                    on_cell(potential, cell).value(data.quadrature_point(q));
+                  flux_value = on_cell(*potential[p], cell)
+                                 .value(data.quadrature_point(q));
                 else
                   {
-                    on_cell(gradient, cell).vector_value(
+                    on_cell(*gradient[p], cell).vector_value(
                       data.quadrature_point(q), g);
                     for (unsigned int d = 0; d < dim; ++d)
                       flux_value += g[d] * data.normal_vector(q)[d];
@@ -451,47 +508,52 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         return result;
       };
       SparseMatrix<double> mass(pattern);
-      g_data = project_flux(false, &mass);
-      // The Dirichlet datum on the Dirichlet part by its L2 projection
-      // instead of its interpolant; the copies on the Neumann side of the
-      // interface take the value of the node of the Dirichlet part at the
-      // same point, so that the potential stays continuous across it.
-      if (mixed_galerkin_dirichlet_datum == "projection")
+      for (unsigned int p = 0; p < n_parts; ++p)
         {
-          const Vector<double> projected = project_flux(true, nullptr, true);
-          std::map<std::array<long long, dim>, double> at_point;
-          const auto key = [&](const Point<dim> &x) {
-            std::array<long long, dim> k;
-            for (unsigned int d = 0; d < dim; ++d)
-              k[d] = std::llround(x[d] * 1e9);
-            return k;
-          };
-          for (types::global_dof_index e = 0; e < n; ++e)
-            if (role[e] == flux)
-              {
-                u_data[e] = projected[e];
-                at_point[key(point(e))] = projected[e];
-              }
-          for (types::global_dof_index e = 0; e < n; ++e)
-            if (role[e] == known_potential)
-              {
-                const auto twin = at_point.find(key(point(e)));
-                if (twin != at_point.end())
-                  u_data[e] = twin->second;
-              }
-          constraints.distribute(u_data);
-          pcout << "Mixed Galerkin problem: Dirichlet datum by its L2 "
-                   "projection"
-                << std::endl;
-        }
-      // The potential at the hanging nodes of the Neumann side of the
-      // interface: the datum of the coarse Dirichlet cell at the node.
-      for (const auto &[e, entries] : interface_known)
-        {
-          double value = 0;
-          for (const auto &[m, c] : entries)
-            value += c * u_data[m];
-          u_data[e] = value;
+          g_data[p] = project_flux(false, p == 0 ? &mass : nullptr, p);
+          // The Dirichlet datum on the Dirichlet part by its L2 projection
+          // instead of its interpolant; the copies on the Neumann side of the
+          // interface take the value of the node of the Dirichlet part at
+          // the same point, so that the potential stays continuous across it.
+          if (mixed_galerkin_dirichlet_datum == "projection")
+            {
+              const Vector<double> projected =
+                project_flux(true, nullptr, p, true);
+              std::map<std::array<long long, dim>, double> at_point;
+              const auto key = [&](const Point<dim> &x) {
+                std::array<long long, dim> k;
+                for (unsigned int d = 0; d < dim; ++d)
+                  k[d] = std::llround(x[d] * 1e9);
+                return k;
+              };
+              for (types::global_dof_index e = 0; e < n; ++e)
+                if (role[e] == flux)
+                  {
+                    u_data[p][e]            = projected[e];
+                    at_point[key(point(e))] = projected[e];
+                  }
+              for (types::global_dof_index e = 0; e < n; ++e)
+                if (role[e] == known_potential)
+                  {
+                    const auto twin = at_point.find(key(point(e)));
+                    if (twin != at_point.end())
+                      u_data[p][e] = twin->second;
+                  }
+              constraints.distribute(u_data[p]);
+              if (p == 0)
+                pcout << "Mixed Galerkin problem: Dirichlet datum by its L2 "
+                         "projection"
+                      << std::endl;
+            }
+          // The potential at the hanging nodes of the Neumann side of the
+          // interface: the datum of the coarse Dirichlet cell at the node.
+          for (const auto &[e, entries] : interface_known)
+            {
+              double value = 0;
+              for (const auto &[m, c] : entries)
+                value += c * u_data[p][m];
+              u_data[p][e] = value;
+            }
         }
       if (!interface_known.empty())
         pcout << "Mixed Galerkin problem: " << interface_known.size()
@@ -503,12 +565,17 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // -(a/b) u of the unknowns is in the block operator.
       if (has_robin)
         {
-          for (types::global_dof_index e = 0; e < n; ++e)
-            if (robin[e])
-              g_data[e] = robin_datum[e] - (role[e] == known_potential ?
-                                              robin_coefficient[e] * u_data[e] :
-                                              0.0);
-          constraints.distribute(g_data);
+          const std::vector<Vector<double>> known_flux =
+            robin_product(u_data, [&](const types::global_dof_index e) {
+              return role[e] == known_potential;
+            });
+          for (unsigned int p = 0; p < n_parts; ++p)
+            {
+              for (types::global_dof_index e = 0; e < n; ++e)
+                if (robin[e])
+                  g_data[p][e] = robin_datum[p][e] - known_flux[p][e];
+              constraints.distribute(g_data[p]);
+            }
         }
 
       // The operators of the whole surface, on rows and columns of all
@@ -807,75 +874,98 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // With relaxed_rows, the products of the FMM through the coarser
       // expansions of the preconditioner (the last steps of GMRES).
       bool relaxed_rows = false;
+      // The vector of one part in the vector of all parts.
+      const auto part = [&](const Vector<double> &x, const unsigned int p) {
+        Vector<double> v(n);
+        std::copy(x.begin() + p * n, x.begin() + (p + 1) * n, v.begin());
+        return v;
+      };
+      const auto set_part = [&](Vector<double>       &x,
+                                const unsigned int    p,
+                                const Vector<double> &v) {
+        std::copy(v.begin(), v.end(), x.begin() + p * n);
+      };
       // On the Robin part the flux -(a/b) u of the unknowns joins the flux
       // of the Dirichlet part in V and K^T, and its identity term 1/2 M
-      // goes to the potential rows.
-      const auto robin_flux = [&](const Vector<double> &u) {
-        Vector<double> r(n);
-        for (types::global_dof_index e = 0; e < n; ++e)
-          if (robin[e] &&
-              (role[e] == free_potential || role[e] == tied_potential))
-            r[e] = robin_coefficient[e] * u[e];
-        return r;
-      };
+      // goes to the potential rows. The operators act on each part.
       block.apply = [&](Vector<double> &y, const Vector<double> &x) {
-        Vector<double> t, u, r;
-        split(x, t, u);
+        y.reinit(n_parts * n);
+        std::vector<Vector<double>> t(n_parts), u(n_parts), r;
+        for (unsigned int p = 0; p < n_parts; ++p)
+          split(part(x, p), t[p], u[p]);
         if (has_robin)
           {
-            r = robin_flux(u);
-            t -= r;
+            r = robin_product(u, [&](const types::global_dof_index e) {
+              return role[e] == free_potential || role[e] == tied_potential;
+            });
+            for (unsigned int p = 0; p < n_parts; ++p)
+              t[p] -= r[p];
           }
-        Vector<double> dirichlet_rows, neumann_rows;
-        if (through_fmm)
-          calderon->vmult_rows(
-            t, u, k_sign, dirichlet_rows, neumann_rows, relaxed_rows);
-        else
+        for (unsigned int p = 0; p < n_parts; ++p)
           {
-            dirichlet_rows = product(single_layer, t, false);
-            dirichlet_rows.add(-k_sign, product(double_layer, u, false));
-            neumann_rows = product(hypersingular, u, false);
-            neumann_rows.add(k_sign, product(double_layer, t, true));
+            Vector<double> dirichlet_rows, neumann_rows, rows;
+            if (through_fmm)
+              calderon->vmult_rows(t[p],
+                                   u[p],
+                                   k_sign,
+                                   dirichlet_rows,
+                                   neumann_rows,
+                                   relaxed_rows);
+            else
+              {
+                dirichlet_rows = product(single_layer, t[p], false);
+                dirichlet_rows.add(-k_sign, product(double_layer, u[p], false));
+                neumann_rows = product(hypersingular, u[p], false);
+                neumann_rows.add(k_sign, product(double_layer, t[p], true));
+              }
+            if (has_robin)
+              {
+                Vector<double> mass_r(n);
+                mass.vmult(mass_r, r[p]);
+                neumann_rows.add(0.5, mass_r);
+              }
+            combine(dirichlet_rows, neumann_rows, part(x, p), rows);
+            set_part(y, p, rows);
           }
-        if (has_robin)
-          {
-            Vector<double> mass_r(n);
-            mass.vmult(mass_r, r);
-            neumann_rows.add(0.5, mass_r);
-          }
-        combine(dirichlet_rows, neumann_rows, x, y);
       };
 
       // The right-hand side: 1/2 M u + k K u - V g on the flux rows and
       // 1/2 M g - k K^T g - W u on the potential rows, the mass terms minus
       // the rows of the operator at (g, u), through the FMM in one product.
-      Vector<double> rhs;
-      {
-        Vector<double> dirichlet_rows(n), neumann_rows(n), zero(n);
-        mass.vmult(dirichlet_rows, u_data);
-        dirichlet_rows *= 0.5;
-        mass.vmult(neumann_rows, g_data);
-        neumann_rows *= 0.5;
-        if (through_fmm)
-          {
-            Vector<double> operator_dirichlet, operator_neumann;
-            calderon->vmult_rows(
-              g_data, u_data, k_sign, operator_dirichlet, operator_neumann);
-            dirichlet_rows -= operator_dirichlet;
-            neumann_rows -= operator_neumann;
-          }
-        else
-          {
-            dirichlet_rows.add(k_sign, product(double_layer, u_data, false));
-            dirichlet_rows.add(-1.0, product(single_layer, g_data, false));
-            neumann_rows.add(-k_sign, product(double_layer, g_data, true));
-            neumann_rows.add(-1.0, product(hypersingular, u_data, false));
-          }
-        combine(dirichlet_rows, neumann_rows, zero, rhs);
-      }
+      Vector<double> rhs(n_parts * n);
+      for (unsigned int p = 0; p < n_parts; ++p)
+        {
+          Vector<double> dirichlet_rows(n), neumann_rows(n), zero(n), rows;
+          mass.vmult(dirichlet_rows, u_data[p]);
+          dirichlet_rows *= 0.5;
+          mass.vmult(neumann_rows, g_data[p]);
+          neumann_rows *= 0.5;
+          if (through_fmm)
+            {
+              Vector<double> operator_dirichlet, operator_neumann;
+              calderon->vmult_rows(g_data[p],
+                                   u_data[p],
+                                   k_sign,
+                                   operator_dirichlet,
+                                   operator_neumann);
+              dirichlet_rows -= operator_dirichlet;
+              neumann_rows -= operator_neumann;
+            }
+          else
+            {
+              dirichlet_rows.add(k_sign,
+                                 product(double_layer, u_data[p], false));
+              dirichlet_rows.add(-1.0, product(single_layer, g_data[p], false));
+              neumann_rows.add(-k_sign, product(double_layer, g_data[p], true));
+              neumann_rows.add(-1.0, product(hypersingular, u_data[p], false));
+            }
+          combine(dirichlet_rows, neumann_rows, zero, rows);
+          set_part(rhs, p, rows);
+        }
 
-      // Diagonal preconditioner.
-      Vector<double> diagonal(n);
+      // Diagonal preconditioner; for two parts the diagonal is complex on
+      // the Robin part, w + 1/2 (a/b) m, and its inverse couples the parts.
+      Vector<double> diagonal(n), diagonal_imag(n);
       {
         Vector<double> v_diagonal(n), w_diagonal(n);
         if (through_fmm)
@@ -901,14 +991,22 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           if (role[i] == flux)
             diagonal[i] = v_diagonal[i];
           else if (role[i] == free_potential || role[i] == tied_potential)
-            diagonal[master[i]] +=
-              w_diagonal[i] +
-              (robin[i] ? 0.5 * robin_coefficient[i] * mass.diag_element(i) :
-                          0.0);
+            {
+              diagonal[master[i]] +=
+                w_diagonal[i] +
+                (robin[i] ? 0.5 * robin_coefficient[i] * mass.diag_element(i) :
+                            0.0);
+              if (robin[i])
+                diagonal_imag[master[i]] +=
+                  0.5 * robin_coefficient_imag[i] * mass.diag_element(i);
+            }
         for (types::global_dof_index i = 0; i < n; ++i)
           if (role[i] == tied_potential || role[i] == known_potential ||
               role[i] == hanging)
-            diagonal[i] = 1.0;
+            {
+              diagonal[i]      = 1.0;
+              diagonal_imag[i] = 0.0;
+            }
       }
 
       // The consistency of the discrete system: the residual of the exact
@@ -916,27 +1014,35 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // potential interpolated on the Neumann part.
       if (diagnostics || std::getenv("PIBEM_RESIDUAL_DUMP") != nullptr)
       {
-        Vector<double> exact = project_flux(true, nullptr);
-        for (types::global_dof_index e = 0; e < n; ++e)
-          if (role[e] == free_potential)
-            exact[e] = potential_at[e]->value(point(e));
-          else if (role[e] != flux)
-            exact[e] = 0;
+        Vector<double> exact(n_parts * n);
+        for (unsigned int p = 0; p < n_parts; ++p)
+          {
+            Vector<double> exact_part = project_flux(true, nullptr, p);
+            for (types::global_dof_index e = 0; e < n; ++e)
+              if (role[e] == free_potential)
+                exact_part[e] = potential_at[p][e]->value(point(e));
+              else if (role[e] != flux)
+                exact_part[e] = 0;
+            set_part(exact, p, exact_part);
+          }
         Vector<double> residual;
         block.vmult(residual, exact);
         residual -= rhs;
         // PIBEM_RESIDUAL_DUMP=file: for every flux and free potential
         // unknown, its support point, whether it is a flux, its residual and
-        // its right-hand side.
+        // its right-hand side; the imaginary part after the real one.
         if (const char *name = std::getenv("PIBEM_RESIDUAL_DUMP");
             name != nullptr && this_mpi_process == 0)
           {
             std::ofstream out(name);
             out << std::setprecision(10);
-            for (types::global_dof_index e = 0; e < n; ++e)
-              if (role[e] == flux || role[e] == free_potential)
-                out << point(e) << ' ' << (role[e] == flux) << ' '
-                    << residual[e] << ' ' << rhs[e] << '\n';
+            for (types::global_dof_index i = 0; i < n_parts * n; ++i)
+              {
+                const types::global_dof_index e = i % n;
+                if (role[e] == flux || role[e] == free_potential)
+                  out << point(e) << ' ' << (role[e] == flux) << ' '
+                      << residual[i] << ' ' << rhs[i] << '\n';
+              }
           }
         pcout << "Mixed Galerkin problem: relative residual of the exact "
                  "solution "
@@ -946,13 +1052,15 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       // GMRES, every process running the same iteration on whole vectors.
       // The flux and the potential rows have different scales, about h^3
       // and h: the residual is reduced relative to its preconditioned start.
-      Vector<double> x(n);
+      Vector<double> x(n_parts * n);
       // On a refined mesh, start from the traces of the previous one: each
       // cell takes the polynomial of its ancestor among the cells of that
       // mesh, at its support points mapped into the reference cell of the
-      // ancestor.
+      // ancestor; the values of all parts, one after the other.
       if (reuse_near_field && !transfer_values.empty() &&
-          transfer_degree == fe->degree)
+          transfer_degree == fe->degree &&
+          transfer_values.begin()->second.size() ==
+            n_parts * fe->dofs_per_cell)
         {
           const auto &unit_points = fe->get_unit_support_points();
           unsigned int transferred = 0;
@@ -987,10 +1095,14 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                     }
                   if (found == transfer_values.end())
                     continue;
-                  double value = 0;
-                  for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                    value += found->second[j] * fe->shape_value(j, point);
-                  x[flux_dof ? e : master[e]] = value;
+                  for (unsigned int p = 0; p < n_parts; ++p)
+                    {
+                      double value = 0;
+                      for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+                        value += found->second[p * fe->dofs_per_cell + j] *
+                                 fe->shape_value(j, point);
+                      x[p * n + (flux_dof ? e : master[e])] = value;
+                    }
                   ++transferred;
                 }
             }
@@ -1004,7 +1116,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       SolverControl control(std::max(solver_control.max_steps(), 5000u),
                             1e-300);
       const auto set_tolerance = [&](const auto &preconditioner) {
-        Vector<double> preconditioned_rhs(n);
+        Vector<double> preconditioned_rhs(n_parts * n);
         preconditioner.vmult(preconditioned_rhs, rhs);
         control.set_tolerance(mixed_galerkin_solver_reduction *
                               preconditioned_rhs.l2_norm());
@@ -1012,20 +1124,44 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       SolverGMRES<Vector<double>> gmres(
         control, SolverGMRES<Vector<double>>::AdditionalData(400));
       unsigned int gmres_steps = 0;
+      // For two parts the inverse of the complex diagonal, its real and
+      // imaginary part.
       struct Diagonal
       {
-        Vector<double> inverse;
+        Vector<double> inverse, inverse_imag;
         void
         vmult(Vector<double> &y, const Vector<double> &x) const
         {
           y = x;
-          y.scale(inverse);
+          if (inverse_imag.size() == 0)
+            {
+              y.scale(inverse);
+              return;
+            }
+          const types::global_dof_index n = inverse.size();
+          for (types::global_dof_index i = 0; i < n; ++i)
+            {
+              y[i] = inverse[i] * x[i] - inverse_imag[i] * x[n + i];
+              y[n + i] = inverse[i] * x[n + i] + inverse_imag[i] * x[i];
+            }
         }
       } preconditioner;
       preconditioner.inverse.reinit(n);
-      for (types::global_dof_index i = 0; i < n; ++i)
-        preconditioner.inverse[i] =
-          diagonal[i] != 0.0 ? 1.0 / diagonal[i] : 1.0;
+      if (n_parts == 1)
+        for (types::global_dof_index i = 0; i < n; ++i)
+          preconditioner.inverse[i] =
+            diagonal[i] != 0.0 ? 1.0 / diagonal[i] : 1.0;
+      else
+        {
+          preconditioner.inverse_imag.reinit(n);
+          for (types::global_dof_index i = 0; i < n; ++i)
+            {
+              const double a = diagonal[i], b = diagonal_imag[i],
+                           s = a * a + b * b;
+              preconditioner.inverse[i]      = s != 0.0 ? a / s : 1.0;
+              preconditioner.inverse_imag[i] = s != 0.0 ? -b / s : 0.0;
+            }
+        }
       if (mixed_galerkin_preconditioner == "calderon")
         {
           // The Calderon preconditioner (MixedCalderonPreconditioner), with
@@ -1090,13 +1226,40 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                 }
             },
             std::getenv("PIBEM_CALDERON_LUMPED") != nullptr);
+          // For two parts, on each part: the coupling of the parts on the
+          // Robin part is not in it.
+          struct PerPart
+          {
+            const MixedCalderonPreconditioner &preconditioner;
+            const types::global_dof_index      n;
+            void
+            vmult(Vector<double> &y, const Vector<double> &x) const
+            {
+              if (x.size() == n)
+                {
+                  preconditioner.vmult(y, x);
+                  return;
+                }
+              y.reinit(x.size());
+              Vector<double> x_part(n), y_part(n);
+              for (types::global_dof_index offset = 0; offset < x.size();
+                   offset += n)
+                {
+                  std::copy(x.begin() + offset,
+                            x.begin() + offset + n,
+                            x_part.begin());
+                  preconditioner.vmult(y_part, x_part);
+                  std::copy(y_part.begin(), y_part.end(), y.begin() + offset);
+                }
+            }
+          } calderon_parts{calderon_preconditioner, n};
           if (calderon_preconditioner.n_pieces() > 1)
             pcout << "Mixed Galerkin problem: the Dirichlet part in "
                   << calderon_preconditioner.n_pieces() << " pieces"
                   << std::endl;
           pcout << "Mixed Galerkin problem: Calderon preconditioner"
                 << std::endl;
-          set_tolerance(calderon_preconditioner);
+          set_tolerance(calderon_parts);
           if (through_fmm && mixed_galerkin_relaxation > 0.)
             {
               // Inexact GMRES (Simoncini and Szyld, Bouras and Fraysse): a
@@ -1106,15 +1269,15 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               // preconditioned right-hand side use the relaxed products;
               // the fraction should be about the reduction over the error
               // of those products, which PIBEM_MIXED_DIAGNOSTICS measures.
-              Vector<double> preconditioned_rhs(n);
-              calderon_preconditioner.vmult(preconditioned_rhs, rhs);
+              Vector<double> preconditioned_rhs(n_parts * n);
+              calderon_parts.vmult(preconditioned_rhs, rhs);
               const double rhs_norm = preconditioned_rhs.l2_norm();
               if (diagnostics)
                 {
-                  Vector<double> probe(n), full, coarse;
-                  for (types::global_dof_index e = 0; e < n; ++e)
-                    if (role[e] == flux || role[e] == free_potential)
-                      probe[e] = std::sin(1.0 + 7.3 * e) + 0.5;
+                  Vector<double> probe(n_parts * n), full, coarse;
+                  for (types::global_dof_index i = 0; i < n_parts * n; ++i)
+                    if (role[i % n] == flux || role[i % n] == free_potential)
+                      probe[i] = std::sin(1.0 + 7.3 * i) + 0.5;
                   block.vmult(full, probe);
                   relaxed_rows = true;
                   block.vmult(coarse, probe);
@@ -1131,10 +1294,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                                        const double          residual) {
                 relaxed_rows = residual < mixed_galerkin_relaxation * rhs_norm;
                 relaxed_steps += relaxed_rows;
-                Vector<double> w(n);
+                Vector<double> w(n_parts * n);
                 block.vmult(w, v);
                 relaxed_rows = false;
-                calderon_preconditioner.vmult(y, w);
+                calderon_parts.vmult(y, w);
               };
               gmres_steps = InexactGMRES::solve(apply,
                                                 preconditioned_rhs,
@@ -1147,7 +1310,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
             }
           else
             {
-              gmres.solve(block, x, rhs, calderon_preconditioner);
+              gmres.solve(block, x, rhs, calderon_parts);
               gmres_steps = control.last_step();
             }
           pcout << "Mixed Galerkin problem: "
@@ -1169,10 +1332,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         block.vmult(residual, x);
         residual -= rhs;
         double r[2] = {0, 0}, f[2] = {0, 0};
-        for (types::global_dof_index i = 0; i < n; ++i)
-          if (role[i] == flux || role[i] == free_potential)
+        for (types::global_dof_index i = 0; i < n_parts * n; ++i)
+          if (role[i % n] == flux || role[i % n] == free_potential)
             {
-              const unsigned int b = role[i] == flux ? 0 : 1;
+              const unsigned int b = role[i % n] == flux ? 0 : 1;
               r[b] += residual[i] * residual[i];
               f[b] += rhs[i] * rhs[i];
             }
@@ -1189,32 +1352,50 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
       if (calderon)
         calderon->print_statistics(pcout.get_stream());
 
-      // The traces on the whole surface.
-      Vector<double> u_full(n), t_full(n);
-      for (types::global_dof_index i = 0; i < n; ++i)
-        {
+      // The traces on the whole surface: the potentials first, from which
+      // the flux of the Robin part follows.
+      std::vector<Vector<double>> u_full(n_parts, Vector<double>(n)),
+        t_full(n_parts, Vector<double>(n));
+      for (unsigned int p = 0; p < n_parts; ++p)
+        for (types::global_dof_index i = 0; i < n; ++i)
           switch (role[i])
             {
               case flux:
-                t_full[i] = x[i];
-                u_full[i] = u_data[i];
+              case known_potential:
+                u_full[p][i] = u_data[p][i];
                 break;
               case free_potential:
               case tied_potential:
-                u_full[i] = x[master[i]];
-                t_full[i] =
-                  g_data[i] - (robin[i] ? robin_coefficient[i] * u_full[i] : 0.0);
-                break;
-              case known_potential:
-                u_full[i] = u_data[i];
-                t_full[i] = g_data[i];
+                u_full[p][i] = x[p * n + master[i]];
                 break;
               case hanging:
                 break;
             }
+      const std::vector<Vector<double>> unknown_robin_flux =
+        robin_product(u_full, [&](const types::global_dof_index e) {
+          return role[e] == free_potential || role[e] == tied_potential;
+        });
+      for (unsigned int p = 0; p < n_parts; ++p)
+        {
+          for (types::global_dof_index i = 0; i < n; ++i)
+            switch (role[i])
+              {
+                case flux:
+                  t_full[p][i] = x[p * n + i];
+                  break;
+                case free_potential:
+                case tied_potential:
+                  t_full[p][i] = g_data[p][i] - unknown_robin_flux[p][i];
+                  break;
+                case known_potential:
+                  t_full[p][i] = g_data[p][i];
+                  break;
+                case hanging:
+                  break;
+              }
+          constraints.distribute(u_full[p]);
+          constraints.distribute(t_full[p]);
         }
-      constraints.distribute(u_full);
-      constraints.distribute(t_full);
       // The traces on the cells, for the next solve on a refined mesh.
       if (reuse_near_field)
         {
@@ -1223,22 +1404,27 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
           for (const auto &cell : dh.active_cell_iterators())
             {
               const auto         &cell_dofs = indices_of(cell);
-              std::vector<double> local(fe->dofs_per_cell);
+              std::vector<double> local(n_parts * fe->dofs_per_cell);
               const bool          d = is_dirichlet_cell(cell);
-              for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                local[i] = (d ? t_full : u_full)[cell_dofs[i]];
+              for (unsigned int p = 0; p < n_parts; ++p)
+                for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                  local[p * fe->dofs_per_cell + i] =
+                    (d ? t_full : u_full)[p][cell_dofs[i]];
               transfer_values[{{cell->level(), cell->index()}}] =
                 std::move(local);
             }
         }
       // At degrees of freedom of both parts, the Dirichlet side.
-      for (const auto i : this_cpu_set)
+      for (unsigned int p = 0; p < n_parts; ++p)
         {
-          phi[i]     = u_full[i];
-          dphi_dn[i] = t_full[i];
+          for (const auto i : this_cpu_set)
+            {
+              (*phi[p])[i]     = u_full[p][i];
+              (*dphi_dn[p])[i] = t_full[p][i];
+            }
+          phi[p]->compress(VectorOperation::insert);
+          dphi_dn[p]->compress(VectorOperation::insert);
         }
-      phi.compress(VectorOperation::insert);
-      dphi_dn.compress(VectorOperation::insert);
 
       // Error indicators for adaptive refinement: on each cell the jumps of
       // the conormal derivative of the discrete trace, the flux on the
@@ -1401,9 +1587,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
               if (cell->active_cell_index() % n_mpi_processes !=
                   this_mpi_process)
                 continue;
-              const bool            d = is_dirichlet_cell(cell);
-              const Vector<double> &f = d ? t_full : u_full;
-              double                sum  = 0;
+              // The jumps of all parts.
+              const bool                         d = is_dirichlet_cell(cell);
+              const std::vector<Vector<double>> &f = d ? t_full : u_full;
+              double                             sum  = 0;
               const double          area = cell->measure();
               // The weight of an edge: a_F/2 for the potential, a_F^3/(2 pi^2)
               // for the flux.
@@ -1433,8 +1620,9 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                         AssertThrow(child_face != numbers::invalid_unsigned_int,
                                     ExcInternalError());
                         there.reinit(child, child_face);
-                        sum += weight(face) *
-                               jump_hanging(there, child, cell, face, f);
+                        for (const auto &f_part : f)
+                          sum += weight(face) *
+                                 jump_hanging(there, child, cell, face, f_part);
                       }
                   else
                     {
@@ -1443,18 +1631,24 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                         continue;
                       here.reinit(cell, face);
                       if (cell->neighbor_is_coarser(face))
-                        sum += weight(face) *
-                               jump_hanging(here,
-                                            cell,
-                                            neighbor,
-                                            cell->neighbor_of_coarser_neighbor(face).first,
-                                            f);
+                        for (const auto &f_part : f)
+                          sum += weight(face) *
+                                 jump_hanging(here,
+                                              cell,
+                                              neighbor,
+                                              cell->neighbor_of_coarser_neighbor(face).first,
+                                              f_part);
                       else
                         {
                           there.reinit(neighbor,
                                        cell->neighbor_of_neighbor(face));
-                          sum += weight(face) *
-                                 jump(here, cell, there, neighbor, f, "same level");
+                          for (const auto &f_part : f)
+                            sum += weight(face) * jump(here,
+                                                       cell,
+                                                       there,
+                                                       neighbor,
+                                                       f_part,
+                                                       "same level");
                         }
                     }
                 }
@@ -1467,7 +1661,7 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         dh.get_triangulation().n_active_cells(), 0.);
       // The squared L2 norms of the exact flux on the Dirichlet part and of
       // the exact potential on the Neumann part.
-      double part_norm_squared[2] = {1., 1.};
+      double part_norm_squared[2] = {0., 0.};
 
       // L2 errors: of the flux on the Dirichlet part, of the potential on the
       // Neumann part.
@@ -1484,12 +1678,6 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                                                  error_quadrature,
                                                  update_normal_vectors |
                                                    update_quadrature_points);
-        double flux_error = 0, flux_norm = 0, potential_error = 0,
-               potential_norm = 0, flux_max = 0, potential_max = 0,
-               flux_error_edge = 0, flux_norm_edge = 0, robin_flux_error = 0,
-               robin_flux_norm = 0;
-        Point<dim>     flux_where, potential_where;
-        Vector<double> g(dim);
         // PIBEM_MIXED_ERROR_DUMP=file: one line per cell, its center, whether
         // it is a Dirichlet cell and touches a double node, its squared
         // errors and squared norm, and the squared error of the best
@@ -1500,172 +1688,182 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
         std::ofstream dump;
         if (dump_name != nullptr && this_mpi_process == 0)
           dump.open(dump_name);
-        for (const auto &cell : dh.active_cell_iterators())
+        // The errors of each part.
+        for (unsigned int p = 0; p < n_parts; ++p)
           {
-            const double cell_error_before =
-              flux_error + potential_error;
-            const double cell_norm_before = flux_norm + potential_norm;
-            FullMatrix<double> local_mass(fe->dofs_per_cell);
-            Vector<double>     local_rhs(fe->dofs_per_cell);
-            double             local_square = 0;
-            error_values.reinit(cell);
-            const FEValues<dim - 1, dim> &error_data =
-              separate_data ? (error_data_values.reinit(cell),
-                               error_data_values) :
-                              error_values;
-            const auto &cell_dofs = indices_of(cell);
-            const bool  dirichlet = is_dirichlet_cell(cell);
-            bool        at_edge   = false;
-            for (const auto e : cell_dofs)
-              if (double_nodes_set[original[e]].size() > 1 ||
-                  copy_of[original[e]] != numbers::invalid_dof_index)
-                at_edge = true;
-            bool hanging_cell = false;
-            for (const auto e : cell_dofs)
-              if (role[e] == hanging)
-                hanging_cell = true;
-            double              cell_max_error = 0, cell_max_exact = 0;
-            std::vector<double> cell_exact(error_quadrature.size());
-            for (unsigned int q = 0; q < error_quadrature.size(); ++q)
+            double flux_error = 0, flux_norm = 0, potential_error = 0,
+                   potential_norm = 0, flux_max = 0, potential_max = 0,
+                   flux_error_edge = 0, flux_norm_edge = 0, robin_flux_error = 0,
+                   robin_flux_norm = 0;
+            Point<dim>     flux_where, potential_where;
+            Vector<double> g(dim);
+            for (const auto &cell : dh.active_cell_iterators())
               {
-                double value = 0;
-                for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                  value += error_values.shape_value(i, q) *
-                           (dirichlet ? t_full : u_full)[cell_dofs[i]];
-                double exact_value;
-                if (dirichlet)
+                const double cell_error_before =
+                  flux_error + potential_error;
+                const double cell_norm_before = flux_norm + potential_norm;
+                FullMatrix<double> local_mass(fe->dofs_per_cell);
+                Vector<double>     local_rhs(fe->dofs_per_cell);
+                double             local_square = 0;
+                error_values.reinit(cell);
+                const FEValues<dim - 1, dim> &error_data =
+                  separate_data ? (error_data_values.reinit(cell),
+                                   error_data_values) :
+                                  error_values;
+                const auto &cell_dofs = indices_of(cell);
+                const bool  dirichlet = is_dirichlet_cell(cell);
+                bool        at_edge   = false;
+                for (const auto e : cell_dofs)
+                  if (double_nodes_set[original[e]].size() > 1 ||
+                      copy_of[original[e]] != numbers::invalid_dof_index)
+                    at_edge = true;
+                bool hanging_cell = false;
+                for (const auto e : cell_dofs)
+                  if (role[e] == hanging)
+                    hanging_cell = true;
+                double              cell_max_error = 0, cell_max_exact = 0;
+                std::vector<double> cell_exact(error_quadrature.size());
+                for (unsigned int q = 0; q < error_quadrature.size(); ++q)
                   {
-                    on_cell(gradient, cell).vector_value(
-                      error_data.quadrature_point(q), g);
-                    exact_value = 0;
-                    for (unsigned int d = 0; d < dim; ++d)
-                      exact_value += g[d] * error_data.normal_vector(q)[d];
-                    flux_error += (value - exact_value) *
-                                  (value - exact_value) * error_values.JxW(q);
-                    if (dump.is_open())
+                    double value = 0;
+                    for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                      value += error_values.shape_value(i, q) *
+                               (dirichlet ? t_full[p] : u_full[p])[cell_dofs[i]];
+                    double exact_value;
+                    if (dirichlet)
                       {
-                        for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                          {
-                            for (unsigned int j = 0; j < fe->dofs_per_cell;
-                                 ++j)
-                              local_mass(i, j) +=
-                                error_values.shape_value(i, q) *
-                                error_values.shape_value(j, q) *
-                                error_values.JxW(q);
-                            local_rhs(i) += error_values.shape_value(i, q) *
-                                            exact_value * error_values.JxW(q);
-                          }
-                        local_square +=
-                          exact_value * exact_value * error_values.JxW(q);
-                      }
-                    flux_norm += exact_value * exact_value * error_values.JxW(q);
-                    if (at_edge)
-                      {
-                        flux_error_edge += (value - exact_value) *
-                                           (value - exact_value) *
-                                           error_values.JxW(q);
-                        flux_norm_edge +=
-                          exact_value * exact_value * error_values.JxW(q);
-                      }
-                    if (std::abs(value - exact_value) > flux_max)
-                      {
-                        flux_max   = std::abs(value - exact_value);
-                        flux_where = error_values.quadrature_point(q);
-                      }
-                  }
-                else
-                  {
-                    exact_value = on_cell(potential, cell).value(
-                      error_data.quadrature_point(q));
-                    potential_error += (value - exact_value) *
-                                       (value - exact_value) * error_values.JxW(q);
-                    potential_norm +=
-                      exact_value * exact_value * error_values.JxW(q);
-                    if (std::abs(value - exact_value) > potential_max)
-                      {
-                        potential_max   = std::abs(value - exact_value);
-                        potential_where = error_values.quadrature_point(q);
-                      }
-                    // On the Robin part the flux g/b - (a/b) u as well.
-                    if (has_robin && is_robin_cell(cell))
-                      {
-                        double flux_value = 0, exact_flux = 0;
-                        for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                          flux_value += error_values.shape_value(i, q) *
-                                        t_full[cell_dofs[i]];
-                        on_cell(gradient, cell).vector_value(
+                        on_cell(*gradient[p], cell).vector_value(
                           error_data.quadrature_point(q), g);
+                        exact_value = 0;
                         for (unsigned int d = 0; d < dim; ++d)
-                          exact_flux += g[d] * error_data.normal_vector(q)[d];
-                        robin_flux_error += (flux_value - exact_flux) *
-                                            (flux_value - exact_flux) *
-                                            error_values.JxW(q);
-                        robin_flux_norm +=
-                          exact_flux * exact_flux * error_values.JxW(q);
+                          exact_value += g[d] * error_data.normal_vector(q)[d];
+                        flux_error += (value - exact_value) *
+                                      (value - exact_value) * error_values.JxW(q);
+                        if (dump.is_open())
+                          {
+                            for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                              {
+                                for (unsigned int j = 0; j < fe->dofs_per_cell;
+                                     ++j)
+                                  local_mass(i, j) +=
+                                    error_values.shape_value(i, q) *
+                                    error_values.shape_value(j, q) *
+                                    error_values.JxW(q);
+                                local_rhs(i) += error_values.shape_value(i, q) *
+                                                exact_value * error_values.JxW(q);
+                              }
+                            local_square +=
+                              exact_value * exact_value * error_values.JxW(q);
+                          }
+                        flux_norm += exact_value * exact_value * error_values.JxW(q);
+                        if (at_edge)
+                          {
+                            flux_error_edge += (value - exact_value) *
+                                               (value - exact_value) *
+                                               error_values.JxW(q);
+                            flux_norm_edge +=
+                              exact_value * exact_value * error_values.JxW(q);
+                          }
+                        if (std::abs(value - exact_value) > flux_max)
+                          {
+                            flux_max   = std::abs(value - exact_value);
+                            flux_where = error_values.quadrature_point(q);
+                          }
                       }
-                  }
-                cell_exact[q]  = exact_value;
-                cell_max_error =
-                  std::max(cell_max_error, std::abs(value - exact_value));
-                cell_max_exact = std::max(cell_max_exact, std::abs(exact_value));
-              }
-            cell_squared_error[cell->active_cell_index()] =
-              flux_error + potential_error - cell_error_before;
-            if (dump.is_open())
-              {
-                double best = 0, best_max = 0;
-                if (dirichlet)
-                  {
-                    Vector<double> coefficients(local_rhs);
-                    local_mass.gauss_jordan();
-                    local_mass.vmult(coefficients, local_rhs);
-                    best = std::max(local_square - (coefficients * local_rhs),
-                                    0.);
-                    for (unsigned int q = 0; q < error_quadrature.size(); ++q)
+                    else
                       {
-                        double b = 0;
-                        for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
-                          b += coefficients[i] * error_values.shape_value(i, q);
-                        best_max = std::max(best_max, std::abs(b - cell_exact[q]));
+                        exact_value = on_cell(*potential[p], cell).value(
+                          error_data.quadrature_point(q));
+                        potential_error += (value - exact_value) *
+                                           (value - exact_value) * error_values.JxW(q);
+                        potential_norm +=
+                          exact_value * exact_value * error_values.JxW(q);
+                        if (std::abs(value - exact_value) > potential_max)
+                          {
+                            potential_max   = std::abs(value - exact_value);
+                            potential_where = error_values.quadrature_point(q);
+                          }
+                        // On the Robin part the flux g/b - (a/b) u as well.
+                        if (has_robin && is_robin_cell(cell))
+                          {
+                            double flux_value = 0, exact_flux = 0;
+                            for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                              flux_value += error_values.shape_value(i, q) *
+                                            t_full[p][cell_dofs[i]];
+                            on_cell(*gradient[p], cell).vector_value(
+                              error_data.quadrature_point(q), g);
+                            for (unsigned int d = 0; d < dim; ++d)
+                              exact_flux += g[d] * error_data.normal_vector(q)[d];
+                            robin_flux_error += (flux_value - exact_flux) *
+                                                (flux_value - exact_flux) *
+                                                error_values.JxW(q);
+                            robin_flux_norm +=
+                              exact_flux * exact_flux * error_values.JxW(q);
+                          }
                       }
+                    cell_exact[q]  = exact_value;
+                    cell_max_error =
+                      std::max(cell_max_error, std::abs(value - exact_value));
+                    cell_max_exact = std::max(cell_max_exact, std::abs(exact_value));
                   }
-                // Then, at the quadrature points of the cell, the largest
-                // error, the largest exact value and the largest error of
-                // the local best approximation, and whether the cell has a
-                // hanging node.
-                dump << cell->center() << ' ' << dirichlet << ' ' << at_edge
-                     << ' ' << flux_error + potential_error - cell_error_before
-                     << ' ' << flux_norm + potential_norm - cell_norm_before
-                     << ' ' << best << ' ' << cell_max_error << ' '
-                     << cell_max_exact << ' ' << best_max << ' '
-                     << hanging_cell << ' '
-                     << jump_indicator[cell->active_cell_index()] << '\n';
+                cell_squared_error[cell->active_cell_index()] +=
+                  flux_error + potential_error - cell_error_before;
+                if (dump.is_open())
+                  {
+                    double best = 0, best_max = 0;
+                    if (dirichlet)
+                      {
+                        Vector<double> coefficients(local_rhs);
+                        local_mass.gauss_jordan();
+                        local_mass.vmult(coefficients, local_rhs);
+                        best = std::max(local_square - (coefficients * local_rhs),
+                                        0.);
+                        for (unsigned int q = 0; q < error_quadrature.size(); ++q)
+                          {
+                            double b = 0;
+                            for (unsigned int i = 0; i < fe->dofs_per_cell; ++i)
+                              b += coefficients[i] * error_values.shape_value(i, q);
+                            best_max = std::max(best_max, std::abs(b - cell_exact[q]));
+                          }
+                      }
+                    // Then, at the quadrature points of the cell, the largest
+                    // error, the largest exact value and the largest error of
+                    // the local best approximation, and whether the cell has a
+                    // hanging node.
+                    dump << cell->center() << ' ' << dirichlet << ' ' << at_edge
+                         << ' ' << flux_error + potential_error - cell_error_before
+                         << ' ' << flux_norm + potential_norm - cell_norm_before
+                         << ' ' << best << ' ' << cell_max_error << ' '
+                         << cell_max_exact << ' ' << best_max << ' '
+                         << hanging_cell << ' '
+                         << jump_indicator[cell->active_cell_index()] << '\n';
+                  }
               }
+            part_norm_squared[0] += flux_norm;
+            part_norm_squared[1] += potential_norm;
+            // Zero without a Dirichlet part (Robin conditions everywhere).
+            pcout << "Mixed Galerkin problem" << part_name[p]
+                  << ": flux on the Dirichlet part, relative L2 error "
+                  << (flux_norm > 0 ? std::sqrt(flux_error / flux_norm) : 0.)
+                  << "; potential on the Neumann part, relative L2 error "
+                  << std::sqrt(potential_error / potential_norm) << std::endl
+                  << "  flux on the cells at double nodes: absolute L2 error "
+                  << std::sqrt(flux_error_edge) << " (norm "
+                  << std::sqrt(flux_norm_edge) << "), elsewhere "
+                  << std::sqrt(flux_error - flux_error_edge) << " (norm "
+                  << std::sqrt(flux_norm - flux_norm_edge) << ")" << std::endl
+                  << "  absolute L2 errors: flux " << std::sqrt(flux_error)
+                  << " (norm " << std::sqrt(flux_norm) << "), potential "
+                  << std::sqrt(potential_error) << " (norm "
+                  << std::sqrt(potential_norm) << ")" << std::endl
+                  << "  largest error of the flux " << flux_max << " at "
+                  << flux_where << ", of the potential " << potential_max
+                  << " at " << potential_where << std::endl;
+            if (has_robin)
+              pcout << "Mixed Galerkin problem" << part_name[p]
+                    << ": flux on the Robin part, relative L2 error "
+                    << std::sqrt(robin_flux_error / robin_flux_norm) << std::endl;
           }
-        part_norm_squared[0] = flux_norm;
-        part_norm_squared[1] = potential_norm;
-        // Zero without a Dirichlet part (Robin conditions everywhere).
-        pcout << "Mixed Galerkin problem: flux on the Dirichlet part, "
-                 "relative L2 error "
-              << (flux_norm > 0 ? std::sqrt(flux_error / flux_norm) : 0.)
-              << "; potential on the Neumann part, relative L2 error "
-              << std::sqrt(potential_error / potential_norm) << std::endl
-              << "  flux on the cells at double nodes: absolute L2 error "
-              << std::sqrt(flux_error_edge) << " (norm "
-              << std::sqrt(flux_norm_edge) << "), elsewhere "
-              << std::sqrt(flux_error - flux_error_edge) << " (norm "
-              << std::sqrt(flux_norm - flux_norm_edge) << ")" << std::endl
-              << "  absolute L2 errors: flux " << std::sqrt(flux_error)
-              << " (norm " << std::sqrt(flux_norm) << "), potential "
-              << std::sqrt(potential_error) << " (norm "
-              << std::sqrt(potential_norm) << ")" << std::endl
-              << "  largest error of the flux " << flux_max << " at "
-              << flux_where << ", of the potential " << potential_max
-              << " at " << potential_where << std::endl;
-        if (has_robin)
-          pcout << "Mixed Galerkin problem: flux on the Robin part, relative "
-                   "L2 error "
-                << std::sqrt(robin_flux_error / robin_flux_norm) << std::endl;
       }
 
       // The indicators that adaptive_refinement() uses, and their sums on the
@@ -1701,8 +1899,10 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
                 << std::endl;
         }
 
-      // The operators stay for the next component on the same mesh.
-      if (current_component + 1 >= n_components)
+      // The operators stay for the next component on the same mesh; the
+      // imaginary part of a complex problem is the component after the
+      // current one.
+      if (current_component + n_parts >= n_components)
         {
           single_layer.clear();
           double_layer.clear();
@@ -1725,12 +1925,14 @@ BEMProblem<dim>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &phi,
 
 
 template void
-BEMProblem<2>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &,
-                                    TrilinosWrappers::MPI::Vector &,
-                                    const Function<2> &,
-                                    const Function<2> &);
+BEMProblem<2>::solve_galerkin_mixed(
+  const std::vector<TrilinosWrappers::MPI::Vector *> &,
+  const std::vector<TrilinosWrappers::MPI::Vector *> &,
+  const std::vector<const Function<2> *> &,
+  const std::vector<const Function<2> *> &);
 template void
-BEMProblem<3>::solve_galerkin_mixed(TrilinosWrappers::MPI::Vector &,
-                                    TrilinosWrappers::MPI::Vector &,
-                                    const Function<3> &,
-                                    const Function<3> &);
+BEMProblem<3>::solve_galerkin_mixed(
+  const std::vector<TrilinosWrappers::MPI::Vector *> &,
+  const std::vector<TrilinosWrappers::MPI::Vector *> &,
+  const std::vector<const Function<3> *> &,
+  const std::vector<const Function<3> *> &);

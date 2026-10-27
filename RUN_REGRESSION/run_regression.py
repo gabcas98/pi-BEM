@@ -68,12 +68,24 @@ QUANTITIES = {
     'steps': (r'Solve terminated at step (\d+)', 'exact'),
     'mixed_robin_flux': (r'flux on the Robin part, relative L2 error (\S+)',
                          'six'),
+    # The real part of a complex mixed problem (the quantities above take
+    # the last line, of the imaginary part).
+    'mixed_flux_real': (r'real part: flux on the Dirichlet part, relative L2 '
+                        r'error (\S+);', 'six'),
+    'mixed_potential_real': (r'real part: flux on the Dirichlet part, '
+                             r'relative L2 error \S+; potential on the '
+                             r'Neumann part, relative L2 error (\S+)', 'six'),
 }
 
 # The mixed problem on the NACA wing: flux on the lower surface, potential
 # on the upper surface and the tips, data on the exact surface.
 MIXED = ['mixed_flux', 'mixed_potential', 'mixed_gauss', 'iterations',
          'memory_kb']
+
+# The complex sample sphere in the Galerkin formulation.
+GALERKIN_COMPLEX = {'Boundary integral formulation': 'galerkin',
+                    'Linear solver': 'CG',
+                    'Preconditioner': 'BlockJacobi'}
 
 # name: (base file, settings in BEMProblem<dim>, quantities to compare
 #        [, dim, 3 if absent])
@@ -278,6 +290,32 @@ CASES = {
                                 'iterations']),
     'components_dirichlet_dg': ('sphere_components_dirichlet.prm', {},
                                 ['rhs_norm', 'flux', 'iterations']),
+    # The complex problem in the Galerkin formulation, with different real
+    # and imaginary parts: one mixed system coupled by the complex a/b of the
+    # Robin part, dense with the diagonal preconditioner and multipole with
+    # the Calderon one, part by part, and relaxed products; with Dirichlet
+    # conditions on the whole surface, two real problems with one single
+    # layer.
+    'complex_galerkin_dense': ('sphere_complex_galerkin.prm',
+                               GALERKIN_COMPLEX,
+                               ['mixed_flux_real', 'mixed_potential_real',
+                                'mixed_flux', 'mixed_potential',
+                                'mixed_robin_flux', 'iterations']),
+    'complex_galerkin_fma': ('sphere_complex_galerkin.prm',
+                             dict(GALERKIN_COMPLEX,
+                                  **{'Solution method': 'FMA',
+                                     'Mixed Galerkin preconditioner':
+                                       'calderon',
+                                     'Mixed Galerkin relaxed products below':
+                                       '1e-3'}),
+                             ['mixed_flux_real', 'mixed_potential_real',
+                              'mixed_flux', 'mixed_potential',
+                              'mixed_robin_flux', 'iterations']),
+    'complex_galerkin_dirichlet': ('sphere_complex_galerkin.prm',
+                                   dict(GALERKIN_COMPLEX,
+                                        **{'Dirichlet boundary ids': '1,2',
+                                           'Robin boundary ids': ''}),
+                                   ['rhs_norm', 'iterations']),
 }
 
 

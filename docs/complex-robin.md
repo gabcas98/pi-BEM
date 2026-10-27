@@ -164,6 +164,34 @@ Dirichlet condition (`a/b = 100`) and Robin conditions on the whole surface
 (no Dirichlet part) converge in 82 and 21 GMRES steps. The mixed solver
 prints the flux error of the Robin part beside the other two.
 
+Complex problems run in the Galerkin formulation too, with the functions of
+the slots of both components. The mixed problem solves the real and the
+imaginary part in one GMRES on vectors of both parts, the real one first:
+`V`, `K` and `W` act on each part, and the parts are coupled only on the
+Robin part, where the flux `g/b - (a/b) u` takes the complex product of
+`a/b` (`robin_matrix_diagonal` and `robin_matrix_diagonal_imag`) and `u`.
+The diagonal preconditioner divides at each node by the complex diagonal
+`w + 1/2 (a/b) m`; the Calderon preconditioner acts on each part alone.
+Errors and indicators are printed for each part (`, real part:` and
+`, imaginary part:`), and the indicators of adaptive refinement add the two.
+With Dirichlet conditions on the whole surface the parts are not coupled:
+they are solved as two real problems, the imaginary one with the single
+layer of the real one (with the multipole method the Dirichlet problem is
+set up again, as for another component). On the sample sphere with
+`phi = (x+y+z+2) + i (x^2-y^2)` and `a/b = 1 + 0.5 i` on the Robin part
+(`RUN_REGRESSION/base/sphere_complex_galerkin.prm`), p = 1, both parts of the
+potential converge at order 2 (real 5.9e-4, 1.5e-4, 3.8e-5; imaginary
+1.0e-2, 2.6e-3, 6.4e-4 at one to three refinements) and the fluxes at order
+1. The upstream sample (`sphere_complex_robin.prm`,
+`a/b = (1+i)/(2(x+y+z+2))`) behaves the same, with dense matrices and FMM
+agreeing to 2e-3 of the error. With a real `a/b` the complex solve gives the
+numbers of two real components to the last printed digit, and with Dirichlet
+conditions everywhere to 16 digits. The coupling costs about 30% more GMRES
+steps with the diagonal preconditioner (76, 108, 150 against 60, 86, 116 for
+the real problem); the Calderon preconditioner takes 26 steps instead of 108
+at two refinements, and with the FMM and relaxed products 10 s instead of
+57 s.
+
 ## Robin conditions and geometry IDs
 
 The 3D Robin function has three entries `a; b; g`, expressing
@@ -222,7 +250,7 @@ communicator, with compatible vector ownership. The geometric dimension is
 | `get_wind(i,slot)`, `get_potential(i,slot)`, `get_robin_coeffs(i,slot)` | Parsed-function access requires initialized parameters, valid component and slot. Const public overloads expose the functions; mutable overloads are protected. |
 | `get_phi_components([indices])` | Returns an owned block-vector copy collectively. Explicit indices retain their component block numbers; the no-argument overload selects all. |
 | `solve_problem(reset_matrix)`, `solve_complex_problem(reset_matrix)` | Prepare data and solve current component/pair. Default `true` assembles the integral operators. Use `false` only while geometry, mapping, quadrature and discretization remain unchanged. |
-| `BEMProblem::solve(...)` | Real overload gains `reset_matrix`; complex overload takes `phi, phi_imag, dphi_dn, dphi_dn_imag, rhs, rhs_imag, reset_matrix`. Boundary vectors and Robin data must already be prepared. |
+| `BEMProblem::solve(...)` | Real overload takes `phi, dphi_dn, rhs, dirichlet_function, dirichlet_gradient, reset_matrix`; complex overload takes `phi, phi_imag, dphi_dn, dphi_dn_imag, rhs, rhs_imag, dirichlet_functions, dirichlet_gradients, reset_matrix`, the functions of the real and of the imaginary part (needed by the Galerkin formulation). Boundary vectors and Robin data must already be prepared. |
 | `prepare_robin_datastructs(...)` | Real overload fills diagonal/RHS; complex overload fills real and imaginary diagonal/RHS from consecutive component functions. |
 | `vmult(...)`, `compute_rhs(...)`, `solve_system(...)` | Additional overloads operate on separate real/imaginary vectors. They require previously initialized operators and current boundary data. |
 | `assemble_system_tbb()`, `assemble_system_singlethread()` | Explicit threaded/serial direct assembly. The high-level solve selects according to the thread limit. |

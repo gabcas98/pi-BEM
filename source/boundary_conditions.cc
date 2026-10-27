@@ -261,23 +261,12 @@ BoundaryConditions<dim>::solve_problem(bool reset_matrix)
   prepare_bem_vectors(tmp_rhs);
   prepare_robin_datastructs(bem.robin_matrix_diagonal, bem.robin_rhs);
 
-  // The analytical data: the Galerkin formulation integrates them on the
-  // cells, with the function of the slot of each.
-  std::vector<const Function<dim> *> potential_pieces, wind_pieces;
-  for (unsigned int slot = 0; slot < MAX_CONDITION_SLOTS; ++slot)
-    {
-      potential_pieces.push_back(&get_potential(current_component, slot));
-      wind_pieces.push_back(&get_wind(current_component, slot));
-    }
-  cellwise_potential = std::make_unique<CellwiseFunction<dim>>(
-    potential_pieces, comp_dom.manifold2bcondition_slot_map);
-  cellwise_wind = std::make_unique<CellwiseFunction<dim>>(
-    wind_pieces, comp_dom.manifold2bcondition_slot_map);
+  set_cellwise_data(current_component, 0);
   bem.solve(get_phi(),
             get_dphi_dn(),
             tmp_rhs,
-            cellwise_potential.get(),
-            cellwise_wind.get(),
+            cellwise_potential[0].get(),
+            cellwise_wind[0].get(),
             reset_matrix);
 
   if (!bem.can_determine_phi)
@@ -299,6 +288,25 @@ BoundaryConditions<dim>::solve_problem(bool reset_matrix)
 
       pcout << "Phi shift of " << shift << std::endl;
     }
+}
+
+template <int dim>
+void
+BoundaryConditions<dim>::set_cellwise_data(unsigned int component,
+                                           unsigned int part)
+{
+  // The analytical data: the Galerkin formulation integrates them on the
+  // cells, with the function of the slot of each.
+  std::vector<const Function<dim> *> potential_pieces, wind_pieces;
+  for (unsigned int slot = 0; slot < MAX_CONDITION_SLOTS; ++slot)
+    {
+      potential_pieces.push_back(&get_potential(component, slot));
+      wind_pieces.push_back(&get_wind(component, slot));
+    }
+  cellwise_potential[part] = std::make_unique<CellwiseFunction<dim>>(
+    potential_pieces, comp_dom.manifold2bcondition_slot_map);
+  cellwise_wind[part] = std::make_unique<CellwiseFunction<dim>>(
+    wind_pieces, comp_dom.manifold2bcondition_slot_map);
 }
 
 template <int dim>
@@ -357,12 +365,16 @@ BoundaryConditions<dim>::solve_complex_problem(bool reset_matrix)
                             bem.robin_rhs,
                             bem.robin_rhs_imag);
 
+  set_cellwise_data(current_component, 0);
+  set_cellwise_data(current_component + 1, 1);
   bem.solve(get_phi(),
             get_phi(current_component + 1),
             get_dphi_dn(),
             get_dphi_dn(current_component + 1),
             tmp_rhs,
             tmp_rhs_imag,
+            {{cellwise_potential[0].get(), cellwise_potential[1].get()}},
+            {{cellwise_wind[0].get(), cellwise_wind[1].get()}},
             reset_matrix);
 
   if (!bem.can_determine_phi)
