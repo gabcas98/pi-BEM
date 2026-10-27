@@ -120,12 +120,19 @@ FOREACH(_build_type ${_d2_build_types})
     	ENDFOREACH()
 
 	# Benchmarks of the building blocks of the FMA
-	FOREACH(_bench fmm_expansions fmm_points yukawa_expansions exact_geometry exact_geometry_pibem)
+	FOREACH(_bench fmm_expansions fmm_points yukawa_expansions exact_geometry exact_geometry_pibem exact_geometry_surfaces)
 		SET(_exe "${_bench}${_p}")
 		ADD_EXECUTABLE(${_exe} benchmarks/${_bench}.cc)
 		TARGET_INCLUDE_DIRECTORIES(${_exe} PRIVATE
 		  ${CMAKE_CURRENT_SOURCE_DIR}/include)
 		TARGET_LINK_LIBRARIES(${_exe} ${_lib})
+		DEAL_II_SETUP_TARGET(${_exe} ${_BUILD_TYPE})
+	ENDFOREACH()
+
+	# Tools for the preparation of CAD models
+	FOREACH(_tool cut_cad snap_mesh)
+		SET(_exe "${_tool}${_p}")
+		ADD_EXECUTABLE(${_exe} tools/${_tool}.cc)
 		DEAL_II_SETUP_TARGET(${_exe} ${_BUILD_TYPE})
 	ENDFOREACH()
 
