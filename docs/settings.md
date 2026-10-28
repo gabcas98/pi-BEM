@@ -100,6 +100,18 @@ set Galerkin relaxed truncation order = 4
 set Galerkin relaxed opening criterion = 0.6
 ```
 
+`FMA Truncation Order`, `Galerkin opening criterion` and `Galerkin maximum
+points per leaf` also set the collocation FMM (`CollocationFMMOperator`),
+despite their names; the other entries belong to the mixed Galerkin problem.
+The collocation FMM takes its near field from the singular and quasi-singular
+rules of the matrices, so it reproduces `Solution method = Direct` up to the
+truncation: order 10 matches six digits with the Laplace kernel. The screened
+kernel converges more slowly in the order; on the box of
+`screened_p2_bal0_weak.prm` (kappa 0.5) order 10 gives four digits and order
+18 six. `Octree Params` and `Granularity for TBB simple for cycles` belong to
+the FMA of upstream, which LaplaceFMM has replaced; they are still accepted
+and are ignored.
+
 The preconditioner only needs to be the same operator at every step, not an
 accurate one, so its expansions can be coarse: order 2 with opening 0.95 and
 32 points per leaf takes the same number of steps as order 4 with opening
@@ -123,6 +135,9 @@ them changes the solution.
   a decagon in 2D.
 - `robin_galerkin_fma`: a Robin part in the mixed Galerkin problem, multipole
   method.
+- `screened_collocation_robin`, `screened_collocation_robin_fma`: the
+  screened kernel in the collocation problem with Dirichlet and Robin parts,
+  with the matrices and with the multipole method.
 - `screened_mixed_robin`, `screened_mixed_robin_fma`: the screened kernel in
   the mixed Galerkin problem, with Dirichlet and Robin parts, dense and
   multipole, Calderon preconditioner.

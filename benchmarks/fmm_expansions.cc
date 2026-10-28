@@ -11,10 +11,8 @@
 // for the offsets between the parent boxes that the interaction lists of
 // an octree produce: the nearest well-separated box (2, 0, 0), the
 // farthest corner of the list (3, 3, 3), and one in between. The error
-// is relative to the largest direct value. Two implementations are
-// compared: the classes MultipoleExpansion and LocalExpansion of the
-// original FMA ("old") and the solid harmonics of laplace_expansions.h
-// ("new"). The time of each operation is measured on its own, in
+// is relative to the largest direct value. The time of each operation of
+// the solid harmonics of laplace_expansions.h is measured on its own, in
 // microseconds, for every truncation order, and last the M2L translation as
 // LaplaceFMM applies it, grouped by offset in batches of eight.
 //
@@ -33,10 +31,7 @@
 #include <random>
 #include <vector>
 
-#include "ass_leg_function.h"
 #include "laplace_expansions.h"
-#include "local_expansion.h"
-#include "multipole_expansion.h"
 #include "yukawa_expansions.h"
 
 using namespace dealii;
@@ -44,9 +39,6 @@ namespace LE = LaplaceExpansions;
 
 namespace
 {
-  // The original classes are limited by their precomputed tables.
-  constexpr unsigned int max_old_order = 10;
-
   struct Sources
   {
     std::vector<Point<3>>     points;
@@ -122,40 +114,13 @@ namespace
     Point<3> source_leaf, source_parent, target_parent, target_leaf;
   };
 
-  // The whole chain with the original classes; potentials at the targets.
+  // The whole chain with the solid harmonics; potentials at the targets.
   std::vector<double>
-  chain_old(const unsigned int           p,
-            const Boxes                 &b,
-            const Sources               &s,
-            const bool                   dipoles,
-            const std::vector<Point<3>> &targets,
-            const AssLegFunction        &legendre)
-  {
-    MultipoleExpansion leaf(p, b.source_leaf, &legendre);
-    for (unsigned int i = 0; i < s.points.size(); ++i)
-      if (dipoles)
-        leaf.AddNormDer(s.strengths[i], s.points[i], s.normals[i]);
-      else
-        leaf.Add(s.strengths[i], s.points[i]);
-    MultipoleExpansion parent(p, b.source_parent, &legendre);
-    parent.Add(leaf);
-    LocalExpansion parent_local(p, b.target_parent, &legendre);
-    parent_local.Add(parent);
-    LocalExpansion local(p, b.target_leaf, &legendre);
-    local.Add(parent_local);
-    std::vector<double> u;
-    for (const auto &x : targets)
-      u.push_back(local.Evaluate(x));
-    return u;
-  }
-
-  // The whole chain with the solid harmonics.
-  std::vector<double>
-  chain_new(const unsigned int           p,
-            const Boxes                 &b,
-            const Sources               &s,
-            const bool                   dipoles,
-            const std::vector<Point<3>> &targets)
+  chain(const unsigned int           p,
+        const Boxes                 &b,
+        const Sources               &s,
+        const bool                   dipoles,
+        const std::vector<Point<3>> &targets)
   {
     LE::Workspace            w(p);
     const unsigned int       n = LE::n_coefficients(p);
@@ -198,8 +163,7 @@ main(int argc, char **argv)
   const unsigned int max_order = argc > 3 ? std::atoi(argv[3]) : 16;
   const double       h         = 1.0; // side of a leaf box
 
-  AssLegFunction legendre;
-  std::mt19937   rng(42);
+  std::mt19937 rng(42);
 
   // Source leaf: first child of the parent box centred at the origin.
   Boxes b;
@@ -216,7 +180,7 @@ main(int argc, char **argv)
             << " sources in a leaf of side " << h << ", " << n_targets
             << " targets in the leaf of a well-separated parent box\n\n"
             << "Error: max |FMA - direct| / max |direct| over the targets, "
-               "chain P2M-M2M-M2L-L2L-L2P; old / new\n"
+               "chain P2M-M2M-M2L-L2L-L2P\n"
             << std::setw(3) << "p";
   for (const auto &o : offsets)
     for (const std::string kind : {"charges", "dipoles"})
@@ -248,25 +212,18 @@ main(int argc, char **argv)
                   e = std::max(e, std::abs(u[i] - exact[i]));
                 return e / scale;
               };
-              std::cout << std::scientific << std::setprecision(1);
-              if (p <= max_old_order)
-                std::cout << std::setw(10)
-                          << error(chain_old(
-                               p, b, sources, dipoles, targets, legendre));
-              else
-                std::cout << std::setw(10) << "-";
-              std::cout << std::setw(10)
-                        << error(chain_new(p, b, sources, dipoles, targets));
+              std::cout << std::scientific << std::setprecision(1)
+                        << std::setw(21)
+                        << error(chain(p, b, sources, dipoles, targets));
             }
         }
       std::cout << '\n';
     }
 
-  std::cout << "\nTime per operation [microseconds], old / new\n"
-            << std::setw(3) << "p";
+  std::cout << "\nTime per operation [microseconds]\n" << std::setw(3) << "p";
   for (const std::string op :
        {"P2M/point", "P2Mdip/pt", "M2M", "M2L", "L2L", "L2P/point"})
-    std::cout << std::setw(20) << op;
+    std::cout << std::setw(12) << op;
   std::cout << '\n';
   b.target_parent = b.source_parent + 2 * h * offsets[0];
   b.target_leaf   = b.target_parent + Point<3>(h / 2, h / 2, h / 2);
@@ -277,52 +234,14 @@ main(int argc, char **argv)
     {
       const unsigned int  repetitions = 4000 / (p * p) + 5;
       const unsigned int  np          = sources.points.size();
-      std::vector<double> t_old(6, 0.), t_new(6, 0.);
-
-      if (p <= max_old_order)
-        {
-          MultipoleExpansion leaf(p, b.source_leaf, &legendre);
-          t_old[0] = microseconds(
-                       [&]() {
-                         for (unsigned int i = 0; i < np; ++i)
-                           leaf.Add(sources.strengths[i], sources.points[i]);
-                       },
-                       repetitions) /
-                     np;
-          MultipoleExpansion dip(p, b.source_leaf, &legendre);
-          t_old[1] = microseconds(
-                       [&]() {
-                         for (unsigned int i = 0; i < np; ++i)
-                           dip.AddNormDer(sources.strengths[i],
-                                          sources.points[i],
-                                          sources.normals[i]);
-                       },
-                       repetitions) /
-                     np;
-          MultipoleExpansion parent(p, b.source_parent, &legendre);
-          t_old[2] =
-            microseconds([&]() { parent.Add(leaf); }, 20 * repetitions);
-          LocalExpansion parent_local(p, b.target_parent, &legendre);
-          t_old[3] =
-            microseconds([&]() { parent_local.Add(parent); }, repetitions);
-          LocalExpansion local(p, b.target_leaf, &legendre);
-          t_old[4] =
-            microseconds([&]() { local.Add(parent_local); }, repetitions);
-          t_old[5] = microseconds(
-                       [&]() {
-                         for (const auto &x : targets)
-                           sink += local.Evaluate(x);
-                       },
-                       repetitions) /
-                     targets.size();
-        }
+      std::vector<double> times(6, 0.);
 
       {
         LE::Workspace            w(p);
         const unsigned int       n = LE::n_coefficients(p);
         std::vector<LE::complex> leaf(n), dip(n), parent(n), parent_local(n),
           local(n);
-        t_new[0] = microseconds(
+        times[0] = microseconds(
                      [&]() {
                        for (unsigned int i = 0; i < np; ++i)
                          LE::add_charge(w,
@@ -332,7 +251,7 @@ main(int argc, char **argv)
                      },
                      repetitions) /
                    np;
-        t_new[1] =
+        times[1] =
           microseconds(
             [&]() {
               for (unsigned int i = 0; i < np; ++i)
@@ -343,7 +262,7 @@ main(int argc, char **argv)
             },
             repetitions) /
           np;
-        t_new[2] = microseconds(
+        times[2] = microseconds(
           [&]() {
             LE::multipole_to_multipole(w,
                                        leaf.data(),
@@ -351,7 +270,7 @@ main(int argc, char **argv)
                                        parent.data());
           },
           20 * repetitions);
-        t_new[3] = microseconds(
+        times[3] = microseconds(
           [&]() {
             LE::multipole_to_local(w,
                                    parent.data(),
@@ -359,7 +278,7 @@ main(int argc, char **argv)
                                    parent_local.data());
           },
           repetitions);
-        t_new[4] = microseconds(
+        times[4] = microseconds(
           [&]() {
             LE::local_to_local(w,
                                parent_local.data(),
@@ -367,7 +286,7 @@ main(int argc, char **argv)
                                local.data());
           },
           repetitions);
-        t_new[5] =
+        times[5] =
           microseconds(
             [&]() {
               for (const auto &x : targets)
@@ -377,16 +296,9 @@ main(int argc, char **argv)
           targets.size();
       }
 
-      std::cout << std::setw(3) << p << std::fixed;
+      std::cout << std::setw(3) << p << std::fixed << std::setprecision(3);
       for (unsigned int i = 0; i < 6; ++i)
-        {
-          std::cout << std::setprecision(3);
-          if (p <= max_old_order)
-            std::cout << std::setw(10) << t_old[i];
-          else
-            std::cout << std::setw(10) << "-";
-          std::cout << std::setw(10) << t_new[i];
-        }
+        std::cout << std::setw(12) << times[i];
       std::cout << '\n';
     }
   // M2L by rotation onto the z-axis in the real harmonics of

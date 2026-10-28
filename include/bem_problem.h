@@ -119,7 +119,6 @@
 #include <set>
 #include <string>
 
-#include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
 #include "../include/cad_projectors.h"
 #include "../include/collocation_fmm_operator.h"
@@ -127,9 +126,6 @@
 #include "../include/constrained_matrix.h"
 #include "../include/galerkin_calderon_fmm_operator.h"
 #include "../include/galerkin_fmm_operator.h"
-#include "../include/local_expansion.h"
-#include "../include/multipole_expansion.h"
-#include "../include/octree_block.h"
 #include "../include/projected_mapping.h"
 #include "../include/projected_quadrature.h"
 

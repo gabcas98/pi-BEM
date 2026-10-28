@@ -78,9 +78,6 @@
 #include <set>
 #include <string>
 
-#include "../include/ass_leg_function.h"
-#include "../include/local_expansion.h"
-#include "../include/multipole_expansion.h"
 
 using namespace dealii;
 

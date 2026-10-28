@@ -14,15 +14,12 @@
 
 // The solid-harmonic expansions of laplace_expansions.h: the addition
 // theorem of the kernel, and the chain P2M-M2M-M2L-L2L-L2P for charges and
-// dipoles against the direct sum and against the original classes
-// MultipoleExpansion and LocalExpansion.
+// dipoles against the direct sum.
 
 #include "laplace_expansions.h"
 
 #include <random>
 
-#include "local_expansion.h"
-#include "multipole_expansion.h"
 #include "tests.h"
 
 namespace LE = LaplaceExpansions;
@@ -70,7 +67,6 @@ main()
   for (auto &t : x)
     t = target_leaf + Point<3>(u(rng), u(rng), u(rng));
 
-  AssLegFunction legendre;
   for (const bool dipoles : {false, true})
     for (const unsigned int p : {4u, 8u, 10u, 16u})
       {
@@ -120,34 +116,5 @@ main()
         deallog << (dipoles ? "dipoles" : "charges") << ", p = " << p
                 << ": relative error below " << bound << ": "
                 << (error / scale < bound ? "yes" : "no") << std::endl;
-
-        // The original classes, which stop at p = 10, must give the same.
-        if (p <= 10)
-          {
-            MultipoleExpansion m_old(p, source_leaf, &legendre);
-            for (unsigned int i = 0; i < y.size(); ++i)
-              if (dipoles)
-                {
-                  const double s = d[i].norm();
-                  m_old.AddNormDer(s, y[i], d[i] / s);
-                }
-              else
-                m_old.Add(q[i], y[i]);
-            MultipoleExpansion m_old_parent(p, source_parent, &legendre);
-            m_old_parent.Add(m_old);
-            LocalExpansion l_old_parent(p, target_parent, &legendre);
-            l_old_parent.Add(m_old_parent);
-            LocalExpansion l_old(p, target_leaf, &legendre);
-            l_old.Add(l_old_parent);
-            double difference = 0;
-            for (const auto &t : x)
-              difference =
-                std::max(difference,
-                         std::abs(
-                           l_old.Evaluate(t) -
-                           LE::evaluate_local(w, L.data(), t - target_leaf)));
-            deallog << "  same as the original classes to 1e-12: "
-                    << (difference < 1e-12 * scale ? "yes" : "no") << std::endl;
-          }
       }
 }

@@ -300,7 +300,7 @@ should call `refine_and_resize(level)`, which runs these stages in order.
 The option for attaching flat manifolds to IDs without CAD data preserves
 import of grids whose flags also distinguish boundary conditions.
 
-## Complex operators and FMA APIs
+## Complex operators and the FMM
 
 `ConstrainedComplexOperator<VEC,MATRIX>` accepts one flat vector ordered
 `[real,imaginary]`. `BlockConstrainedComplexOperator<VEC,MATRIX>` accepts a
@@ -314,46 +314,13 @@ each block through `vmult`/`Tvmult`. Referenced matrices, constraints and
 preconditioners must outlive these adapters. The flat operator keeps mutable
 scratch vectors and must not be used concurrently from multiple threads.
 
-`BEMFMA` adds `_tbb` and, when compiled with `PBEM_OPENMP`, `_omp` backends for
-direct integrals, multipole matrix-vector products and preconditioning.
-Use the dispatching `direct_integrals()`, `multipole_matr_vect_products()` and
-`FMA_preconditioner()` interfaces in application code.
-`FMA_preconditioner_complex()` provides the complex-solve near-field ILU
-preconditioner, with corresponding backend methods. Returned references belong
-to the FMA object. TBB is the default; the optional OpenMP configuration is
-selected by `PBEM_OPENMP=1` at CMake configure time.
-
-`LocalExpansion` and `MultipoleExpansion` now own coefficient vectors and use
-default value copy/assignment. `GetCoeffs()` returns a const vector reference,
-not a writable pointer. `MultipoleExpansion::GetA_n_m()` and `GetCoeff()` also
-return const references; use `SetCoeff()` or `AddToCoeff()` for coefficient
-changes. Coefficients use triangular index `n*(n+1)/2+m`.
-`Add()`, `Evaluate()` and `MultipoleExpansion::AddNormDer()` gain overloads with
-a trailing `std::vector<std::complex<double>>&` scratch cache. An empty cache
-is valid; calls resize/overwrite it. Keep one cache per concurrent operation.
-The `AssLegFunction` pointer is non-owning and must outlive the expansion.
-
-```cpp
-AssLegFunction legendre;
-MultipoleExpansion expansion(6, Point<3>(0, 0, 0), &legendre);
-std::vector<std::complex<double>> scratch;
-expansion.Add(1.0, Point<3>(0.1, 0, 0), scratch);
-const double value = expansion.Evaluate(Point<3>(2, 0, 0), scratch);
-const auto coefficients = expansion.GetCoeffs(); // independent snapshot
-```
-
-`LocalExpansion::equal(lhs,rhs,tolerance)` compares orders, centers and stored
-coefficients with absolute tolerance (default `1e-10`).
-`MultipoleExpansion::spherical_coords()` returns relative position, radius,
-polar cosine and azimuth through output arguments; distinct points are required.
-
-`OctreeBlock::small_set` is a sorted `boost::container::flat_set` of global IDs.
-Node, quadrature and interaction-list getters return const references owned by
-the block. Copy explicitly when a snapshot is required; mutation invalidates
-iterators as dictated by the underlying container. `GetCenter()` returns the
-box center. The custom copy/destructor and `CopyContent()` are removed in favor
-of value copying; `NumIntListLevels()`/`NumNonIntListLevels()` are removed.
-The complete interaction-list getter can be queried with `.size()`.
+With `Solution method = FMA`, `CollocationFMMOperator` applies the
+double-layer and single-layer matrices; `BEMProblem::vmult()` calls it once
+for the real part and once for the imaginary part. The preconditioner of each
+block is the ILU (or AMG) of the real system on the near band of the operator,
+the Robin columns included. The FMA of upstream (`BEMFMA` with its `_tbb` and
+`_omp` backends, `MultipoleExpansion`, `LocalExpansion`) has been removed;
+`BEMFMA` now only holds the parameters.
 
 ## Geometry and error-integration helpers
 
