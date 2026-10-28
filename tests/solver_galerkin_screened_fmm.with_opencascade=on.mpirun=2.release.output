@@ -1,0 +1,5 @@
+
+DEAL::rhs_norm: 0.2879097330881724
+DEAL::flux: 0.00242545
+DEAL::gradient: 0.0125099
+DEAL::iterations: 46

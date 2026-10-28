@@ -1,0 +1,5 @@
+
+DEAL::mixed_flux: 0.148389
+DEAL::mixed_potential: 0.00665979
+DEAL::mixed_robin_flux: 0.151659
+DEAL::iterations: 35

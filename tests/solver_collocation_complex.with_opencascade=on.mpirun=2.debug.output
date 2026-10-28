@@ -1,0 +1,5 @@
+
+DEAL::phi_nodes: 0.0175654
+DEAL::flux: 0.145958
+DEAL::gradient: 0.220329
+DEAL::steps: 25
