@@ -80,10 +80,12 @@
  *
  * With the screened kernel of the integrator, exp(-kappa r) / (4 pi r),
  * the point sums use the screened fast multipole method, which takes one
- * set of sources at a time: K^T from three dipole sums, -e_c w_r x(y_r) /
- * 4 pi, and W with three more charge sums, of the components of n x, for
- * its term kappa^2 (n_x . n_y) G; the rows of the mixed problem then cost
- * eleven evaluations instead of one fused pass.
+ * set of sources at a time and have no gradients: K^T comes from three
+ * dipole sums, -e_c w_r x(y_r) / 4 pi, and W has three more charge sums,
+ * of the components of n x, for its term kappa^2 (n_x . n_y) G. The rows
+ * of the mixed problem take two calls of LaplaceFMM::evaluate_sets(), with
+ * seven sets of charges and four of dipoles, which share the direct
+ * interactions and the sums over the processes.
  */
 class GalerkinCalderonFMMOperator
 {
@@ -239,6 +241,21 @@ private:
   void
   test_curl_potentials(const std::array<std::vector<double>, 3> &potentials,
                        Vector<double>                           &y) const;
+
+  /// Append to sets the six sets of charges of the screened W of x: the
+  /// components of its curl and of n x, times w / 4 pi.
+  void
+  add_screened_hypersingular_charges(
+    const std::vector<double>        &values,
+    const std::vector<Tensor<1, 3>>  &curls,
+    std::vector<std::vector<double>> &sets) const;
+
+  /// Add to y the screened W from the potentials of the six sets from
+  /// first on, which it consumes.
+  void
+  test_screened_hypersingular(std::vector<std::vector<double>> &potentials,
+                              const unsigned int                first,
+                              Vector<double>                   &y) const;
 
   /// Add W x, without the near field, for the values and the curls of x
   /// at the points, to y (tested on the own cells), with the given

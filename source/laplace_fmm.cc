@@ -1395,6 +1395,228 @@ LaplaceFMM::evaluate_multiple(
 
 
 void
+LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
+                          const std::vector<std::vector<Tensor<1, 3>>> &dipoles,
+                          std::vector<std::vector<double>> &potentials) const
+{
+  const unsigned int kq = charges.size(), kd = dipoles.size(), k = kq + kd;
+  const unsigned int n = points.size();
+  AssertThrow(k >= 1 && kq <= 8 && kd <= 4,
+              ExcMessage("At most eight sets of charges and four of "
+                         "dipoles at once."));
+  std::vector<double> q(kq * n), d(3 * kd * n);
+  for (unsigned int s = 0; s < kq; ++s)
+    {
+      AssertThrow(charges[s].size() == n,
+                  ExcDimensionMismatch(charges[s].size(), n));
+      for (unsigned int i = 0; i < n; ++i)
+        q[s * n + i] = charges[s][permutation[i]];
+    }
+  for (unsigned int s = 0; s < kd; ++s)
+    {
+      AssertThrow(dipoles[s].size() == n,
+                  ExcDimensionMismatch(dipoles[s].size(), n));
+      for (unsigned int i = 0; i < n; ++i)
+        for (unsigned int c = 0; c < 3; ++c)
+          d[(3 * s + c) * n + i] = dipoles[s][permutation[i]][c];
+    }
+
+  // The far field, set by set.
+  const std::array<double, 6> times_before = phase_time;
+  std::vector<double>         u(k * n, 0.);
+  {
+    std::vector<double>       set_charges, set_potentials(n);
+    std::vector<Tensor<1, 3>> set_dipoles;
+    for (unsigned int s = 0; s < k; ++s)
+      {
+        if (s < kq)
+          {
+            set_charges.assign(q.begin() + s * n, q.begin() + (s + 1) * n);
+            set_dipoles.clear();
+          }
+        else
+          {
+            set_charges.clear();
+            set_dipoles.resize(n);
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int c = 0; c < 3; ++c)
+                set_dipoles[i][c] = d[(3 * (s - kq) + c) * n + i];
+          }
+        std::fill(set_potentials.begin(), set_potentials.end(), 0.);
+        if (data.kappa > 0)
+          far_field_yukawa(set_charges, set_dipoles, set_potentials);
+        else
+          far_field_laplace(set_charges, set_dipoles, set_potentials);
+        std::copy(set_potentials.begin(),
+                  set_potentials.end(),
+                  u.begin() + s * n);
+      }
+  }
+
+  // The direct interactions of all sets at once.
+  auto start = std::chrono::steady_clock::now();
+  for (const auto &[a, b] : my_p2p_pairs)
+    if (data.kappa > 0)
+      particle_to_particle_sets<true>(
+        a, b, kq, kd, q.data(), d.data(), u.data());
+    else
+      particle_to_particle_sets<false>(
+        a, b, kq, kd, q.data(), d.data(), u.data());
+  phase_time[4] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  std::vector<double> all(k * n, 0.);
+  for (unsigned int s = 0; s < k; ++s)
+    for (unsigned int i = 0; i < n; ++i)
+      all[s * n + permutation[i]] = u[s * n + i];
+  if (n_mpi_processes > 1)
+    sum_over_processes(all, mpi_communicator);
+  potentials.resize(k);
+  for (unsigned int s = 0; s < k; ++s)
+    potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+  phase_time[5] += seconds_since(start);
+  ++n_evaluations;
+  if (n_evaluations == 1 && n_mpi_processes > 1)
+    {
+      std::array<double, 6> times;
+      for (unsigned int i = 0; i < times.size(); ++i)
+        times[i] = phase_time[i] - times_before[i];
+      rebalance(times);
+    }
+}
+
+
+
+template <bool screened>
+void
+LaplaceFMM::particle_to_particle_sets(const unsigned int a,
+                                      const unsigned int b,
+                                      const unsigned int kq,
+                                      const unsigned int kd,
+                                      const double      *q,
+                                      const double      *d,
+                                      double            *u) const
+{
+  constexpr unsigned int max_sets = 12;
+  const Box             &A        = boxes[a];
+  const Box             &B        = boxes[b];
+  const double          *x        = sorted_coordinates[0].data();
+  const double          *y        = sorted_coordinates[1].data();
+  const double          *z        = sorted_coordinates[2].data();
+  const unsigned int     n        = points.size();
+  const double           kappa    = data.kappa;
+  for (unsigned int i = A.begin; i < A.end; ++i)
+    {
+      const double xi = x[i], yi = y[i], zi = z[i];
+      double       sum[max_sets];
+      for (unsigned int s = 0; s < kq + kd; ++s)
+        sum[s] = 0;
+      unsigned int j = B.begin;
+#if defined(__AVX2__) && defined(__FMA__)
+      const __m256d vx = _mm256_set1_pd(xi), vy = _mm256_set1_pd(yi),
+                    vz = _mm256_set1_pd(zi);
+      __m256d acc[max_sets];
+      for (unsigned int s = 0; s < kq + kd; ++s)
+        acc[s] = _mm256_setzero_pd();
+      // The kernel, with its exponential, once for the four sources and
+      // all sets; load reads four values of an array of the points.
+      const auto interact = [&](const __m256d px,
+                                const __m256d py,
+                                const __m256d pz,
+                                const auto   &load) {
+        const __m256d rx = _mm256_sub_pd(vx, px);
+        const __m256d ry = _mm256_sub_pd(vy, py);
+        const __m256d rz = _mm256_sub_pd(vz, pz);
+        const __m256d r2 =
+          _mm256_fmadd_pd(rx,
+                          rx,
+                          _mm256_fmadd_pd(ry, ry, _mm256_mul_pd(rz, rz)));
+        const __m256d inverse = inverse_sqrt(r2);
+        __m256d       kernel = inverse, kappa_r = _mm256_setzero_pd();
+        if constexpr (screened)
+          {
+            kappa_r =
+              _mm256_mul_pd(_mm256_set1_pd(kappa), _mm256_mul_pd(r2, inverse));
+            kernel =
+              _mm256_mul_pd(inverse,
+                            exp_nonpositive(
+                              _mm256_sub_pd(_mm256_setzero_pd(), kappa_r)));
+          }
+        for (unsigned int s = 0; s < kq; ++s)
+          acc[s] = _mm256_fmadd_pd(load(q + s * n), kernel, acc[s]);
+        if (kd > 0)
+          {
+            __m256d inverse3 =
+              _mm256_mul_pd(kernel, _mm256_mul_pd(inverse, inverse));
+            if constexpr (screened)
+              inverse3 = _mm256_fmadd_pd(inverse3, kappa_r, inverse3);
+            for (unsigned int s = 0; s < kd; ++s)
+              {
+                const double *ds  = d + 3 * s * n;
+                const __m256d dot = _mm256_fmadd_pd(
+                  load(ds),
+                  rx,
+                  _mm256_fmadd_pd(load(ds + n),
+                                  ry,
+                                  _mm256_mul_pd(load(ds + 2 * n), rz)));
+                acc[kq + s] = _mm256_fmadd_pd(dot, inverse3, acc[kq + s]);
+              }
+          }
+      };
+      for (; j + 4 <= B.end; j += 4)
+        interact(_mm256_loadu_pd(x + j),
+                 _mm256_loadu_pd(y + j),
+                 _mm256_loadu_pd(z + j),
+                 [j](const double *v) { return _mm256_loadu_pd(v + j); });
+      if (j < B.end)
+        {
+          const __m256i mask =
+            _mm256_cmpgt_epi64(_mm256_set1_epi64x(B.end - j),
+                               _mm256_set_epi64x(3, 2, 1, 0));
+          interact(_mm256_maskload_pd(x + j, mask),
+                   _mm256_maskload_pd(y + j, mask),
+                   _mm256_maskload_pd(z + j, mask),
+                   [j, mask](const double *v) {
+                     return _mm256_maskload_pd(v + j, mask);
+                   });
+          j = B.end;
+        }
+      for (unsigned int s = 0; s < kq + kd; ++s)
+        sum[s] = horizontal_sum(acc[s]);
+#endif
+      // Without AVX2, all of it; the point itself is masked out.
+      for (; j < B.end; ++j)
+        {
+          const double rx = xi - x[j], ry = yi - y[j], rz = zi - z[j];
+          const double r2       = rx * rx + ry * ry + rz * rz;
+          const bool   distinct = r2 > 0.;
+          const double inverse =
+            (distinct ? 1. : 0.) / std::sqrt(distinct ? r2 : 1.);
+          double screening = 1., derivative = 1.;
+          if constexpr (screened)
+            {
+              const double kappa_r = kappa * r2 * inverse;
+              screening            = std::exp(-kappa_r);
+              derivative           = 1. + kappa_r;
+            }
+          for (unsigned int s = 0; s < kq; ++s)
+            sum[s] += q[s * n + j] * screening * inverse;
+          for (unsigned int s = 0; s < kd; ++s)
+            {
+              const double *ds = d + 3 * s * n;
+              sum[kq + s] +=
+                (ds[j] * rx + ds[n + j] * ry + ds[2 * n + j] * rz) *
+                derivative * screening * inverse * inverse * inverse;
+            }
+        }
+      for (unsigned int s = 0; s < kq + kd; ++s)
+        u[s * n + i] += sum[s];
+    }
+}
+
+
+
+void
 LaplaceFMM::particle_to_particle_mixed(const unsigned int a,
                                        const unsigned int b,
                                        const double      *q,

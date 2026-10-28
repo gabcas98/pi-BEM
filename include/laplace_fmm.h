@@ -143,6 +143,20 @@ public:
                  std::vector<double>                      &potentials_d,
                  std::array<std::vector<double>, 3>       &potentials_c) const;
 
+  /**
+   * The potentials at all points, on every process, of several sets of
+   * sources, either kernel: first those of the sets of charges, then those
+   * of the sets of dipoles, all indexed like the points. The far field of
+   * each set is that of evaluate(), while the kernel of the direct
+   * interactions, with its exponential for the screened kernel, is
+   * computed once for all sets, and the sums over the processes are
+   * shared. At most eight sets of charges and four of dipoles.
+   */
+  void
+  evaluate_sets(const std::vector<std::vector<double>>               &charges,
+                const std::vector<std::vector<dealii::Tensor<1, 3>>> &dipoles,
+                std::vector<std::vector<double>> &potentials) const;
+
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
   evaluate_directly(const std::vector<double>               &charges,
@@ -234,6 +248,20 @@ private:
                                 const unsigned int b,
                                 const double      *q,
                                 double            *u) const;
+
+  /// Direct interaction of kq sets of charges q and kd sets of dipoles d
+  /// (three arrays of the points each) of the source leaf b with the
+  /// points of the target leaf a, potentials u (kq + kd arrays), sorted
+  /// numbering.
+  template <bool screened>
+  void
+  particle_to_particle_sets(const unsigned int a,
+                            const unsigned int b,
+                            const unsigned int kq,
+                            const unsigned int kd,
+                            const double      *q,
+                            const double      *d,
+                            double            *u) const;
 
   /// The far field of k sets of charges (k arrays of the points), Laplace
   /// kernel, potentials added to u (k arrays); with dipoles, the set 1 is

@@ -16,7 +16,8 @@
 // charges, dipoles and both, at two truncation orders, for the Laplace
 // kernel and for the screened one with kappa = 3 and 30: the boxes then
 // span up to about 2 and 20 screening lengths, and with kappa = 30 the
-// pairs of boxes more than 4/3 apart are dropped.
+// pairs of boxes more than 4/3 apart are dropped. Several sets of sources
+// at once, evaluate_multiple() and evaluate_sets(), against one at a time.
 
 #include "laplace_fmm.h"
 
@@ -91,6 +92,32 @@ main(int argc, char **argv)
                     << ": relative error below " << bound << ": "
                     << (error / scale < bound ? "yes" : "no") << std::endl;
           }
+        {
+          // Several sets of charges and of dipoles at once, against one at
+          // a time.
+          std::vector<double> q2(points.size());
+          for (unsigned int i = 0; i < points.size(); ++i)
+            q2[i] = q[i] * normals[i][0];
+          std::vector<std::vector<double>> sets;
+          fmm.evaluate_sets({q, q2}, {d}, sets);
+          std::vector<double> first, second, third;
+          fmm.evaluate(q, {}, first);
+          fmm.evaluate(q2, {}, second);
+          fmm.evaluate({}, d, third);
+          double deviation = 0, size = 0;
+          for (unsigned int i = 0; i < points.size(); ++i)
+            {
+              deviation = std::max({deviation,
+                                    std::abs(sets[0][i] - first[i]),
+                                    std::abs(sets[1][i] - second[i]),
+                                    std::abs(sets[2][i] - third[i])});
+              size = std::max({size, std::abs(first[i]), std::abs(third[i])});
+            }
+          deallog << "kappa " << kappa << ", order " << order
+                  << ", two sets of charges and one of dipoles at once as "
+                     "one at a time: "
+                  << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
+        }
         if (kappa > 0)
           continue;
         // The gradient of the potential of the charges, against the direct
