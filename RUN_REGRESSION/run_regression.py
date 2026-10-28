@@ -267,6 +267,12 @@ CASES = {
     'screened_collocation_robin_fma': ('sphere_screened_robin.prm', {},
                                        ['phi_nodes', 'robin_residual',
                                         'iterations']),
+    # The Helmholtz kernel exp(i k r) / (4 pi r), k = 2, in the collocation
+    # problem with Dirichlet and impedance parts: the plane wave against the
+    # exact solution, real and imaginary part of the kernel coupled.
+    'helmholtz_collocation_robin': ('sphere_helmholtz_robin.prm', {},
+                                    ['phi_nodes', 'flux', 'gradient',
+                                     'steps']),
     # Dirichlet and Robin conditions in 2D.
     'robin_2d': ('circle_robin_2d.prm', {},
                  ['phi_nodes', 'robin_residual', 'iterations'], 2),

@@ -117,6 +117,12 @@
   "gradient": "0.0141885",
   "rhs_norm": "0.8854049111248109"
  },
+ "helmholtz_collocation_robin": {
+  "flux": "0.158263",
+  "gradient": "0.0883492",
+  "phi_nodes": "0.00693229",
+  "steps": "44"
+ },
  "naca_mixed_adaptive_p1_fmm": {
   "iterations": "36",
   "memory_kb": "561676",

@@ -23,6 +23,7 @@
 #include "../include/constrained_matrix_complex.h"
 #include "../include/galerkin_calderon_fmm_operator.h"
 #include "../include/galerkin_panel_pair_integrator.h"
+#include "../include/helmholtz_kernel.h"
 #include "../include/laplace_kernel.h"
 #include "../include/quasi_singular_kernel_integral.h"
 #include "../include/screened_kernel.h"
@@ -901,6 +902,11 @@ BEMProblem<dim>::reinit()
       dirichlet_matrix.reinit(full_sparsity_pattern);
       if (boundary_integral_formulation == "collocation")
         neumann_matrix.reinit(full_sparsity_pattern);
+      if (kernel_type == "helmholtz")
+        {
+          neumann_matrix_imag.reinit(full_sparsity_pattern);
+          dirichlet_matrix_imag.reinit(full_sparsity_pattern);
+        }
       else if (preconditioner_type == "Calderon")
         {
           calderon_hypersingular_matrix.reinit(full_sparsity_pattern);
@@ -1270,9 +1276,15 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
                     "0.25",
                     Patterns::Double(0.0, 1.0));
 
-  prm.declare_entry("Kernel type",
-                    "laplace",
-                    Patterns::Selection("laplace|screened"));
+  prm.declare_entry(
+    "Kernel type",
+    "laplace",
+    Patterns::Selection("laplace|screened|helmholtz"),
+    "laplace: 1 / (4 pi r); screened: exp(-kappa r) / (4 pi r), "
+    "kappa = Screened Kappa; helmholtz: exp(i k r) / (4 pi "
+    "r), k = Helmholtz wavenumber, for complex problems "
+    "(Complex components) in the collocation formulation "
+    "with Solution method = Direct, in 3D.");
 
   // manufactured_flux builds the Galerkin right-hand side as <V lambda, phi_i>
   // from the exact flux, through the single-layer kernel. It applies only
@@ -1298,6 +1310,10 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
   prm.declare_entry("Enforce Laplace linear patch", "false", Patterns::Bool());
 
   prm.declare_entry("Screened Kappa", "1.0", Patterns::Double());
+  prm.declare_entry("Helmholtz wavenumber",
+                    "1.0",
+                    Patterns::Double(0.),
+                    "The wavenumber k of Kernel type = helmholtz.");
 
   prm.enter_subsection("Quadrature rules");
   {
@@ -1587,7 +1603,8 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
           "steps)");
   enforce_laplace_linear_patch = prm.get_bool("Enforce Laplace linear patch");
 
-  screened_kappa = prm.get_double("Screened Kappa");
+  screened_kappa       = prm.get_double("Screened Kappa");
+  helmholtz_wavenumber = prm.get_double("Helmholtz wavenumber");
 
   prm.enter_subsection("Quadrature rules");
   {
@@ -1663,6 +1680,13 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
                            "smaller than an initial quadrature order."));
   }
   prm.leave_subsection();
+
+  AssertThrow(kernel_type != "helmholtz" ||
+                (dim == 3 && boundary_integral_formulation == "collocation" &&
+                 solution_method == "Direct"),
+              ExcMessage("Kernel type = helmholtz is implemented in 3D, for "
+                         "the collocation formulation with Solution method "
+                         "= Direct."));
 
   if (boundary_integral_formulation == "galerkin")
     {
@@ -2004,8 +2028,14 @@ BEMProblem<dim>::assemble_system()
 
   pcout << "(Directly) Assembling system matrices" << std::endl;
 
-  neumann_matrix   = 0;
-  dirichlet_matrix = 0;
+  neumann_matrix       = 0;
+  dirichlet_matrix     = 0;
+  const bool helmholtz = kernel_type == "helmholtz";
+  if (helmholtz)
+    {
+      neumann_matrix_imag   = 0;
+      dirichlet_matrix_imag = 0;
+    }
 
   // Counted by the threads that integrate the rows.
   CollocationRuleStatistics statistics;
@@ -2053,6 +2083,12 @@ BEMProblem<dim>::assemble_system()
   std::vector<Vector<double>>                neumann_rows(rows.size(),
                                            Vector<double>(fe->dofs_per_cell)),
     dirichlet_rows(rows.size(), Vector<double>(fe->dofs_per_cell));
+  // The imaginary parts of the Helmholtz kernel, analytic, by the regular
+  // rule on every cell.
+  std::vector<Vector<double>> neumann_rows_imag(
+    helmholtz ? rows.size() : 0, Vector<double>(fe->dofs_per_cell)),
+    dirichlet_rows_imag(helmholtz ? rows.size() : 0,
+                        Vector<double>(fe->dofs_per_cell));
 
   // Now that we have checked that
   // the number of vertices is equal
@@ -2112,6 +2148,29 @@ BEMProblem<dim>::assemble_system()
                                        neumann_rows[r],
                                        dirichlet_rows[r],
                                        statistics);
+            if (helmholtz)
+              {
+                neumann_rows_imag[r]   = 0;
+                dirichlet_rows_imag[r] = 0;
+                Tensor<1, dim> D;
+                double         s = 0;
+                for (unsigned int q = 0; q < fe_v.n_quadrature_points; ++q)
+                  {
+                    if constexpr (dim == 3)
+                      HelmholtzKernel::imaginary_kernels(
+                        fe_v.quadrature_point(q) - support_points[i],
+                        D,
+                        s,
+                        helmholtz_wavenumber);
+                    const double d_n = D * fe_v.normal_vector(q);
+                    for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+                      {
+                        const double w = fe_v.shape_value(j, q) * fe_v.JxW(q);
+                        neumann_rows_imag[r](j) += d_n * w;
+                        dirichlet_rows_imag[r](j) += s * w;
+                      }
+                  }
+              }
           } // end loop on rows
       };
       parallel::apply_to_subranges(std::size_t(0),
@@ -2132,6 +2191,15 @@ BEMProblem<dim>::assemble_system()
             dirichlet_matrix.add(rows[r],
                                  local_dof_indices[j],
                                  dirichlet_rows[r](j));
+            if (helmholtz)
+              {
+                neumann_matrix_imag.add(rows[r],
+                                        local_dof_indices[j],
+                                        neumann_rows_imag[r](j));
+                dirichlet_matrix_imag.add(rows[r],
+                                          local_dof_indices[j],
+                                          dirichlet_rows_imag[r](j));
+              }
           }
     } // end loop on cells
 
@@ -2321,6 +2389,11 @@ BEMProblem<dim>::integrate_collocation_rows(
             LaplaceKernel::kernels(R, D, s);
           else if (kernel_type == "screened")
             ScreenedKernel::kernels(R, D, s, screened_kappa);
+          else if (kernel_type == "helmholtz")
+            {
+              if constexpr (dim == 3)
+                HelmholtzKernel::real_kernels(R, D, s, helmholtz_wavenumber);
+            }
           else
             AssertThrow(false,
                         ExcMessage("Unknown kernel type: " + kernel_type));
@@ -2373,6 +2446,11 @@ BEMProblem<dim>::integrate_collocation_rows(
               LaplaceKernel::kernels(R, D, s);
             else if (kernel_type == "screened")
               ScreenedKernel::kernels(R, D, s, screened_kappa);
+            else if (kernel_type == "helmholtz")
+              {
+                if constexpr (dim == 3)
+                  HelmholtzKernel::real_kernels(R, D, s, helmholtz_wavenumber);
+              }
             else
               AssertThrow(false,
                           ExcMessage("Unknown kernel type: " + kernel_type));
@@ -2691,6 +2769,11 @@ BEMProblem<dim>::integrate_collocation_rows(
               LaplaceKernel::kernels(R, D, s);
             else if (kernel_type == "screened")
               ScreenedKernel::kernels(R, D, s, screened_kappa);
+            else if (kernel_type == "helmholtz")
+              {
+                if constexpr (dim == 3)
+                  HelmholtzKernel::real_kernels(R, D, s, helmholtz_wavenumber);
+              }
             else
               AssertThrow(false,
                           ExcMessage("Unknown kernel type: " + kernel_type));
@@ -3274,7 +3357,8 @@ BEMProblem<dim>::compute_hypersingular_free_coeffs()
   else if (kernel_type == "laplace")
     pcout << "Galerkin jump term uses the consistent 0.5 mass matrix" << endl;
   else
-    pcout << "Using geometric alpha for screened kernel" << endl;
+    pcout << "Using geometric alpha for the " << kernel_type << " kernel"
+          << endl;
 
   // For Laplace, compute_alpha() obtains a discretely consistent jump
   // coefficient from the assembled double-layer row sum.  In particular this
@@ -3758,6 +3842,19 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
       dst_imag *= -1;
       neumann_matrix.vmult_add(dst, serv_phi);
       neumann_matrix.vmult_add(dst_imag, serv_phi_imag);
+      if (kernel_type == "helmholtz")
+        {
+          // The imaginary parts of the matrices: (N_r + i N_i) phi -
+          // (D_r + i D_i) dphi_dn.
+          neumann_matrix_imag.vmult(tmp, serv_phi_imag);
+          dst -= tmp;
+          neumann_matrix_imag.vmult(tmp, serv_phi);
+          dst_imag += tmp;
+          dirichlet_matrix_imag.vmult(tmp, serv_dphi_dn_imag);
+          dst += tmp;
+          dirichlet_matrix_imag.vmult(tmp, serv_dphi_dn);
+          dst_imag -= tmp;
+        }
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
       dst += serv_phi;
@@ -3954,6 +4051,15 @@ BEMProblem<dim>::compute_rhs(
     {
       neumann_matrix.vmult(dst, serv_phi);
       neumann_matrix.vmult(dst_imag, serv_phi_imag);
+      TrilinosWrappers::MPI::Vector tmp(this_cpu_set, mpi_communicator);
+      if (kernel_type == "helmholtz")
+        {
+          // (N_r + i N_i) phi
+          neumann_matrix_imag.vmult(tmp, serv_phi_imag);
+          dst -= tmp;
+          neumann_matrix_imag.vmult(tmp, serv_phi);
+          dst_imag += tmp;
+        }
 
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
@@ -3969,6 +4075,14 @@ BEMProblem<dim>::compute_rhs(
 
       dirichlet_matrix.vmult_add(dst, serv_dphi_dn);
       dirichlet_matrix.vmult_add(dst_imag, serv_dphi_dn_imag);
+      if (kernel_type == "helmholtz")
+        {
+          // (D_r + i D_i) dphi_dn
+          dirichlet_matrix_imag.vmult(tmp, serv_dphi_dn_imag);
+          dst -= tmp;
+          dirichlet_matrix_imag.vmult(tmp, serv_dphi_dn);
+          dst_imag += tmp;
+        }
     }
   else
     {
@@ -4150,10 +4264,11 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
                 << std::endl;
         }
     }
-  else if (kernel_type == "screened")
+  else if (kernel_type == "screened" || kernel_type == "helmholtz")
     {
-      // The jump coefficient is geometric also for modified Helmholtz.
-      // compute_hypersingular_free_coeffs() evaluates it below.
+      // The jump coefficient is geometric also for the screened and the
+      // Helmholtz kernel. compute_hypersingular_free_coeffs() evaluates it
+      // below.
     }
   else
     AssertThrow(false, ExcMessage("Unknown kernel type: " + kernel_type));
@@ -4163,7 +4278,7 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
   // and its inverse is not a number.
   // The Galerkin formulation has no free term: the screened case needs the
   // coefficients only for collocation.
-  if ((kernel_type == "screened" &&
+  if ((kernel_type != "laplace" &&
        boundary_integral_formulation != "galerkin") ||
       gradient_recovery == "hypersingular")
     compute_hypersingular_free_coeffs();
@@ -4532,7 +4647,12 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
   sol_blocked        = 0;
   alpha              = 0;
 
-  compute_alpha();
+  // The row sums of the double layer give the jump of the Laplace kernel
+  // only; that of the others is geometric, as in the real problem.
+  if (kernel_type == "laplace")
+    compute_alpha();
+  else
+    compute_hypersingular_free_coeffs();
   compute_rhs(system_rhs_blocked.block(0),
               system_rhs_blocked.block(1),
               tmp_rhs,
@@ -4632,6 +4752,10 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
                        const Function<dim>                 *dirichlet_gradient,
                        bool                                 reset_matrix)
 {
+  AssertThrow(kernel_type != "helmholtz",
+              ExcMessage("Kernel type = helmholtz is complex: list the real "
+                         "component of the problem in Driver<3>/Complex "
+                         "components."));
   if (boundary_integral_formulation == "galerkin")
     {
       AssertThrow(dirichlet_function != nullptr,

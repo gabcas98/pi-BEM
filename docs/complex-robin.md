@@ -210,6 +210,42 @@ only three to four steps more than for the same problem with a real `a/b`
 (29, 31, 34 against 25, 28, 30 at one to three refinements, with the FMM),
 whatever the mesh.
 
+## The Helmholtz kernel
+
+`Kernel type = helmholtz` takes the outgoing fundamental solution of
+`Delta u + k^2 u = 0`, `G = exp(i k r) / (4 pi r)`, with
+`k = Helmholtz wavenumber`, in the collocation formulation with dense
+matrices (`Solution method = Direct`), in 3D. Its potential is complex, so
+its real component must be listed in `Driver<3>/Complex components`; a real
+component stops with a message. The kernel is the screened one with
+`kappa = -i k`. Its real part `cos(k r) / (4 pi r)` is singular as the
+Laplace kernel and goes through the same singular and quasi-singular rules,
+into `neumann_matrix` and `dirichlet_matrix`. Its imaginary part
+`sin(k r) / (4 pi r)` is analytic, and the regular rule integrates it on
+every cell, into `neumann_matrix_imag` and `dirichlet_matrix_imag`. The
+complex products couple the two parts: `(N_r + i N_i) phi - (D_r + i D_i)
+dphi_dn`. The jump coefficient is the geometric one, as for the screened
+kernel; the row sums of the double layer give that of the Laplace kernel
+only. (The complex solve took the row sums for every kernel; it now takes the
+geometric coefficient for the screened kernel too.) The preconditioner is
+that of the real part, on each block.
+
+`RUN_REGRESSION/base/sphere_helmholtz_robin.prm` solves the plane wave
+`u = exp(i k d.x)`, `d = (1,1,1)/sqrt(3)`, `k = 2`, inside the sample
+sphere, with Dirichlet conditions on manifold 1 and the impedance condition
+`du/dn - i k u = g` on manifold 2 (`a = -i k`, `b = 1`), which leaves no
+interior resonance. With p = 1 the potential converges at order 2 and the
+flux at order 1, in both parts:
+
+| Mesh | Dofs | Potential, nodes, L_inf (real / imaginary) | Flux, relative L_2 (real / imaginary) | GMRES steps |
+|---|---|---|---|---|
+| 0 cycles | 98 | 0.027 / 0.021 | 0.113 / 0.324 | 40 |
+| 1 cycle | 386 | 0.0080 / 0.0069 | 0.055 / 0.158 | 44 |
+| 2 cycles | 1538 | 0.0022 / 0.0019 | 0.027 / 0.078 | 51 |
+
+The imaginary flux `k cos(k d.x) (d.n)` has the smaller norm, hence the
+larger relative error.
+
 ## Robin conditions and geometry IDs
 
 The 3D Robin function has three entries `a; b; g`, expressing

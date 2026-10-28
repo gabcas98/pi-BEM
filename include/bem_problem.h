@@ -956,6 +956,9 @@ public:
   TrilinosWrappers::SparsityPattern calderon_sparsity_pattern;
   TrilinosWrappers::SparseMatrix    neumann_matrix;
   TrilinosWrappers::SparseMatrix    dirichlet_matrix;
+  /// The imaginary parts of the collocation matrices of Kernel type =
+  /// helmholtz, whose real parts are neumann_matrix and dirichlet_matrix.
+  TrilinosWrappers::SparseMatrix neumann_matrix_imag, dirichlet_matrix_imag;
   // handles robin conditions such as
   // coeffs[i, 0] * phi + coeffs[i, 1] * dphi_dn = coeffs[i, 2]
   TrilinosWrappers::MPI::Vector robin_matrix_diagonal,
@@ -1044,6 +1047,9 @@ public:
   std::string dirichlet_rhs_treatment;
 
   double screened_kappa;
+
+  /// The wavenumber k of Kernel type = helmholtz.
+  double helmholtz_wavenumber = 1.;
 
   /// Screening parameter passed to the Galerkin panel-pair integrators:
   /// kappa for the screened kernel, zero for the Laplace kernel.
