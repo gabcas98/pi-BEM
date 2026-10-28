@@ -37,9 +37,10 @@
 
 /**
  * The four boundary integral operators of the symmetric Galerkin
- * formulation of the mixed problem of the Laplace equation, the single
- * layer V, the double layer K, its transpose and the weak hypersingular
- * operator W, applied without dense matrices: the products that
+ * formulation of the mixed problem of the Laplace equation, or of the
+ * screened one, the single layer V, the double layer K, its transpose and
+ * the weak hypersingular operator W, applied without dense matrices: the
+ * products that
  * BEMProblem::solve_galerkin_mixed() takes from the matrices of
  * GalerkinPanelPairIntegrator::assemble_single_double_hypersingular(), up
  * to the truncation of the fast multipole method.
@@ -75,7 +76,14 @@
  * the fields on all cells, since the multipole method needs all sources,
  * tests on its own cells and keeps the corrections of its share of the
  * near pairs, which are dealt out by cost; the results are summed over the
- * processes. The Laplace kernel only.
+ * processes.
+ *
+ * With the screened kernel of the integrator, exp(-kappa r) / (4 pi r),
+ * the point sums use the screened fast multipole method, which takes one
+ * set of sources at a time: K^T from three dipole sums, -e_c w_r x(y_r) /
+ * 4 pi, and W with three more charge sums, of the components of n x, for
+ * its term kappa^2 (n_x . n_y) G; the rows of the mixed problem then cost
+ * eleven evaluations instead of one fused pass.
  */
 class GalerkinCalderonFMMOperator
 {
@@ -218,6 +226,13 @@ private:
   add_transpose_double_layer(const std::vector<double> &values,
                              Vector<double>            &y) const;
 
+  /// The gradients at the points of the potential of the charges, from
+  /// three dipole sums with the given expansions.
+  void
+  gradient_from_dipoles(const std::vector<double> &charges,
+                        const LaplaceFMM          &fmm,
+                        std::vector<Tensor<1, 3>> &gradients) const;
+
   /// Add the integrals of the potentials of the three components of a curl
   /// at the points against the curls of the shape functions of the own
   /// cells, condensed, to y.
@@ -225,10 +240,12 @@ private:
   test_curl_potentials(const std::array<std::vector<double>, 3> &potentials,
                        Vector<double>                           &y) const;
 
-  /// Add W x, without the near field, for the curls of x at the points, to
-  /// y (tested on the own cells), with the given expansions.
+  /// Add W x, without the near field, for the values and the curls of x
+  /// at the points, to y (tested on the own cells), with the given
+  /// expansions.
   void
-  add_hypersingular(const std::vector<Tensor<1, 3>> &curls,
+  add_hypersingular(const std::vector<double>       &values,
+                    const std::vector<Tensor<1, 3>> &curls,
                     Vector<double>                  &y,
                     const LaplaceFMM                &fmm) const;
 
@@ -250,6 +267,8 @@ private:
   unsigned int                                      n_cells       = 0;
   /// Cells whose test integrals this process computes.
   std::vector<unsigned int> own_cells;
+  /// Screening parameter of the kernel, that of the integrator.
+  double kappa = 0.;
 
   /// Data at the quadrature points, cell by cell, and the surface curls of
   /// the shape functions, at (point * dofs_per_cell + i).

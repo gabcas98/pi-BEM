@@ -85,9 +85,7 @@ GalerkinCalderonFMMOperator::reinit(
   const AdditionalData                                    &data,
   NearFieldCache                                          *cache)
 {
-  AssertThrow(integrator.get_screening() == 0.,
-              ExcMessage("The mixed problem through the FMM supports the "
-                         "Laplace kernel only."));
+  kappa     = integrator.get_screening();
   n_indices = n;
   indices   = cell_indices;
   constraints.copy_from(constraints_in);
@@ -143,7 +141,7 @@ GalerkinCalderonFMMOperator::reinit(
 
   start                               = std::chrono::steady_clock::now();
   LaplaceFMM::AdditionalData fmm_data = data.fmm;
-  fmm_data.kappa                      = 0.;
+  fmm_data.kappa                      = kappa;
   charge_fmm.reinit(points, fmm_data);
   separate_preconditioner = data.preconditioner_order > 0 ||
                             data.preconditioner_theta > 0 ||
@@ -173,8 +171,9 @@ GalerkinCalderonFMMOperator::reinit(
   dipole_fmm.reinit(points, fmm_data);
   // PIBEM_UNFUSED_ROWS: the three separate evaluations, for comparison.
   // The fused pass holds the multipoles of five sets of all boxes at once:
-  // only while they take less than 256 MB per process.
-  fused_rows = data.dipole_order_increase == 0 &&
+  // only while they take less than 256 MB per process. The screened
+  // expansions have no fused pass.
+  fused_rows = kappa == 0. && data.dipole_order_increase == 0 &&
                charge_fmm.expansion_bytes(5) < (std::size_t(256) << 20) &&
                std::getenv("PIBEM_UNFUSED_ROWS") == nullptr;
   setup_tree = seconds_since(start);
@@ -481,8 +480,9 @@ GalerkinCalderonFMMOperator::reinit(
 
   FullMatrix<double> kernel(n_q_points, n_q_points),
     dipole(n_q_points, n_q_points), dipole_back(n_q_points, n_q_points),
+    normal_kernel(kappa > 0. ? n_q_points : 0, kappa > 0. ? n_q_points : 0),
     partial(dpc, n_q_points), block(dpc, dpc), back(dpc, dpc),
-    transposed(dpc, dpc);
+    transposed(dpc, dpc), normal_block(dpc, dpc);
   const auto contract = [&](const FullMatrix<double> &k,
                             FullMatrix<double>       &result) {
     // result = shape^T k shape
@@ -521,15 +521,27 @@ GalerkinCalderonFMMOperator::reinit(
               if (a == b)
                 {
                   kernel(q, s) = dipole(q, s) = dipole_back(s, q) = 0;
+                  if (kappa > 0.)
+                    normal_kernel(q, s) = 0;
                   continue;
                 }
               const Tensor<1, 3> x_minus_y = points[a] - points[b];
               const double       distance  = x_minus_y.norm();
               const double weight = inverse_4pi * JxW[a] * JxW[b] / distance;
               const double cube   = distance * distance;
-              kernel(q, s)        = weight;
-              dipole(q, s)        = weight * (x_minus_y * normals[b]) / cube;
-              dipole_back(s, q)   = -weight * (x_minus_y * normals[a]) / cube;
+              // The screened kernel e^{-kappa r} G_0, its normal derivatives
+              // those of G_0 times (1 + kappa r) e^{-kappa r}, and the term
+              // kappa^2 (n_x . n_y) G of W.
+              const double exponential =
+                kappa == 0. ? 1. : std::exp(-kappa * distance);
+              const double factor = (1. + kappa * distance) * exponential;
+              kernel(q, s)        = weight * exponential;
+              dipole(q, s) = weight * (x_minus_y * normals[b]) / cube * factor;
+              dipole_back(s, q) =
+                -weight * (x_minus_y * normals[a]) / cube * factor;
+              if (kappa > 0.)
+                normal_kernel(q, s) =
+                  kappa * kappa * kernel(q, s) * (normals[a] * normals[b]);
             }
         }
 
@@ -592,6 +604,11 @@ GalerkinCalderonFMMOperator::reinit(
                          shape_curls[(r * n_q_points + s) * dpc + j][d];
                 block(i, j) += sum;
               }
+        }
+      if (kappa > 0.)
+        {
+          contract(normal_kernel, normal_block);
+          block.add(1., normal_block);
         }
       for (unsigned int i = 0; i < dpc; ++i)
         for (unsigned int j = 0; j < dpc; ++j)
@@ -814,7 +831,7 @@ GalerkinCalderonFMMOperator::vmult(const Operator        op,
         {
           std::vector<Tensor<1, 3>> curls;
           evaluate_field(x, values, &curls);
-          add_hypersingular(curls, y, charge_fmm);
+          add_hypersingular(values, curls, y, charge_fmm);
           near_hypersingular.vmult_add(y, src);
           break;
         }
@@ -834,43 +851,54 @@ GalerkinCalderonFMMOperator::add_transpose_double_layer(
 {
   const unsigned int  np = points.size();
   std::vector<double> normal_component(np, 0.), potentials;
-  if (std::getenv("PIBEM_CALDERON_DIPOLE_KT") != nullptr)
-    {
-      // The components of the field from three dipole sums, for
-      // comparison.
-      std::vector<Tensor<1, 3>> dipoles(np);
-      for (unsigned int d = 0; d < 3; ++d)
-        {
-          for (unsigned int p = 0; p < np; ++p)
-            {
-              dipoles[p]    = Tensor<1, 3>();
-              dipoles[p][d] = -inverse_4pi * JxW[p] * values[p];
-            }
-          dipole_fmm.evaluate({}, dipoles, potentials);
-          for (unsigned int p = 0; p < np; ++p)
-            normal_component[p] += normals[p][d] * potentials[p];
-        }
-    }
-  else
-    {
-      // The gradient of the potential of the charges.
-      std::vector<double>       charges(np);
-      std::vector<Tensor<1, 3>> gradients;
-      for (unsigned int p = 0; p < np; ++p)
-        charges[p] = inverse_4pi * JxW[p] * values[p];
-      charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
-      for (unsigned int p = 0; p < np; ++p)
-        normal_component[p] = normals[p] * gradients[p];
-    }
+  // The gradient of the potential of the charges, for the screened kernel,
+  // or with PIBEM_CALDERON_DIPOLE_KT for comparison, from three dipole
+  // sums.
+  std::vector<double>       charges(np);
+  std::vector<Tensor<1, 3>> gradients;
   for (unsigned int p = 0; p < np; ++p)
-    normal_component[p] *= JxW[p];
+    charges[p] = inverse_4pi * JxW[p] * values[p];
+  if (kappa > 0. || std::getenv("PIBEM_CALDERON_DIPOLE_KT") != nullptr)
+    gradient_from_dipoles(charges, dipole_fmm, gradients);
+  else
+    charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
+  for (unsigned int p = 0; p < np; ++p)
+    normal_component[p] = JxW[p] * (normals[p] * gradients[p]);
   test_values(normal_component, y);
 }
 
 
 
 void
+GalerkinCalderonFMMOperator::gradient_from_dipoles(
+  const std::vector<double> &charges,
+  const LaplaceFMM          &fmm,
+  std::vector<Tensor<1, 3>> &gradients) const
+{
+  // The derivative along e_c of the kernel at x is the potential of the
+  // dipole -e_c at y.
+  const unsigned int        np = points.size();
+  std::vector<Tensor<1, 3>> dipoles(np);
+  std::vector<double>       potentials;
+  gradients.assign(np, Tensor<1, 3>());
+  for (unsigned int d = 0; d < 3; ++d)
+    {
+      for (unsigned int p = 0; p < np; ++p)
+        {
+          dipoles[p]    = Tensor<1, 3>();
+          dipoles[p][d] = -charges[p];
+        }
+      fmm.evaluate({}, dipoles, potentials);
+      for (unsigned int p = 0; p < np; ++p)
+        gradients[p][d] = potentials[p];
+    }
+}
+
+
+
+void
 GalerkinCalderonFMMOperator::add_hypersingular(
+  const std::vector<double>       &values,
   const std::vector<Tensor<1, 3>> &curls,
   Vector<double>                  &y,
   const LaplaceFMM                &fmm) const
@@ -882,11 +910,33 @@ GalerkinCalderonFMMOperator::add_hypersingular(
   for (unsigned int d = 0; d < 3; ++d)
     for (unsigned int p = 0; p < np; ++p)
       charges[d][p] = inverse_4pi * JxW[p] * curls[p][d];
-  fmm.evaluate_multiple(charges, curl_potentials);
-  test_curl_potentials({{std::move(curl_potentials[0]),
-                         std::move(curl_potentials[1]),
-                         std::move(curl_potentials[2])}},
-                       y);
+  if (kappa == 0.)
+    {
+      fmm.evaluate_multiple(charges, curl_potentials);
+      test_curl_potentials({{std::move(curl_potentials[0]),
+                             std::move(curl_potentials[1]),
+                             std::move(curl_potentials[2])}},
+                           y);
+      return;
+    }
+  // The screened expansions take one set at a time; and the term
+  // kappa^2 (n_x . n_y) G, from the potentials of the components of n x.
+  std::array<std::vector<double>, 3> potentials;
+  for (unsigned int d = 0; d < 3; ++d)
+    fmm.evaluate(charges[d], {}, potentials[d]);
+  test_curl_potentials(potentials, y);
+  std::vector<double> normal_part(np, 0.);
+  for (unsigned int d = 0; d < 3; ++d)
+    {
+      for (unsigned int p = 0; p < np; ++p)
+        charges[d][p] = inverse_4pi * JxW[p] * values[p] * normals[p][d];
+      fmm.evaluate(charges[d], {}, potentials[d]);
+      for (unsigned int p = 0; p < np; ++p)
+        normal_part[p] += normals[p][d] * potentials[d][p];
+    }
+  for (unsigned int p = 0; p < np; ++p)
+    normal_part[p] *= kappa * kappa * JxW[p];
+  test_values(normal_part, y);
 }
 
 
@@ -955,11 +1005,14 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
   // relaxed, always so, through the expansions of the preconditioner.
   const bool use_relaxed =
     relaxed && (separate_relaxed || separate_preconditioner);
-  const LaplaceFMM                  &fmm   = !use_relaxed     ? charge_fmm :
-                                             separate_relaxed ? relaxed_fmm :
-                                                                preconditioner_fmm;
-  const bool                         fused = use_relaxed || fused_rows;
-  std::vector<double>                dipole_potentials;
+  const LaplaceFMM &fmm   = !use_relaxed     ? charge_fmm :
+                            separate_relaxed ? relaxed_fmm :
+                                               preconditioner_fmm;
+  const bool        fused = (use_relaxed || fused_rows) && kappa == 0.;
+  // The dipole sums of the screened rows: those of the relaxed expansions,
+  // or of their own order.
+  const LaplaceFMM   &dipole_sums = use_relaxed ? fmm : dipole_fmm;
+  std::vector<double> dipole_potentials;
   std::array<std::vector<double>, 3> curl_potentials;
   if (fused)
     {
@@ -978,8 +1031,13 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
                          dipole_potentials,
                          curl_potentials);
     }
-  else
+  else if (kappa == 0.)
     charge_fmm.evaluate_with_gradient(charges, potentials, gradients);
+  else
+    {
+      fmm.evaluate(charges, {}, potentials);
+      gradient_from_dipoles(charges, dipole_sums, gradients);
+    }
   for (unsigned int p = 0; p < np; ++p)
     values[p] = JxW[p] * potentials[p];
   test_values(values, d_rows);
@@ -992,7 +1050,7 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
   if (fused)
     potentials = std::move(dipole_potentials);
   else
-    dipole_fmm.evaluate({}, dipoles, potentials);
+    dipole_sums.evaluate({}, dipoles, potentials);
   Vector<double> k_u(n_indices);
   for (unsigned int p = 0; p < np; ++p)
     values[p] = JxW[p] * potentials[p];
@@ -1004,7 +1062,7 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
   if (fused)
     test_curl_potentials(curl_potentials, n_rows);
   else
-    add_hypersingular(curls_u, n_rows, charge_fmm);
+    add_hypersingular(values_u, curls_u, n_rows, fmm);
   near_hypersingular.vmult_add(n_rows, u);
   n_rows.add(k, transpose);
 
@@ -1058,7 +1116,7 @@ GalerkinCalderonFMMOperator::apply(const Operator        op,
   else
     {
       evaluate_field(x, values, &curls);
-      add_hypersingular(curls, y, fmm);
+      add_hypersingular(values, curls, y, fmm);
       near_hypersingular.vmult_add(y, src);
     }
   sum_over_processes(y, mpi_communicator);
@@ -1113,16 +1171,26 @@ GalerkinCalderonFMMOperator::vmult_preconditioner_pair(
       for (unsigned int d = 0; d < 3; ++d)
         charges[1 + d][p] = inverse_4pi * JxW[p] * curls_w[p][d];
     }
-  fmm.evaluate_multiple(charges, potentials);
   Vector<double> rows(2 * n_indices), v_rows(n_indices), w_rows(n_indices);
+  if (kappa == 0.)
+    {
+      fmm.evaluate_multiple(charges, potentials);
+      test_curl_potentials({{std::move(potentials[1]),
+                             std::move(potentials[2]),
+                             std::move(potentials[3])}},
+                           w_rows);
+    }
+  else
+    {
+      // The screened expansions take one set at a time.
+      potentials.resize(1);
+      fmm.evaluate(charges[0], {}, potentials[0]);
+      add_hypersingular(values_w, curls_w, w_rows, fmm);
+    }
   for (unsigned int p = 0; p < np; ++p)
     potentials[0][p] *= JxW[p];
   test_values(potentials[0], v_rows);
   near_single.vmult_add(v_rows, v_src);
-  test_curl_potentials({{std::move(potentials[1]),
-                         std::move(potentials[2]),
-                         std::move(potentials[3])}},
-                       w_rows);
   near_hypersingular.vmult_add(w_rows, w_src);
   for (types::global_dof_index i = 0; i < n_indices; ++i)
     {

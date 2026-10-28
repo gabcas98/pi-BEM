@@ -195,6 +195,12 @@
   "mixed_potential": "0.00635622",
   "mixed_robin_flux": "0.0405729"
  },
+ "screened_mixed_robin_fma": {
+  "iterations": "19",
+  "mixed_flux": "0.173811",
+  "mixed_potential": "0.00635646",
+  "mixed_robin_flux": "0.0405729"
+ },
  "slots_collocation": {
   "flux": "0.0754984",
   "gradient": "0.0141814",

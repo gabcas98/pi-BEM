@@ -61,9 +61,6 @@ BEMProblem<dim>::solve_galerkin_mixed(
       AssertThrow(solution_method == "Direct" || solution_method == "FMA",
                   ExcMessage("The mixed Galerkin problem needs Solution "
                              "method = Direct or FMA."));
-      AssertThrow(galerkin_screening() == 0.0 || solution_method == "Direct",
-                  ExcMessage("The mixed Galerkin problem with the screened "
-                             "kernel needs Solution method = Direct."));
       AssertThrow((dynamic_cast<const FE_Q<dim - 1, dim> *>(fe.get()) !=
                    nullptr),
                   ExcMessage("The mixed Galerkin problem needs continuous "
