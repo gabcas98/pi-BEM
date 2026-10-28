@@ -189,6 +189,12 @@
   "phi_nodes": "0",
   "robin_residual": "0.0107809"
  },
+ "screened_mixed_robin": {
+  "iterations": "19",
+  "mixed_flux": "0.173821",
+  "mixed_potential": "0.00635622",
+  "mixed_robin_flux": "0.0405729"
+ },
  "slots_collocation": {
   "flux": "0.0754984",
   "gradient": "0.0141814",

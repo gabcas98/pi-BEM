@@ -1578,9 +1578,6 @@ GalerkinPanelPairIntegrator<spacedim>::
 {
   static_assert(spacedim == 3,
                 "The surface-curl weak form is implemented in 3D only.");
-  AssertThrow(screening == 0.0,
-              ExcMessage("V, K and W together are implemented for the "
-                         "Laplace kernel only."));
   return integrate_operator(test_cell,
                             trial_cell,
                             order,
@@ -1597,9 +1594,6 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_single_double_hypersingular(
 {
   static_assert(spacedim == 3,
                 "The surface-curl weak form is implemented in 3D only.");
-  AssertThrow(screening == 0.0,
-              ExcMessage("V, K and W together are implemented for the "
-                         "Laplace kernel only."));
   return integrate_operator(test_cell,
                             trial_cell,
                             order,
@@ -2309,10 +2303,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
   // loop would repeat every call about order^2 times over - and these calls
   // are typically into a parsed symbolic expression, the most expensive thing
   // in the loop.
+  // The screened W has a term in the values of the trial function, which a
+  // gradient does not give.
   AssertThrow(operator_type != OperatorType::weak_hypersingular ||
-                screening == 0.0,
-              ExcMessage("The weak hypersingular operator is implemented for "
-                         "the Laplace kernel only."));
+                trial_function == nullptr || screening == 0.0,
+              ExcMessage("The weak hypersingular operator applied to a "
+                         "function is implemented for the Laplace kernel "
+                         "only."));
   const auto          kernel_start   = std::chrono::steady_clock::now();
   const unsigned int  n_test_points  = test_values.get_quadrature().size();
   const unsigned int  n_trial_points = trial_values.get_quadrature().size();
@@ -2407,18 +2404,25 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
         pair_weights[p] * test_values.JxW(q) * trial_values.JxW(qt);
       AssertThrow(std::isfinite(kernel) && std::isfinite(weight),
                   ExcMessage("Non-finite Galerkin panel-pair integrand."));
+      // The screened W adds kappa^2 (n_x . n_y) psi(x) phi(y) G to the
+      // product of the surface curls.
+      const double normal_term =
+        screening == 0.0 ?
+          0.0 :
+          screening * screening * single *
+            (test_values.normal_vector(q) * trial_values.normal_vector(qt));
       if (is_joint(operator_type))
         {
           const unsigned int dpc = finite_element.dofs_per_cell;
           const double       double_kernel =
-            -(displacement * trial_values.normal_vector(qt)) /
+            -(displacement * trial_values.normal_vector(qt)) * factor /
             (4.0 * numbers::PI * distance * distance * distance);
           // K of the pair the other way round: the trial point as test
           // point, (y - x) . n_x / (4 pi r^3).
           const bool both =
             operator_type == OperatorType::single_double_hypersingular_both;
           const double back_kernel =
-            both ? (displacement * test_values.normal_vector(q)) /
+            both ? (displacement * test_values.normal_vector(q)) * factor /
                      (4.0 * numbers::PI * distance * distance * distance) :
                    0.0;
           for (unsigned int i = 0; i < dpc; ++i)
@@ -2437,7 +2441,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
                   local_matrix(i, dpc + j) +=
                     test_value * double_kernel * trial_value;
                   local_matrix(i, 2 * dpc + j) +=
-                    (test_curl * trial_curl) * single * weight;
+                    (test_curl * trial_curl) * single * weight +
+                    test_value * normal_term * trial_value;
                   if (both)
                     local_matrix(i, 3 * dpc + j) +=
                       test_value * back_kernel * trial_value;
@@ -2468,7 +2473,10 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
                   cross_product_3d(trial_values.normal_vector(qt),
                                    trial_values.shape_grad(j, qt));
                 local_matrix(i, j) +=
-                  (test_curl * trial_curl) * single * weight;
+                  ((test_curl * trial_curl) * single +
+                   test_values.shape_value(i, q) * normal_term *
+                     trial_values.shape_value(j, qt)) *
+                  weight;
               }
             else
               local_matrix(i, j) += test_values.shape_value(i, q) * kernel *
@@ -3902,17 +3910,19 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
       // points with the weight of V, of K or of W.
       const unsigned int n            = leaf.weights->size();
       const auto         weight_start = std::chrono::steady_clock::now();
-      if (kernel_weights.size() < 8 * n)
-        kernel_weights.resize(8 * n);
+      if (kernel_weights.size() < 9 * n)
+        kernel_weights.resize(9 * n);
       double *single_weight = kernel_weights.data();
       double *double_weight = single_weight + n;
-      double *curl_weight   = double_weight + n;
-      double *back_weight   = curl_weight + n;
+      double *back_weight   = double_weight + n;
+      // The screened W: kappa^2 (n_x . n_y) G, against the shapes as V.
+      double *normal_weight = back_weight + n;
+      double *curl_weight   = normal_weight + n;
       // W through the reference derivatives d0, d1 of the shapes instead of
       // the curls d0 t1 - d1 t0: curl_i(x) . curl_j(y) = d0_i d0_j t1.t1
       // - d0_i d1_j t1.t0 - d1_i d0_j t0.t1 + d1_i d1_j t0.t0, with the
       // tangents of x first; four weights, and no curls to form.
-      double *g00 = back_weight + n;
+      double *g00 = curl_weight + n;
       double *g01 = g00 + n;
       double *g10 = g01 + n;
       double *g11 = g10 + n;
@@ -3938,6 +3948,20 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
           if (both)
             back_weight[p] = single_weight[p] * (displacement * x.normals[p]) /
                              (distance * distance);
+          if (screening != 0.0)
+            {
+              // The screened kernel e^{-kappa r} G_0, its normal derivatives
+              // those of G_0 times (1 + kappa r) e^{-kappa r}.
+              const double exponential = std::exp(-screening * distance);
+              const double factor = (1.0 + screening * distance) * exponential;
+              curl_weight[p] *= exponential;
+              single_weight[p] *= exponential;
+              double_weight[p] *= factor;
+              if (both)
+                back_weight[p] *= factor;
+              normal_weight[p] = screening * screening * single_weight[p] *
+                                 (x.normals[p] * y.normals[p]);
+            }
           g00[p] = c00 * curl_weight[p] * (x.tangents1[p] * y.tangents1[p]);
           g01[p] = -c01 * curl_weight[p] * (x.tangents1[p] * y.tangents0[p]);
           g10[p] = -c10 * curl_weight[p] * (x.tangents0[p] * y.tangents1[p]);
@@ -3953,20 +3977,21 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
       profile.kernel_weight_seconds +=
         std::chrono::duration<double>(sum_start - weight_start).count();
       constexpr unsigned int block = 128;
-      if (kernel_block.size() < 7 * dpc * block)
-        kernel_block.resize(7 * dpc * block);
+      if (kernel_block.size() < 8 * dpc * block)
+        kernel_block.resize(8 * dpc * block);
       double *wx_single = kernel_block.data();
       double *wx_double = wx_single + dpc * block;
       double *wx_back   = wx_double + dpc * block;
       // The weighted derivatives of the test shapes: d0 g00, d1 g10 (against
       // d0 of the trial shapes), d0 g01, d1 g11 (against d1).
-      double                    *wx_d = wx_back + dpc * block;
-      const std::vector<double> &d0x  = *leaf.test_derivatives0,
-                                &d1x  = *leaf.test_derivatives1,
-                                &d0y  = *leaf.trial_derivatives0,
-                                &d1y  = *leaf.trial_derivatives1;
+      double                    *wx_d      = wx_back + dpc * block;
+      double                    *wx_normal = wx_d + 4 * dpc * block;
+      const std::vector<double> &d0x       = *leaf.test_derivatives0,
+                                &d1x       = *leaf.test_derivatives1,
+                                &d0y       = *leaf.trial_derivatives0,
+                                &d1y       = *leaf.trial_derivatives1;
       std::vector<double> sums_vk(3 * dpc * dpc, 0.0),
-        sums_w(2 * dpc * dpc, 0.0);
+        sums_w(2 * dpc * dpc, 0.0), sums_normal(dpc * dpc, 0.0);
       for (unsigned int begin = 0; begin < n; begin += block)
         {
           const unsigned int m = std::min(block, n - begin);
@@ -3987,6 +4012,13 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
 #pragma omp simd
                   for (unsigned int k = 0; k < m; ++k)
                     vb[k] = a[k] * back_weight[begin + k];
+                }
+              if (screening != 0.0)
+                {
+                  double *vn = &wx_normal[i * block];
+#pragma omp simd
+                  for (unsigned int k = 0; k < m; ++k)
+                    vn[k] = a[k] * normal_weight[begin + k];
                 }
               const double *a0  = &d0x[i * n + begin];
               const double *a1  = &d1x[i * n + begin];
@@ -4026,6 +4058,16 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                            m,
                            sums_w.data(),
                            dpc);
+          if (screening != 0.0)
+            add_row_products(wx_normal,
+                             block,
+                             dpc,
+                             &sy[begin],
+                             n,
+                             dpc,
+                             m,
+                             sums_normal.data(),
+                             dpc);
         }
       for (unsigned int i = 0; i < dpc; ++i)
         for (unsigned int j = 0; j < dpc; ++j)
@@ -4037,8 +4079,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
               }
             if (both)
               result(i, 3 * dpc + j) += sums_vk[(2 * dpc + i) * dpc + j];
-            result(i, w_column + j) +=
-              sums_w[i * dpc + j] + sums_w[(dpc + i) * dpc + j];
+            result(i, w_column + j) += sums_w[i * dpc + j] +
+                                       sums_w[(dpc + i) * dpc + j] +
+                                       sums_normal[i * dpc + j];
           }
       profile.kernel_sum_seconds +=
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -4056,8 +4099,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
           .count();
       // A tensor rule: the kernel blocks, then the sums over the test points
       // and over the trial points one after the other.
+      // With screening, the kernels as in the points in pairs, and the
+      // block of kappa^2 (n_x . n_y) G.
       std::vector<double> single_block(nx * ny), double_block(nx * ny),
-        curl_block(nx * ny), back_block(both ? nx * ny : 0);
+        curl_block(nx * ny), back_block(both ? nx * ny : 0),
+        normal_block(screening != 0.0 ? nx * ny : 0);
       for (unsigned int qx = 0; qx < nx; ++qx)
         for (unsigned int qy = 0; qy < ny; ++qy)
           {
@@ -4066,14 +4112,23 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
             const double distance = displacement.norm();
             const double single =
               leaf.test_weights[qx] * leaf.trial_weights[qy] * scale / distance;
-            single_block[qx * ny + qy] = single;
-            double_block[qx * ny + qy] =
-              -single * (displacement * y.normals[qy]) / (distance * distance);
+            const double exponential =
+              screening == 0.0 ? 1.0 : std::exp(-screening * distance);
+            const double factor = (1.0 + screening * distance) * exponential;
+            single_block[qx * ny + qy] = single * exponential;
+            double_block[qx * ny + qy] = -single *
+                                         (displacement * y.normals[qy]) /
+                                         (distance * distance) * factor;
             curl_block[qx * ny + qy] =
-              single / (x.jacobians[qx] * y.jacobians[qy]);
+              single * exponential / (x.jacobians[qx] * y.jacobians[qy]);
             if (both)
-              back_block[qx * ny + qy] =
-                single * (displacement * x.normals[qx]) / (distance * distance);
+              back_block[qx * ny + qy] = single *
+                                         (displacement * x.normals[qx]) /
+                                         (distance * distance) * factor;
+            if (screening != 0.0)
+              normal_block[qx * ny + qy] = screening * screening * single *
+                                           exponential *
+                                           (x.normals[qx] * y.normals[qy]);
           }
       std::vector<double> partial(ny);
       const auto          contract = [&](const double              *u,
@@ -4115,6 +4170,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                      curl_block,
                      &cy[c * dpc * ny],
                      w_column);
+          if (screening != 0.0)
+            contract(&sx[i * nx], normal_block, sy.data(), w_column);
           for (unsigned int j = 0; j < result.n(); ++j)
             result(i, j) += result_row[j];
         }

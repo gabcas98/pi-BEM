@@ -178,7 +178,8 @@ public:
    * exp(-kappa r) / (4 pi r). Zero, the default, is the Laplace kernel. The
    * normal derivatives of the screened kernel are those of the Laplace kernel
    * times E(r) = (1 + kappa r) exp(-kappa r), so the singularities, and with
-   * them the quadrature, are unchanged.
+   * them the quadrature, are unchanged. The weak hypersingular operator adds
+   * kappa^2 (n_x . n_y) psi(x) phi(y) G to the product of the surface curls.
    */
   void
   set_screening(const double kappa)
@@ -389,7 +390,7 @@ public:
                                const CellIterator &trial_cell,
                                const unsigned int  order) const;
 
-  /// V, K and W of the Laplace kernel for one panel pair from the same
+  /// V, K and W of the kernel for one panel pair from the same
   /// quadrature points: the columns of V, then of K, then of W.
   FullMatrix<double>
   integrate_single_double_hypersingular(const CellIterator &test_cell,
@@ -608,15 +609,16 @@ public:
       numbers::invalid_material_id) const;
 
   /** Assemble the single layer V, the double layer K and the weak
-   * hypersingular operator W of the Laplace kernel in one traversal of the
+   * hypersingular operator W of the kernel in one traversal of the
    * panel pairs. The far pairs share their points, the order chosen by the
-   * far-field tolerance and the kernel block of 1/(4 pi r), which V and W
-   * contract with the shape functions and with their surface curls, while K
-   * contracts the block of the double-layer kernel; every contraction goes
-   * one index at a time. The near and singular pairs integrate the three
-   * from the same points, integrate_single_double_hypersingular(). Constraints
-   * apply to test and trial functions; the caller owns initialization and
-   * compression.
+   * far-field tolerance and the kernel block of G, which V and W contract
+   * with the shape functions and with their surface curls, while K
+   * contracts the block of the double-layer kernel, and with screening W
+   * the block of kappa^2 (n_x . n_y) G with the shape functions; every
+   * contraction goes one index at a time. The near and singular pairs integrate
+   * the three from the same points, integrate_single_double_hypersingular().
+   * Constraints apply to test and trial functions; the caller owns
+   * initialization and compression.
    */
   template <typename MatrixType>
   void
@@ -644,7 +646,7 @@ private:
     // The same, and in one more column the right-hand side of the pair seen
     // the other way round, trial cell as test cell, from the same points.
     single_and_double_layer_both,
-    // V, K and W of the Laplace kernel from the same points: the local
+    // V, K and W of the kernel from the same points: the local
     // result holds V in the first dofs_per_cell columns, K in the next and
     // W in the last.
     single_double_hypersingular,
@@ -2067,15 +2069,14 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
   const types::material_id                  selected_trial_material) const
 {
   // The screened hypersingular operator has a further term,
-  // kappa^2 (n_x . n_y) psi(x) phi(y) G, which this assembly does not have.
-  AssertThrow(screening == 0.0,
-              ExcMessage("The weak hypersingular operator is implemented for "
-                         "the Laplace kernel only."));
+  // kappa^2 (n_x . n_y) psi(x) phi(y) G, with the values and the normals.
   struct CellQuadratureData
   {
     CellIterator                                  cell;
     std::vector<Point<spacedim>>                  points;
+    std::vector<Tensor<1, spacedim>>              normals;
     std::vector<double>                           jxw;
+    std::vector<std::vector<double>>              shape_values;
     std::vector<std::vector<Tensor<1, spacedim>>> surface_curls;
   };
 
@@ -2083,7 +2084,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
   FEValues<spacedim - 1, spacedim> values(mapping,
                                           finite_element,
                                           quadrature,
-                                          update_gradients |
+                                          update_values | update_gradients |
                                             update_normal_vectors |
                                             update_quadrature_points |
                                             update_JxW_values);
@@ -2093,9 +2094,12 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
     {
       values.reinit(cell);
       CellQuadratureData data;
-      data.cell   = cell;
-      data.points = values.get_quadrature_points();
+      data.cell    = cell;
+      data.points  = values.get_quadrature_points();
+      data.normals = values.get_normal_vectors();
       data.jxw.resize(quadrature.size());
+      data.shape_values.assign(finite_element.dofs_per_cell,
+                               std::vector<double>(quadrature.size()));
       data.surface_curls.assign(finite_element.dofs_per_cell,
                                 std::vector<Tensor<1, spacedim>>(
                                   quadrature.size()));
@@ -2103,9 +2107,12 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
         {
           data.jxw[q] = values.JxW(q);
           for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
-            data.surface_curls[i][q] =
-              cross_product_3d(values.normal_vector(q),
-                               values.shape_grad(i, q));
+            {
+              data.shape_values[i][q] = values.shape_value(i, q);
+              data.surface_curls[i][q] =
+                cross_product_3d(values.normal_vector(q),
+                                 values.shape_grad(i, q));
+            }
         }
       cell_data.push_back(std::move(data));
     }
@@ -2146,15 +2153,23 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
                 {
                   const double distance =
                     test_data.points[qx].distance(trial_data.points[qy]);
-                  const double factor = test_data.jxw[qx] * trial_data.jxw[qy] /
-                                        (4.0 * numbers::PI * distance);
+                  const double factor =
+                    test_data.jxw[qx] * trial_data.jxw[qy] /
+                    (4.0 * numbers::PI * distance) *
+                    (screening == 0.0 ? 1.0 : std::exp(-screening * distance));
+                  const double normal_factor =
+                    screening * screening * factor *
+                    (test_data.normals[qx] * trial_data.normals[qy]);
                   for (unsigned int i = 0; i < finite_element.dofs_per_cell;
                        ++i)
                     for (unsigned int j = 0; j < finite_element.dofs_per_cell;
                          ++j)
                       local_matrix(i, j) += (test_data.surface_curls[i][qx] *
                                              trial_data.surface_curls[j][qy]) *
-                                            factor;
+                                              factor +
+                                            test_data.shape_values[i][qx] *
+                                              trial_data.shape_values[j][qy] *
+                                              normal_factor;
                 }
           else
             local_matrix =
@@ -2182,9 +2197,6 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
   const unsigned int                        order,
   const types::subdomain_id                 locally_owned_subdomain) const
 {
-  AssertThrow(screening == 0.0,
-              ExcMessage("The joint assembly of V, K and W is implemented "
-                         "for the Laplace kernel only."));
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
   const unsigned int dpc = finite_element.dofs_per_cell;
@@ -2263,7 +2275,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
 
   const unsigned int  n_q = QGauss<spacedim - 1>(order).size();
   std::vector<double> single_block(n_q * n_q), double_block(n_q * n_q),
-    partial(dpc * n_q);
+    normal_block(screening != 0.0 ? n_q * n_q : 0), partial(dpc * n_q);
   std::vector<types::global_dof_index> test_indices(dpc), trial_indices(dpc);
   FullMatrix<double> v_local(dpc, dpc), k_local(dpc, dpc), w_local(dpc, dpc);
 
@@ -2338,10 +2350,20 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                     const double distance = displacement.norm();
                     const double weight =
                       t.jxw[qx] * r.jxw[qy] / (4.0 * numbers::PI * distance);
-                    single_block[qx * m + qy] = weight;
-                    double_block[qx * m + qy] = -weight *
-                                                (displacement * r.normals[qy]) /
-                                                (distance * distance);
+                    // The screened kernel e^{-kappa r} G_0, its normal
+                    // derivative that of G_0 times (1 + kappa r)
+                    // e^{-kappa r}, and the term kappa^2 (n_x . n_y) G of W.
+                    const double exponential =
+                      screening == 0.0 ? 1.0 : std::exp(-screening * distance);
+                    single_block[qx * m + qy] = weight * exponential;
+                    double_block[qx * m + qy] =
+                      -weight * (displacement * r.normals[qy]) /
+                      (distance * distance) *
+                      ((1.0 + screening * distance) * exponential);
+                    if (screening != 0.0)
+                      normal_block[qx * m + qy] =
+                        screening * screening * weight * exponential *
+                        (t.normals[qx] * r.normals[qy]);
                   }
               v_local              = 0;
               k_local              = 0;
@@ -2362,6 +2384,8 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                   };
                   contract(m, single_block, curl_of(t), curl_of(r), w_local);
                 }
+              if (screening != 0.0)
+                contract(m, normal_block, values_of(t), values_of(r), w_local);
             }
           else
             {

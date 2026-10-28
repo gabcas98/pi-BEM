@@ -38,7 +38,9 @@ using namespace dealii;
  * scaled to V^{-1} on each: the preconditioned operator then takes the
  * value 1 on them, at the top of the rest of its spectrum. Without them it
  * would be singular on all but one, and GMRES would stop on its residual
- * with the true one large.
+ * with the true one large. The W of the screened kernel is definite, but
+ * of order kappa^2 on the constants, and the same terms keep the
+ * preconditioned operator away from zero there for a small kappa.
  *
  * The vectors are those of all indices of the mixed problem (BEMProblem::
  * solve_galerkin_mixed()): flux unknowns, free potentials (the masters of

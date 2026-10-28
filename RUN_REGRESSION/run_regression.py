@@ -269,6 +269,17 @@ CASES = {
                             'Preconditioner': 'BlockJacobi'},
                            ['mixed_flux', 'mixed_potential',
                             'mixed_robin_flux', 'iterations']),
+    # The screened kernel in the mixed Galerkin problem with Dirichlet and
+    # Robin parts: the weak hypersingular operator with its term
+    # kappa^2 (n_x . n_y) G, dense, with the Calderon preconditioner.
+    'screened_mixed_robin': ('sphere_screened_robin.prm',
+                             {'Boundary integral formulation': 'galerkin',
+                              'Linear solver': 'CG',
+                              'Preconditioner': 'BlockJacobi',
+                              'Solution method': 'Direct',
+                              'Mixed Galerkin preconditioner': 'calderon'},
+                             ['mixed_flux', 'mixed_potential',
+                              'mixed_robin_flux', 'iterations']),
     # Two slots, each exact on its manifold and wrong on the other: the
     # Galerkin data of every cell from the slot of its manifold, in the mixed
     # problem with the multipole method, and with Dirichlet conditions on

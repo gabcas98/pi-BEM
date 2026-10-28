@@ -61,10 +61,9 @@ BEMProblem<dim>::solve_galerkin_mixed(
       AssertThrow(solution_method == "Direct" || solution_method == "FMA",
                   ExcMessage("The mixed Galerkin problem needs Solution "
                              "method = Direct or FMA."));
-      AssertThrow(galerkin_screening() == 0.0,
-                  ExcMessage("The mixed Galerkin problem is implemented for "
-                             "the Laplace kernel, whose weak hypersingular "
-                             "operator is available."));
+      AssertThrow(galerkin_screening() == 0.0 || solution_method == "Direct",
+                  ExcMessage("The mixed Galerkin problem with the screened "
+                             "kernel needs Solution method = Direct."));
       AssertThrow((dynamic_cast<const FE_Q<dim - 1, dim> *>(fe.get()) !=
                    nullptr),
                   ExcMessage("The mixed Galerkin problem needs continuous "
@@ -638,6 +637,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
         galerkin_near_singular_maximum_depth,
         galerkin_near_singular_quadrature_order);
       integrator.set_far_field_tolerance(galerkin_far_field_tolerance);
+      integrator.set_screening(galerkin_screening());
       integrator.set_light_geometry(galerkin_light_geometry);
       integrator.set_folded_singular_order(
         galerkin_folded_singular_quadrature_order);

@@ -123,6 +123,8 @@ them changes the solution.
   a decagon in 2D.
 - `robin_galerkin_fma`: a Robin part in the mixed Galerkin problem, multipole
   method.
+- `screened_mixed_robin`: the screened kernel in the mixed Galerkin problem,
+  with Dirichlet and Robin parts, dense, Calderon preconditioner.
 - `slots_mixed_fma`, `slots_dirichlet_dg`, `slots_dirichlet_fma`: two slots,
   each exact on its manifold and wrong on the other, in the Galerkin data.
 - `components_mixed_dense`, `components_dirichlet_dg`: two components, the
@@ -135,14 +137,14 @@ them changes the solution.
   formulation, real and imaginary part in one mixed system coupled on the
   Robin part, and with Dirichlet conditions everywhere.
 
-`ctest` runs eight of these cases on 2 processes (`tests/solver_*.cc`, with
+`ctest` runs nine of these cases on 2 processes (`tests/solver_*.cc`, with
 the helpers in `tests/solver_tests.h`), so that the CI covers the solver:
 Dirichlet with the Laplace and the screened kernel, the mixed problem with
-Robin, components and slots, the complex problem in both formulations, and
-the NACA wing on the exact geometry. They print the quantities as the
-solver does, and numdiff compares them. In Debug, three of them run on the
-sphere without its refinement cycle, since the Debug build is thirty to
-fifty times slower.
+Robin, components and slots and with the screened kernel, the complex
+problem in both formulations, and the NACA wing on the exact geometry. They
+print the quantities as the solver does, and numdiff compares them. In
+Debug, four of them run on the sphere without its refinement cycle, since
+the Debug build is thirty to fifty times slower.
 
 ## Environment switches
 

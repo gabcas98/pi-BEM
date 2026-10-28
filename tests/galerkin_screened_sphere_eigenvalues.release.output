@@ -1,0 +1,17 @@
+
+DEAL::kappa 0.00000, n = 1: V 0.333329, exact 0.333333
+DEAL::kappa 0.00000, n = 1: K -0.166664, exact -0.166667
+DEAL::kappa 0.00000, n = 1: W 0.666712, exact 0.666667
+DEAL::kappa 0.00000, n = 2: V 0.199943, exact 0.200000
+DEAL::kappa 0.00000, n = 2: K -0.0999561, exact -0.100000
+DEAL::kappa 0.00000, n = 2: W 1.20127, exact 1.20000
+DEAL::kappa 0.00000: light and direct path agree to 1e-10
+DEAL::kappa 0.00000: W alone agrees to 1e-10
+DEAL::kappa 2.00000, n = 1: V 0.197801, exact 0.197803
+DEAL::kappa 2.00000, n = 1: K -0.159340, exact -0.159342
+DEAL::kappa 2.00000, n = 1: W 1.13557, exact 1.13553
+DEAL::kappa 2.00000, n = 2: V 0.154722, exact 0.154760
+DEAL::kappa 2.00000, n = 2: K -0.107093, exact -0.107136
+DEAL::kappa 2.00000, n = 2: W 1.54241, exact 1.54123
+DEAL::kappa 2.00000: light and direct path agree to 1e-10
+DEAL::kappa 2.00000: W alone agrees to 1e-10
