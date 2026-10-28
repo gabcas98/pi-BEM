@@ -205,7 +205,10 @@ conditions everywhere to 16 digits. The coupling costs about 30% more GMRES
 steps with the diagonal preconditioner (76, 108, 150 against 60, 86, 116 for
 the real problem); the Calderon preconditioner takes 26 steps instead of 108
 at two refinements, and with the FMM and relaxed products 10 s instead of
-57 s.
+57 s. Although it leaves the coupling out, the Calderon preconditioner needs
+only three to four steps more than for the same problem with a real `a/b`
+(29, 31, 34 against 25, 28, 30 at one to three refinements, with the FMM),
+whatever the mesh.
 
 ## Robin conditions and geometry IDs
 
