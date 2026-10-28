@@ -47,6 +47,7 @@ namespace solver_tests
      R"(real part: flux on the Dirichlet part, relative L2 error \S+; )"
      R"(potential on the Neumann part, relative L2 error (\S+))"},
     {"phi_nodes", R"(Phi Nodes error L_inf norm: (\S+))"},
+    {"robin_residual", R"(Robin Nodes Residual error L_2 norm: (\S+))"},
     {"steps", R"(Solve terminated at step (\d+))"}};
 
   // Set every occurrence of a parameter; add it to BEMProblem<3>, or to

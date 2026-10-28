@@ -69,6 +69,8 @@
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/vector.h>
 
+#include <atomic>
+
 
 // #include <deal.II/lac/petsc_vector.h>
 // #include <deal.II/lac/petsc_parallel_vector.h>
@@ -120,6 +122,7 @@
 #include "../include/ass_leg_function.h"
 #include "../include/bem_fma.h"
 #include "../include/cad_projectors.h"
+#include "../include/collocation_fmm_operator.h"
 #include "../include/computational_domain.h"
 #include "../include/constrained_matrix.h"
 #include "../include/galerkin_calderon_fmm_operator.h"
@@ -201,6 +204,56 @@ public:
     const unsigned int    quadrature_order_override = 0,
     const double          normalized_distance =
       std::numeric_limits<double>::infinity()) const;
+
+  /// The rule of a collocation row on a cell.
+  enum class CollocationRule
+  {
+    regular,
+    quasi_singular,
+    singular
+  };
+
+  /// What the adaptive rules of the collocation rows did, counted by the
+  /// threads that integrate them.
+  struct CollocationRuleStatistics
+  {
+    std::atomic<unsigned int> adaptive_singular_interactions{0},
+      adaptive_quasi_neumann_interactions{0},
+      adaptive_quasi_dirichlet_interactions{0},
+      adaptive_unconverged_singular_neumann{0},
+      adaptive_unconverged_singular_dirichlet{0},
+      adaptive_unconverged_quasi_neumann{0},
+      adaptive_unconverged_quasi_dirichlet{0}, adaptive_largest_order_used{0};
+
+    void
+    raise_largest_order(const unsigned int order)
+    {
+      unsigned int largest = adaptive_largest_order_used.load();
+      while (order > largest &&
+             !adaptive_largest_order_used.compare_exchange_weak(largest, order))
+        ;
+    }
+  };
+
+  /**
+   * The rows of the double-layer (Neumann) and single-layer (Dirichlet)
+   * matrices of the collocation at the support point of i on a cell, with
+   * the rule its distance asks for: singular if the cell holds i or a
+   * double node of it, quasi-singular within the quasi-singular distance
+   * ratio, and else the regular rule of regular_values, reinitialized on
+   * the cell; without them the regular rows are left zero. Returns the
+   * rule.
+   */
+  CollocationRule
+  integrate_collocation_rows(
+    const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
+    const std::vector<types::global_dof_index> &local_dof_indices,
+    const types::global_dof_index               i,
+    const std::vector<Point<dim>>              &support_points,
+    const FEValues<dim - 1, dim>               *regular_values,
+    Vector<double>                             &neumann_row,
+    Vector<double>                             &dirichlet_row,
+    CollocationRuleStatistics                  &statistics) const;
 
   /// This function compute a very specific case, a double node that has a
   /// dirichlet-dirichlet condition. In this case there is a constraint for
@@ -352,6 +405,26 @@ public:
   /// the direct resolution method.
   void
   assemble_preconditioner();
+
+  /// Set up the collocation matrices through the FMM: the regular rule of
+  /// the cells as its sources, and the rows of assemble_system() on the
+  /// cells near each support point as its corrections.
+  void
+  setup_collocation_fmm();
+
+  /// neumann = N phi and dirichlet = D dphi_dn, the collocation matrices
+  /// through the FMM.
+  void
+  collocation_fmm_products(const TrilinosWrappers::MPI::Vector &phi,
+                           const TrilinosWrappers::MPI::Vector &dphi_dn,
+                           TrilinosWrappers::MPI::Vector       &neumann,
+                           TrilinosWrappers::MPI::Vector &dirichlet) const;
+
+  /// The preconditioner of the collocation system through the FMM, the
+  /// ILU (or AMG) of the system on the near band, assembled as by
+  /// assemble_preconditioner().
+  TrilinosWrappers::PreconditionBase &
+  assemble_fmm_preconditioner();
 
   /// Build the preconditioner for the two-block real representation of the
   /// complex system, using the current boundary masks and Robin coefficients.
@@ -1062,6 +1135,13 @@ public:
   bool can_determine_phi;
 
   BEMFMA<dim> fma;
+
+  /// The collocation matrices through the FMM; set up only for the
+  /// collocation with Solution method = FMA, in 3D.
+  CollocationFMMOperator collocation_fmm;
+  /// The band of the collocation system on the near field of the FMM, for
+  /// its preconditioner.
+  TrilinosWrappers::SparseMatrix fmm_band_system;
 
   /// The Galerkin single-layer operator through the FMM; set up only for
   /// the Galerkin formulation with Solution method = FMA.

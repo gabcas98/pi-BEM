@@ -175,7 +175,7 @@
  },
  "robin_complex_fma": {
   "phi_nodes": "0",
-  "robin_residual": "0.0126805",
+  "robin_residual": "0.018587",
   "steps": "30"
  },
  "robin_galerkin_fma": {
@@ -187,7 +187,17 @@
  "robin_real_fma": {
   "iterations": "28",
   "phi_nodes": "0",
-  "robin_residual": "0.0107809"
+  "robin_residual": "0.0125917"
+ },
+ "screened_collocation_robin": {
+  "iterations": "23",
+  "phi_nodes": "0",
+  "robin_residual": "0.16088"
+ },
+ "screened_collocation_robin_fma": {
+  "iterations": "22",
+  "phi_nodes": "0",
+  "robin_residual": "0.160912"
  },
  "screened_mixed_robin": {
   "iterations": "19",
@@ -202,9 +212,9 @@
   "mixed_robin_flux": "0.0405729"
  },
  "slots_collocation": {
-  "flux": "0.0754984",
-  "gradient": "0.0141814",
-  "phi_nodes": "0.00507607"
+  "flux": "0.0754656",
+  "gradient": "0.0137152",
+  "phi_nodes": "0.00102597"
  },
  "slots_dirichlet_dg": {
   "iterations": "28",

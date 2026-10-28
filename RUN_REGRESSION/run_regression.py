@@ -257,6 +257,16 @@ CASES = {
     'robin_complex_fma': ('sphere_complex_robin.prm',
                           {'Solution method': 'FMA'},
                           ['phi_nodes', 'robin_residual', 'steps']),
+    # The screened kernel in the collocation problem with Dirichlet and Robin
+    # parts, with the matrices and with the multipole method, whose near
+    # field takes the rules of the matrices.
+    'screened_collocation_robin': ('sphere_screened_robin.prm',
+                                   {'Solution method': 'Direct'},
+                                   ['phi_nodes', 'robin_residual',
+                                    'iterations']),
+    'screened_collocation_robin_fma': ('sphere_screened_robin.prm', {},
+                                       ['phi_nodes', 'robin_residual',
+                                        'iterations']),
     # Dirichlet and Robin conditions in 2D.
     'robin_2d': ('circle_robin_2d.prm', {},
                  ['phi_nodes', 'robin_residual', 'iterations'], 2),

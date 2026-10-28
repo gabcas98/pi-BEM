@@ -533,6 +533,7 @@ BEMProblem<3>::BEMProblem(ComputationalDomain<3> &comp_dom,
   , this_mpi_process(Utilities::MPI::this_mpi_process(mpi_communicator))
   , vector_gradients_solutions(n_components)
   , vector_surface_gradients_solutions(n_components)
+  , collocation_fmm(comm)
 {
   // Only output on first processor.
   pcout.set_condition(this_mpi_process == 0);
@@ -554,6 +555,7 @@ BEMProblem<2>::BEMProblem(ComputationalDomain<2> &comp_dom,
   , this_mpi_process(Utilities::MPI::this_mpi_process(mpi_communicator))
   , vector_gradients_solutions(n_components)
   , vector_surface_gradients_solutions(n_components)
+  , collocation_fmm(comm)
 {
   // Only output on first processor.
   pcout.set_condition(this_mpi_process == 0);
@@ -934,15 +936,6 @@ BEMProblem<dim>::reinit()
   compute_dirichlet_and_neumann_dofs_vectors();
   compute_double_nodes_set();
 
-  if (solution_method == "FMA")
-    {
-      fma.init_fma(dh,
-                   double_nodes_set,
-                   dirichlet_nodes,
-                   *mapping,
-                   quadrature_order,
-                   singular_quadrature_order);
-    }
 
   /* TODO: unused
   // We need a TrilinosWrappers::MPI::Vector to reinit the SparsityPattern for
@@ -2015,19 +2008,7 @@ BEMProblem<dim>::assemble_system()
   dirichlet_matrix = 0;
 
   // Counted by the threads that integrate the rows.
-  std::atomic<unsigned int> adaptive_singular_interactions{0},
-    adaptive_quasi_neumann_interactions{0},
-    adaptive_quasi_dirichlet_interactions{0},
-    adaptive_unconverged_singular_neumann{0},
-    adaptive_unconverged_singular_dirichlet{0},
-    adaptive_unconverged_quasi_neumann{0},
-    adaptive_unconverged_quasi_dirichlet{0}, adaptive_largest_order_used{0};
-  const auto raise_largest_order = [&](const unsigned int order) {
-    unsigned int largest = adaptive_largest_order_used.load();
-    while (order > largest &&
-           !adaptive_largest_order_used.compare_exchange_weak(largest, order))
-      ;
-  };
+  CollocationRuleStatistics statistics;
 
 
   // Next, we initialize an FEValues
@@ -2045,8 +2026,6 @@ BEMProblem<dim>::assemble_system()
                               *quadrature,
                               update_values | update_normal_vectors |
                                 update_quadrature_points | update_JxW_values);
-
-  const unsigned int n_q_points = fe_v.n_quadrature_points;
 
   std::vector<types::global_dof_index> local_dof_indices(fe->dofs_per_cell);
   pcout << fe->dofs_per_cell << " " << std::endl;
@@ -2103,9 +2082,6 @@ BEMProblem<dim>::assemble_system()
       fe_v.reinit(cell);
       cell->get_dof_indices(local_dof_indices);
 
-      const std::vector<Point<dim>> &q_points    = fe_v.get_quadrature_points();
-      const std::vector<Tensor<1, dim>> &normals = fe_v.get_normal_vectors();
-
       // We then form the integral over
       // the current cell for all
       // degrees of freedom (note that
@@ -2125,515 +2101,17 @@ BEMProblem<dim>::assemble_system()
       // We do the same for quasi singular cells.
       const auto integrate_rows = [&](const std::size_t begin,
                                       const std::size_t end) {
-        Point<dim> D;
-        double     s;
         for (std::size_t r = begin; r < end; ++r)
           {
             const types::global_dof_index i = rows[r];
-            {
-              Vector<double> &local_neumann_matrix_row_i   = neumann_rows[r];
-              Vector<double> &local_dirichlet_matrix_row_i = dirichlet_rows[r];
-              local_neumann_matrix_row_i                   = 0;
-              local_dirichlet_matrix_row_i                 = 0;
-
-              Point<dim>     singularity = support_points[i];
-              Point<dim - 1> ref_projection(0.0, 0.0);
-              bool           is_singular    = false;
-              unsigned int   singular_index = numbers::invalid_unsigned_int;
-
-              for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                // if(local_dof_indices[j] == i)
-                if (double_nodes_set[i].count(local_dof_indices[j]) > 0)
-                  {
-                    singular_index = j;
-                    is_singular    = true;
-                    break;
-                  }
-
-              bool   is_quasi_singular = false;
-              double distance_ratio = std::numeric_limits<double>::infinity();
-              if (is_singular == false)
-                {
-                  Point<dim>   singularity = support_points[i];
-                  const double dist_to_center =
-                    (singularity - cell->center()).norm();
-                  const double h = cell->diameter();
-                  if (dist_to_center <=
-                      (quasi_singular_distance_ratio + 1.0) * h)
-                    {
-                      QuasiSingularKernelIntegral<dim> qski(cell,
-                                                            *fe,
-                                                            *mapping,
-                                                            singularity);
-                      ref_projection = qski.get_closest_reference_point();
-                      const double dist_to_cell = qski.min_distance;
-
-                      distance_ratio = dist_to_cell / h;
-                      if (distance_ratio < quasi_singular_distance_ratio)
-                        is_quasi_singular = true;
-                    }
-                }
-
-              // We then perform the
-              // integral. If the index $i$
-              // is not one of the local
-              // degrees of freedom, we
-              // simply have to add the
-              // single layer terms to the
-              // right hand side, and the
-              // double layer terms to the
-              // matrix:
-              if ((is_singular == false) && (is_quasi_singular == false))
-                {
-                  for (unsigned int q = 0; q < n_q_points; ++q)
-                    {
-                      const Tensor<1, dim> R = q_points[q] - support_points[i];
-                      if (kernel_type == "laplace")
-                        LaplaceKernel::kernels(R, D, s);
-                      else if (kernel_type == "screened")
-                        ScreenedKernel::kernels(R, D, s, screened_kappa);
-                      else
-                        AssertThrow(false,
-                                    ExcMessage("Unknown kernel type: " +
-                                               kernel_type));
-                      AssertThrow(std::isfinite(s) && is_finite_tensor(D),
-                                  ExcMessage(
-                                    "Non-finite screened kernel in regular "
-                                    "assembly."));
-                      // if(support_points[i][0]==0.25&&support_points[i][1]==0.25)
-                      //   pcout<<"D "<<D<<" s "<<s<<" , ";
-                      for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                        {
-                          local_neumann_matrix_row_i(j) +=
-                            ((D * normals[q]) * fe_v.shape_value(j, q) *
-                             fe_v.JxW(q));
-                          local_dirichlet_matrix_row_i(j) +=
-                            (s * fe_v.shape_value(j, q) * fe_v.JxW(q));
-                        }
-                    }
-                }
-              else if (is_quasi_singular == true)
-                {
-                  const auto integrate_quasi_singular =
-                    [&](const unsigned int exponent,
-                        const unsigned int order) -> Vector<double> {
-                    const Quadrature<dim - 1> transformed_quadrature =
-                      get_quasi_singular_quadrature(cell,
-                                                    *mapping,
-                                                    singularity,
-                                                    ref_projection,
-                                                    exponent,
-                                                    order,
-                                                    distance_ratio);
-                    AssertThrow(transformed_quadrature.size() > 0,
-                                ExcMessage("Empty quasi-singular quadrature."));
-                    FEValues<dim - 1, dim> transformed_fe_values(
-                      *mapping,
-                      *fe,
-                      transformed_quadrature,
-                      update_values | update_normal_vectors |
-                        update_quadrature_points | update_JxW_values);
-                    transformed_fe_values.reinit(cell);
-
-                    Vector<double> result(fe->dofs_per_cell);
-                    const auto    &transformed_points =
-                      transformed_fe_values.get_quadrature_points();
-                    const auto &transformed_normals =
-                      transformed_fe_values.get_normal_vectors();
-                    for (unsigned int q = 0; q < transformed_quadrature.size();
-                         ++q)
-                      {
-                        const Tensor<1, dim> R =
-                          transformed_points[q] - support_points[i];
-                        if (kernel_type == "laplace")
-                          LaplaceKernel::kernels(R, D, s);
-                        else if (kernel_type == "screened")
-                          ScreenedKernel::kernels(R, D, s, screened_kappa);
-                        else
-                          AssertThrow(false,
-                                      ExcMessage("Unknown kernel type: " +
-                                                 kernel_type));
-                        AssertThrow(std::isfinite(s) && is_finite_tensor(D),
-                                    ExcMessage(
-                                      "Non-finite quasi-singular kernel."));
-                        for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                          result[j] +=
-                            (exponent == 2 ? D * transformed_normals[q] : s) *
-                            transformed_fe_values.shape_value(j, q) *
-                            transformed_fe_values.JxW(q);
-                      }
-                    return result;
-                  };
-
-                  const auto adapt_quasi_singular =
-                    [&](const unsigned int exponent,
-                        const unsigned int initial_order) -> Vector<double> {
-                    Vector<double> result =
-                      integrate_quasi_singular(exponent, initial_order);
-                    QuadratureConvergenceState convergence_state;
-                    unsigned int               used_order = initial_order;
-                    bool                       converged = !adaptive_quadrature;
-                    while (adaptive_quadrature &&
-                           used_order < adaptive_quadrature_max_order)
-                      {
-                        const unsigned int next_order =
-                          next_adaptive_order(used_order,
-                                              adaptive_quadrature_max_order,
-                                              adaptive_quadrature_order_growth);
-                        Vector<double> refined =
-                          integrate_quasi_singular(exponent, next_order);
-                        converged = quadrature_vectors_converged(
-                          result,
-                          refined,
-                          adaptive_quadrature_relative_tolerance,
-                          adaptive_quadrature_absolute_tolerance,
-                          convergence_state);
-                        result.swap(refined);
-                        used_order = next_order;
-                        if (converged)
-                          break;
-                      }
-                    raise_largest_order(used_order);
-                    if (adaptive_quadrature && !converged)
-                      {
-                        if (exponent == 2)
-                          ++adaptive_unconverged_quasi_neumann;
-                        else
-                          ++adaptive_unconverged_quasi_dirichlet;
-                      }
-                    return result;
-                  };
-
-                  local_neumann_matrix_row_i += adapt_quasi_singular(
-                    2, quasi_singular_neumann_quadrature_order);
-                  ++adaptive_quasi_neumann_interactions;
-                  local_dirichlet_matrix_row_i += adapt_quasi_singular(
-                    1, quasi_singular_dirichlet_quadrature_order);
-                  ++adaptive_quasi_dirichlet_interactions;
-                }
-              else
-                {
-                  // Now we treat the more
-                  // delicate case. If we
-                  // are here, this means
-                  // that the cell that
-                  // runs on the $j$ index
-                  // contains
-                  // support_point[i]. In
-                  // this case both the
-                  // single and the double
-                  // layer potential are
-                  // singular, and they
-                  // require special
-                  // treatment.
-                  //
-                  // Whenever the
-                  // integration is
-                  // performed with the
-                  // singularity inside the
-                  // given cell, then a
-                  // special quadrature
-                  // formula is used that
-                  // allows one to
-                  // integrate arbitrary
-                  // functions against a
-                  // singular weight on the
-                  // reference cell.
-                  // Notice that singular
-                  // integration requires a
-                  // careful selection of
-                  // the quadrature
-                  // rules. In particular
-                  // the deal.II library
-                  // provides quadrature
-                  // rules which are
-                  // taylored for
-                  // logarithmic
-                  // singularities
-                  // (QGaussLog,
-                  // QGaussLogR), as well
-                  // as for 1/R
-                  // singularities
-                  // (QGaussOneOverR).
-                  //
-                  // Singular integration
-                  // is typically obtained
-                  // by constructing
-                  // weighted quadrature
-                  // formulas with singular
-                  // weights, so that it is
-                  // possible to write
-                  //
-                  // \f[
-                  //   \int_K f(x) s(x) dx = \sum_{i=1}^N w_i f(q_i)
-                  // \f]
-                  //
-                  // where $s(x)$ is a given
-                  // singularity, and the weights
-                  // and quadrature points
-                  // $w_i,q_i$ are carefully
-                  // selected to make the formula
-                  // above an equality for a
-                  // certain class of functions
-                  // $f(x)$.
-                  //
-                  // In all the finite
-                  // element examples we
-                  // have seen so far, the
-                  // weight of the
-                  // quadrature itself
-                  // (namely, the function
-                  // $s(x)$), was always
-                  // constantly equal to 1.
-                  // For singular
-                  // integration, we have
-                  // two choices: we can
-                  // use the definition
-                  // above, factoring out
-                  // the singularity from
-                  // the integrand (i.e.,
-                  // integrating $f(x)$
-                  // with the special
-                  // quadrature rule), or
-                  // we can ask the
-                  // quadrature rule to
-                  // "normalize" the
-                  // weights $w_i$ with
-                  // $s(q_i)$:
-                  //
-                  // \f[
-                  //   \int_K f(x) s(x) dx =
-                  //   \int_K g(x) dx = \sum_{i=1}^N \frac{w_i}{s(q_i)} g(q_i)
-                  // \f]
-                  //
-                  // We use this second
-                  // option, through the @p
-                  // factor_out_singularity
-                  // parameter of both
-                  // QGaussLogR and
-                  // QGaussOneOverR.
-                  //
-                  // These integrals are
-                  // somewhat delicate,
-                  // especially in two
-                  // dimensions, due to the
-                  // transformation from
-                  // the real to the
-                  // reference cell, where
-                  // the variable of
-                  // integration is scaled
-                  // with the determinant
-                  // of the transformation.
-                  //
-                  // In two dimensions this
-                  // process does not
-                  // result only in a
-                  // factor appearing as a
-                  // constant factor on the
-                  // entire integral, but
-                  // also on an additional
-                  // integral alltogether
-                  // that needs to be
-                  // evaluated:
-                  //
-                  // \f[
-                  //  \int_0^1 f(x)\ln(x/\alpha) dx =
-                  //  \int_0^1 f(x)\ln(x) dx - \int_0^1 f(x) \ln(\alpha) dx.
-                  // \f]
-                  //
-                  // This process is taken care of by
-                  // the constructor of the QGaussLogR
-                  // class, which adds additional
-                  // quadrature points and weights to
-                  // take into consideration also the
-                  // second part of the integral.
-                  //
-                  // A similar reasoning
-                  // should be done in the
-                  // three dimensional
-                  // case, since the
-                  // singular quadrature is
-                  // taylored on the
-                  // inverse of the radius
-                  // $r$ in the reference
-                  // cell, while our
-                  // singular function
-                  // lives in real space,
-                  // however in the three
-                  // dimensional case
-                  // everything is simpler
-                  // because the
-                  // singularity scales
-                  // linearly with the
-                  // determinant of the
-                  // transformation. This
-                  // allows us to build the
-                  // singular two
-                  // dimensional quadrature
-                  // rules once and for all
-                  // outside the loop over
-                  // all cells, using only
-                  // a pointer where needed.
-                  //
-                  // Notice that in one
-                  // dimensional
-                  // integration this is
-                  // not possible, since we
-                  // need to know the
-                  // scaling parameter for
-                  // the quadrature, which
-                  // is not known a
-                  // priori. Here, the
-                  // quadrature rule itself
-                  // depends also on the
-                  // size of the current
-                  // cell. For this reason,
-                  // it is necessary to
-                  // create a new
-                  // quadrature for each
-                  // singular
-                  // integration. Since we
-                  // create it using the
-                  // new operator of C++,
-                  // we also need to
-                  // destroy it using the
-                  // dual of new:
-                  // delete. This is done
-                  // at the end, and only
-                  // if dim == 2.
-                  //
-                  // Putting all this into a
-                  // dimension independent
-                  // framework requires a little
-                  // trick. The problem is that,
-                  // depending on dimension, we'd
-                  // like to either assign a
-                  // QGaussLogR<1> or a
-                  // QGaussOneOverR<2> to a
-                  // Quadrature<dim-1>. C++
-                  // doesn't allow this right
-                  // away, and neither is a
-                  // static_cast
-                  // possible. However, we can
-                  // attempt a dynamic_cast: the
-                  // implementation will then
-                  // look up at run time whether
-                  // the conversion is possible
-                  // (which we <em>know</em> it
-                  // is) and if that isn't the
-                  // case simply return a null
-                  // pointer. To be sure we can
-                  // then add a safety check at
-                  // the end:
-                  Assert(singular_index != numbers::invalid_unsigned_int,
-                         ExcInternalError());
-
-                  struct SingularRows
-                  {
-                    Vector<double> neumann;
-                    Vector<double> dirichlet;
-
-                    explicit SingularRows(const unsigned int size)
-                      : neumann(size)
-                      , dirichlet(size)
-                    {}
-                  };
-
-                  const auto integrate_singular =
-                    [&](const unsigned int order) -> SingularRows {
-                    Quadrature<dim - 1> singular_quadrature;
-                    if constexpr (dim == 3)
-                      singular_quadrature = QSplit<2>(
-                        QDuffy(order, 1.0),
-                        fe->get_unit_support_points()[singular_index]);
-                    else
-                      singular_quadrature = QTelles<1>(
-                        order, fe->get_unit_support_points()[singular_index]);
-
-                    FEValues<dim - 1, dim> singular_fe_values(
-                      *mapping,
-                      *fe,
-                      singular_quadrature,
-                      update_values | update_normal_vectors |
-                        update_quadrature_points | update_JxW_values);
-                    singular_fe_values.reinit(cell);
-
-                    SingularRows result(fe->dofs_per_cell);
-                    const auto  &singular_normals =
-                      singular_fe_values.get_normal_vectors();
-                    const auto &singular_points =
-                      singular_fe_values.get_quadrature_points();
-                    for (unsigned int q = 0; q < singular_quadrature.size();
-                         ++q)
-                      {
-                        const Tensor<1, dim> R =
-                          singular_points[q] - support_points[i];
-                        if (kernel_type == "laplace")
-                          LaplaceKernel::kernels(R, D, s);
-                        else if (kernel_type == "screened")
-                          ScreenedKernel::kernels(R, D, s, screened_kappa);
-                        else
-                          AssertThrow(false,
-                                      ExcMessage("Unknown kernel type: " +
-                                                 kernel_type));
-                        AssertThrow(std::isfinite(s) && is_finite_tensor(D),
-                                    ExcMessage("Non-finite singular kernel."));
-
-                        for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
-                          {
-                            const double shape_j =
-                              singular_fe_values.shape_value(j, q);
-                            const double weight = singular_fe_values.JxW(q);
-                            result.neumann[j] +=
-                              (D * singular_normals[q]) * shape_j * weight;
-                            result.dirichlet[j] += s * shape_j * weight;
-                          }
-                      }
-                    return result;
-                  };
-
-                  SingularRows singular_rows =
-                    integrate_singular(singular_quadrature_order);
-                  unsigned int used_order          = singular_quadrature_order;
-                  bool         neumann_converged   = !adaptive_quadrature;
-                  bool         dirichlet_converged = !adaptive_quadrature;
-                  QuadratureConvergenceState neumann_convergence_state;
-                  QuadratureConvergenceState dirichlet_convergence_state;
-                  while (adaptive_quadrature &&
-                         used_order < adaptive_quadrature_max_order)
-                    {
-                      const unsigned int next_order =
-                        next_adaptive_order(used_order,
-                                            adaptive_quadrature_max_order,
-                                            adaptive_quadrature_order_growth);
-                      SingularRows refined = integrate_singular(next_order);
-                      neumann_converged    = quadrature_vectors_converged(
-                        singular_rows.neumann,
-                        refined.neumann,
-                        adaptive_quadrature_relative_tolerance,
-                        adaptive_quadrature_absolute_tolerance,
-                        neumann_convergence_state);
-                      dirichlet_converged = quadrature_vectors_converged(
-                        singular_rows.dirichlet,
-                        refined.dirichlet,
-                        adaptive_quadrature_relative_tolerance,
-                        adaptive_quadrature_absolute_tolerance,
-                        dirichlet_convergence_state);
-                      singular_rows = std::move(refined);
-                      used_order    = next_order;
-                      if (neumann_converged && dirichlet_converged)
-                        break;
-                    }
-                  raise_largest_order(used_order);
-                  if (adaptive_quadrature && !neumann_converged)
-                    ++adaptive_unconverged_singular_neumann;
-                  if (adaptive_quadrature && !dirichlet_converged)
-                    ++adaptive_unconverged_singular_dirichlet;
-                  ++adaptive_singular_interactions;
-                  local_neumann_matrix_row_i += singular_rows.neumann;
-                  local_dirichlet_matrix_row_i += singular_rows.dirichlet;
-                } // end else
-            }
+            integrate_collocation_rows(cell,
+                                       local_dof_indices,
+                                       i,
+                                       support_points,
+                                       &fe_v,
+                                       neumann_rows[r],
+                                       dirichlet_rows[r],
+                                       statistics);
           } // end loop on rows
       };
       parallel::apply_to_subranges(std::size_t(0),
@@ -2715,28 +2193,30 @@ BEMProblem<dim>::assemble_system()
   if (adaptive_quadrature)
     {
       const unsigned int total_singular =
-        Utilities::MPI::sum(adaptive_singular_interactions.load(),
+        Utilities::MPI::sum(statistics.adaptive_singular_interactions.load(),
                             mpi_communicator);
-      const unsigned int total_quasi_neumann =
-        Utilities::MPI::sum(adaptive_quasi_neumann_interactions.load(),
-                            mpi_communicator);
-      const unsigned int total_quasi_dirichlet =
-        Utilities::MPI::sum(adaptive_quasi_dirichlet_interactions.load(),
-                            mpi_communicator);
+      const unsigned int total_quasi_neumann = Utilities::MPI::sum(
+        statistics.adaptive_quasi_neumann_interactions.load(),
+        mpi_communicator);
+      const unsigned int total_quasi_dirichlet = Utilities::MPI::sum(
+        statistics.adaptive_quasi_dirichlet_interactions.load(),
+        mpi_communicator);
       const unsigned int total_unconverged_singular_neumann =
-        Utilities::MPI::sum(adaptive_unconverged_singular_neumann.load(),
-                            mpi_communicator);
+        Utilities::MPI::sum(
+          statistics.adaptive_unconverged_singular_neumann.load(),
+          mpi_communicator);
       const unsigned int total_unconverged_singular_dirichlet =
-        Utilities::MPI::sum(adaptive_unconverged_singular_dirichlet.load(),
-                            mpi_communicator);
-      const unsigned int total_unconverged_quasi_neumann =
-        Utilities::MPI::sum(adaptive_unconverged_quasi_neumann.load(),
-                            mpi_communicator);
+        Utilities::MPI::sum(
+          statistics.adaptive_unconverged_singular_dirichlet.load(),
+          mpi_communicator);
+      const unsigned int total_unconverged_quasi_neumann = Utilities::MPI::sum(
+        statistics.adaptive_unconverged_quasi_neumann.load(), mpi_communicator);
       const unsigned int total_unconverged_quasi_dirichlet =
-        Utilities::MPI::sum(adaptive_unconverged_quasi_dirichlet.load(),
-                            mpi_communicator);
+        Utilities::MPI::sum(
+          statistics.adaptive_unconverged_quasi_dirichlet.load(),
+          mpi_communicator);
       const unsigned int largest_order =
-        Utilities::MPI::max(adaptive_largest_order_used.load(),
+        Utilities::MPI::max(statistics.adaptive_largest_order_used.load(),
                             mpi_communicator);
       pcout << "Adaptive quadrature interactions: singular " << total_singular
             << ", quasi Neumann " << total_quasi_neumann << ", quasi Dirichlet "
@@ -2764,6 +2244,516 @@ BEMProblem<dim>::assemble_system()
   //   std::cout<<std::endl;
   // }
 }
+
+template <int dim>
+typename BEMProblem<dim>::CollocationRule
+BEMProblem<dim>::integrate_collocation_rows(
+  const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
+  const std::vector<types::global_dof_index> &local_dof_indices,
+  const types::global_dof_index               i,
+  const std::vector<Point<dim>>              &support_points,
+  const FEValues<dim - 1, dim>               *regular_values,
+  Vector<double>                             &local_neumann_matrix_row_i,
+  Vector<double>                             &local_dirichlet_matrix_row_i,
+  CollocationRuleStatistics                  &statistics) const
+{
+  Point<dim> D;
+  double     s;
+  local_neumann_matrix_row_i   = 0;
+  local_dirichlet_matrix_row_i = 0;
+  Point<dim>     singularity   = support_points[i];
+  Point<dim - 1> ref_projection(0.0, 0.0);
+  bool           is_singular    = false;
+  unsigned int   singular_index = numbers::invalid_unsigned_int;
+
+  for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+    // if(local_dof_indices[j] == i)
+    if (double_nodes_set[i].count(local_dof_indices[j]) > 0)
+      {
+        singular_index = j;
+        is_singular    = true;
+        break;
+      }
+
+  bool   is_quasi_singular = false;
+  double distance_ratio    = std::numeric_limits<double>::infinity();
+  if (is_singular == false)
+    {
+      Point<dim>   singularity    = support_points[i];
+      const double dist_to_center = (singularity - cell->center()).norm();
+      const double h              = cell->diameter();
+      if (dist_to_center <= (quasi_singular_distance_ratio + 1.0) * h)
+        {
+          QuasiSingularKernelIntegral<dim> qski(cell,
+                                                *fe,
+                                                *mapping,
+                                                singularity);
+          ref_projection            = qski.get_closest_reference_point();
+          const double dist_to_cell = qski.min_distance;
+
+          distance_ratio = dist_to_cell / h;
+          if (distance_ratio < quasi_singular_distance_ratio)
+            is_quasi_singular = true;
+        }
+    }
+
+  // We then perform the
+  // integral. If the index $i$
+  // is not one of the local
+  // degrees of freedom, we
+  // simply have to add the
+  // single layer terms to the
+  // right hand side, and the
+  // double layer terms to the
+  // matrix:
+  if ((is_singular == false) && (is_quasi_singular == false))
+    {
+      if (regular_values == nullptr)
+        return CollocationRule::regular;
+      const FEValues<dim - 1, dim>  &fe_v        = *regular_values;
+      const std::vector<Point<dim>> &q_points    = fe_v.get_quadrature_points();
+      const std::vector<Tensor<1, dim>> &normals = fe_v.get_normal_vectors();
+      const unsigned int                 n_q_points = fe_v.n_quadrature_points;
+      for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+          const Tensor<1, dim> R = q_points[q] - support_points[i];
+          if (kernel_type == "laplace")
+            LaplaceKernel::kernels(R, D, s);
+          else if (kernel_type == "screened")
+            ScreenedKernel::kernels(R, D, s, screened_kappa);
+          else
+            AssertThrow(false,
+                        ExcMessage("Unknown kernel type: " + kernel_type));
+          AssertThrow(std::isfinite(s) && is_finite_tensor(D),
+                      ExcMessage("Non-finite screened kernel in regular "
+                                 "assembly."));
+          // if(support_points[i][0]==0.25&&support_points[i][1]==0.25)
+          //   pcout<<"D "<<D<<" s "<<s<<" , ";
+          for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+            {
+              local_neumann_matrix_row_i(j) +=
+                ((D * normals[q]) * fe_v.shape_value(j, q) * fe_v.JxW(q));
+              local_dirichlet_matrix_row_i(j) +=
+                (s * fe_v.shape_value(j, q) * fe_v.JxW(q));
+            }
+        }
+    }
+  else if (is_quasi_singular == true)
+    {
+      const auto integrate_quasi_singular =
+        [&](const unsigned int exponent,
+            const unsigned int order) -> Vector<double> {
+        const Quadrature<dim - 1> transformed_quadrature =
+          get_quasi_singular_quadrature(cell,
+                                        *mapping,
+                                        singularity,
+                                        ref_projection,
+                                        exponent,
+                                        order,
+                                        distance_ratio);
+        AssertThrow(transformed_quadrature.size() > 0,
+                    ExcMessage("Empty quasi-singular quadrature."));
+        FEValues<dim - 1, dim> transformed_fe_values(
+          *mapping,
+          *fe,
+          transformed_quadrature,
+          update_values | update_normal_vectors | update_quadrature_points |
+            update_JxW_values);
+        transformed_fe_values.reinit(cell);
+
+        Vector<double> result(fe->dofs_per_cell);
+        const auto    &transformed_points =
+          transformed_fe_values.get_quadrature_points();
+        const auto &transformed_normals =
+          transformed_fe_values.get_normal_vectors();
+        for (unsigned int q = 0; q < transformed_quadrature.size(); ++q)
+          {
+            const Tensor<1, dim> R = transformed_points[q] - support_points[i];
+            if (kernel_type == "laplace")
+              LaplaceKernel::kernels(R, D, s);
+            else if (kernel_type == "screened")
+              ScreenedKernel::kernels(R, D, s, screened_kappa);
+            else
+              AssertThrow(false,
+                          ExcMessage("Unknown kernel type: " + kernel_type));
+            AssertThrow(std::isfinite(s) && is_finite_tensor(D),
+                        ExcMessage("Non-finite quasi-singular kernel."));
+            for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+              result[j] += (exponent == 2 ? D * transformed_normals[q] : s) *
+                           transformed_fe_values.shape_value(j, q) *
+                           transformed_fe_values.JxW(q);
+          }
+        return result;
+      };
+
+      const auto adapt_quasi_singular =
+        [&](const unsigned int exponent,
+            const unsigned int initial_order) -> Vector<double> {
+        Vector<double> result =
+          integrate_quasi_singular(exponent, initial_order);
+        QuadratureConvergenceState convergence_state;
+        unsigned int               used_order = initial_order;
+        bool                       converged  = !adaptive_quadrature;
+        while (adaptive_quadrature &&
+               used_order < adaptive_quadrature_max_order)
+          {
+            const unsigned int next_order =
+              next_adaptive_order(used_order,
+                                  adaptive_quadrature_max_order,
+                                  adaptive_quadrature_order_growth);
+            Vector<double> refined =
+              integrate_quasi_singular(exponent, next_order);
+            converged = quadrature_vectors_converged(
+              result,
+              refined,
+              adaptive_quadrature_relative_tolerance,
+              adaptive_quadrature_absolute_tolerance,
+              convergence_state);
+            result.swap(refined);
+            used_order = next_order;
+            if (converged)
+              break;
+          }
+        statistics.raise_largest_order(used_order);
+        if (adaptive_quadrature && !converged)
+          {
+            if (exponent == 2)
+              ++statistics.adaptive_unconverged_quasi_neumann;
+            else
+              ++statistics.adaptive_unconverged_quasi_dirichlet;
+          }
+        return result;
+      };
+
+      local_neumann_matrix_row_i +=
+        adapt_quasi_singular(2, quasi_singular_neumann_quadrature_order);
+      ++statistics.adaptive_quasi_neumann_interactions;
+      local_dirichlet_matrix_row_i +=
+        adapt_quasi_singular(1, quasi_singular_dirichlet_quadrature_order);
+      ++statistics.adaptive_quasi_dirichlet_interactions;
+    }
+  else
+    {
+      // Now we treat the more
+      // delicate case. If we
+      // are here, this means
+      // that the cell that
+      // runs on the $j$ index
+      // contains
+      // support_point[i]. In
+      // this case both the
+      // single and the double
+      // layer potential are
+      // singular, and they
+      // require special
+      // treatment.
+      //
+      // Whenever the
+      // integration is
+      // performed with the
+      // singularity inside the
+      // given cell, then a
+      // special quadrature
+      // formula is used that
+      // allows one to
+      // integrate arbitrary
+      // functions against a
+      // singular weight on the
+      // reference cell.
+      // Notice that singular
+      // integration requires a
+      // careful selection of
+      // the quadrature
+      // rules. In particular
+      // the deal.II library
+      // provides quadrature
+      // rules which are
+      // taylored for
+      // logarithmic
+      // singularities
+      // (QGaussLog,
+      // QGaussLogR), as well
+      // as for 1/R
+      // singularities
+      // (QGaussOneOverR).
+      //
+      // Singular integration
+      // is typically obtained
+      // by constructing
+      // weighted quadrature
+      // formulas with singular
+      // weights, so that it is
+      // possible to write
+      //
+      // \f[
+      //   \int_K f(x) s(x) dx = \sum_{i=1}^N w_i f(q_i)
+      // \f]
+      //
+      // where $s(x)$ is a given
+      // singularity, and the weights
+      // and quadrature points
+      // $w_i,q_i$ are carefully
+      // selected to make the formula
+      // above an equality for a
+      // certain class of functions
+      // $f(x)$.
+      //
+      // In all the finite
+      // element examples we
+      // have seen so far, the
+      // weight of the
+      // quadrature itself
+      // (namely, the function
+      // $s(x)$), was always
+      // constantly equal to 1.
+      // For singular
+      // integration, we have
+      // two choices: we can
+      // use the definition
+      // above, factoring out
+      // the singularity from
+      // the integrand (i.e.,
+      // integrating $f(x)$
+      // with the special
+      // quadrature rule), or
+      // we can ask the
+      // quadrature rule to
+      // "normalize" the
+      // weights $w_i$ with
+      // $s(q_i)$:
+      //
+      // \f[
+      //   \int_K f(x) s(x) dx =
+      //   \int_K g(x) dx = \sum_{i=1}^N \frac{w_i}{s(q_i)} g(q_i)
+      // \f]
+      //
+      // We use this second
+      // option, through the @p
+      // factor_out_singularity
+      // parameter of both
+      // QGaussLogR and
+      // QGaussOneOverR.
+      //
+      // These integrals are
+      // somewhat delicate,
+      // especially in two
+      // dimensions, due to the
+      // transformation from
+      // the real to the
+      // reference cell, where
+      // the variable of
+      // integration is scaled
+      // with the determinant
+      // of the transformation.
+      //
+      // In two dimensions this
+      // process does not
+      // result only in a
+      // factor appearing as a
+      // constant factor on the
+      // entire integral, but
+      // also on an additional
+      // integral alltogether
+      // that needs to be
+      // evaluated:
+      //
+      // \f[
+      //  \int_0^1 f(x)\ln(x/\alpha) dx =
+      //  \int_0^1 f(x)\ln(x) dx - \int_0^1 f(x) \ln(\alpha) dx.
+      // \f]
+      //
+      // This process is taken care of by
+      // the constructor of the QGaussLogR
+      // class, which adds additional
+      // quadrature points and weights to
+      // take into consideration also the
+      // second part of the integral.
+      //
+      // A similar reasoning
+      // should be done in the
+      // three dimensional
+      // case, since the
+      // singular quadrature is
+      // taylored on the
+      // inverse of the radius
+      // $r$ in the reference
+      // cell, while our
+      // singular function
+      // lives in real space,
+      // however in the three
+      // dimensional case
+      // everything is simpler
+      // because the
+      // singularity scales
+      // linearly with the
+      // determinant of the
+      // transformation. This
+      // allows us to build the
+      // singular two
+      // dimensional quadrature
+      // rules once and for all
+      // outside the loop over
+      // all cells, using only
+      // a pointer where needed.
+      //
+      // Notice that in one
+      // dimensional
+      // integration this is
+      // not possible, since we
+      // need to know the
+      // scaling parameter for
+      // the quadrature, which
+      // is not known a
+      // priori. Here, the
+      // quadrature rule itself
+      // depends also on the
+      // size of the current
+      // cell. For this reason,
+      // it is necessary to
+      // create a new
+      // quadrature for each
+      // singular
+      // integration. Since we
+      // create it using the
+      // new operator of C++,
+      // we also need to
+      // destroy it using the
+      // dual of new:
+      // delete. This is done
+      // at the end, and only
+      // if dim == 2.
+      //
+      // Putting all this into a
+      // dimension independent
+      // framework requires a little
+      // trick. The problem is that,
+      // depending on dimension, we'd
+      // like to either assign a
+      // QGaussLogR<1> or a
+      // QGaussOneOverR<2> to a
+      // Quadrature<dim-1>. C++
+      // doesn't allow this right
+      // away, and neither is a
+      // static_cast
+      // possible. However, we can
+      // attempt a dynamic_cast: the
+      // implementation will then
+      // look up at run time whether
+      // the conversion is possible
+      // (which we <em>know</em> it
+      // is) and if that isn't the
+      // case simply return a null
+      // pointer. To be sure we can
+      // then add a safety check at
+      // the end:
+      Assert(singular_index != numbers::invalid_unsigned_int,
+             ExcInternalError());
+
+      struct SingularRows
+      {
+        Vector<double> neumann;
+        Vector<double> dirichlet;
+
+        explicit SingularRows(const unsigned int size)
+          : neumann(size)
+          , dirichlet(size)
+        {}
+      };
+
+      const auto integrate_singular =
+        [&](const unsigned int order) -> SingularRows {
+        Quadrature<dim - 1> singular_quadrature;
+        if constexpr (dim == 3)
+          singular_quadrature =
+            QSplit<2>(QDuffy(order, 1.0),
+                      fe->get_unit_support_points()[singular_index]);
+        else
+          singular_quadrature =
+            QTelles<1>(order, fe->get_unit_support_points()[singular_index]);
+
+        FEValues<dim - 1, dim> singular_fe_values(*mapping,
+                                                  *fe,
+                                                  singular_quadrature,
+                                                  update_values |
+                                                    update_normal_vectors |
+                                                    update_quadrature_points |
+                                                    update_JxW_values);
+        singular_fe_values.reinit(cell);
+
+        SingularRows result(fe->dofs_per_cell);
+        const auto  &singular_normals = singular_fe_values.get_normal_vectors();
+        const auto  &singular_points =
+          singular_fe_values.get_quadrature_points();
+        for (unsigned int q = 0; q < singular_quadrature.size(); ++q)
+          {
+            const Tensor<1, dim> R = singular_points[q] - support_points[i];
+            if (kernel_type == "laplace")
+              LaplaceKernel::kernels(R, D, s);
+            else if (kernel_type == "screened")
+              ScreenedKernel::kernels(R, D, s, screened_kappa);
+            else
+              AssertThrow(false,
+                          ExcMessage("Unknown kernel type: " + kernel_type));
+            AssertThrow(std::isfinite(s) && is_finite_tensor(D),
+                        ExcMessage("Non-finite singular kernel."));
+
+            for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+              {
+                const double shape_j = singular_fe_values.shape_value(j, q);
+                const double weight  = singular_fe_values.JxW(q);
+                result.neumann[j] +=
+                  (D * singular_normals[q]) * shape_j * weight;
+                result.dirichlet[j] += s * shape_j * weight;
+              }
+          }
+        return result;
+      };
+
+      SingularRows singular_rows =
+        integrate_singular(singular_quadrature_order);
+      unsigned int               used_order        = singular_quadrature_order;
+      bool                       neumann_converged = !adaptive_quadrature;
+      bool                       dirichlet_converged = !adaptive_quadrature;
+      QuadratureConvergenceState neumann_convergence_state;
+      QuadratureConvergenceState dirichlet_convergence_state;
+      while (adaptive_quadrature && used_order < adaptive_quadrature_max_order)
+        {
+          const unsigned int next_order =
+            next_adaptive_order(used_order,
+                                adaptive_quadrature_max_order,
+                                adaptive_quadrature_order_growth);
+          SingularRows refined = integrate_singular(next_order);
+          neumann_converged =
+            quadrature_vectors_converged(singular_rows.neumann,
+                                         refined.neumann,
+                                         adaptive_quadrature_relative_tolerance,
+                                         adaptive_quadrature_absolute_tolerance,
+                                         neumann_convergence_state);
+          dirichlet_converged =
+            quadrature_vectors_converged(singular_rows.dirichlet,
+                                         refined.dirichlet,
+                                         adaptive_quadrature_relative_tolerance,
+                                         adaptive_quadrature_absolute_tolerance,
+                                         dirichlet_convergence_state);
+          singular_rows = std::move(refined);
+          used_order    = next_order;
+          if (neumann_converged && dirichlet_converged)
+            break;
+        }
+      statistics.raise_largest_order(used_order);
+      if (adaptive_quadrature && !neumann_converged)
+        ++statistics.adaptive_unconverged_singular_neumann;
+      if (adaptive_quadrature && !dirichlet_converged)
+        ++statistics.adaptive_unconverged_singular_dirichlet;
+      ++statistics.adaptive_singular_interactions;
+      local_neumann_matrix_row_i += singular_rows.neumann;
+      local_dirichlet_matrix_row_i += singular_rows.dirichlet;
+    } // end else
+  return is_singular       ? CollocationRule::singular :
+         is_quasi_singular ? CollocationRule::quasi_singular :
+                             CollocationRule::regular;
+}
+
 
 template <int dim>
 void
@@ -3398,8 +3388,7 @@ BEMProblem<dim>::compute_alpha()
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      fma.generate_multipole_expansions(ones, zeros);
-      fma.multipole_matr_vect_products(ones, zeros, alpha, dummy);
+      collocation_fmm_products(ones, zeros, alpha, dummy);
     }
 }
 
@@ -3613,8 +3602,7 @@ BEMProblem<dim>::compute_alpha(const double kappa)
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      fma.generate_multipole_expansions(ones, zeros);
-      fma.multipole_matr_vect_products(ones, zeros, alpha, dum);
+      collocation_fmm_products(ones, zeros, alpha, dum);
     }
 
   // fill hanging node values by interpolating from master dofs
@@ -3684,11 +3672,10 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
           matrVectProdD.reinit(this_cpu_set, mpi_communicator);
         }
 
-      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
-      fma.multipole_matr_vect_products(serv_phi,
-                                       serv_dphi_dn,
-                                       matrVectProdN,
-                                       matrVectProdD);
+      collocation_fmm_products(serv_phi,
+                               serv_dphi_dn,
+                               matrVectProdN,
+                               matrVectProdD);
 
       dst.add(-1, matrVectProdD, 1, matrVectProdN);
     }
@@ -3823,17 +3810,15 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
         }
 
       // now, products between the plain matrices and the spiked vectors
-      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
-      fma.multipole_matr_vect_products(serv_phi,
-                                       serv_dphi_dn,
-                                       matrVectProdN,
-                                       matrVectProdD);
+      collocation_fmm_products(serv_phi,
+                               serv_dphi_dn,
+                               matrVectProdN,
+                               matrVectProdD);
 
-      fma.generate_multipole_expansions(serv_phi_imag, serv_dphi_dn_imag);
-      fma.multipole_matr_vect_products(serv_phi_imag,
-                                       serv_dphi_dn_imag,
-                                       matrVectProdN_imag,
-                                       matrVectProdD_imag);
+      collocation_fmm_products(serv_phi_imag,
+                               serv_dphi_dn_imag,
+                               matrVectProdN_imag,
+                               matrVectProdD_imag);
 
       dst.add(-1, matrVectProdD, 1, matrVectProdN);
       dst_imag.add(-1, matrVectProdD_imag, 1, matrVectProdN_imag);
@@ -3941,7 +3926,6 @@ BEMProblem<dim>::compute_rhs(TrilinosWrappers::MPI::Vector       &dst,
       // The Robin datum before the expansions: the far field needs it as
       // well as the near field.
       serv_dphi_dn += serv_phi_robin;
-      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
 
       static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
                                                          mpi_communicator);
@@ -3953,10 +3937,10 @@ BEMProblem<dim>::compute_rhs(TrilinosWrappers::MPI::Vector       &dst,
           matrVectProdD.reinit(this_cpu_set, mpi_communicator);
         }
 
-      fma.multipole_matr_vect_products(serv_phi,
-                                       serv_dphi_dn,
-                                       matrVectProdN,
-                                       matrVectProdD);
+      collocation_fmm_products(serv_phi,
+                               serv_dphi_dn,
+                               matrVectProdN,
+                               matrVectProdD);
       dst += matrVectProdN;
       TrilinosWrappers::MPI::Vector jump_term(this_cpu_set, mpi_communicator);
       apply_jump_term(jump_term, serv_phi);
@@ -4038,17 +4022,15 @@ BEMProblem<dim>::compute_rhs(
           matrVectProdD_imag.reinit(this_cpu_set, mpi_communicator);
         }
 
-      fma.generate_multipole_expansions(serv_phi, serv_dphi_dn);
-      fma.multipole_matr_vect_products(serv_phi,
-                                       serv_dphi_dn,
-                                       matrVectProdN,
-                                       matrVectProdD);
+      collocation_fmm_products(serv_phi,
+                               serv_dphi_dn,
+                               matrVectProdN,
+                               matrVectProdD);
 
-      fma.generate_multipole_expansions(serv_phi_imag, serv_dphi_dn_imag);
-      fma.multipole_matr_vect_products(serv_phi_imag,
-                                       serv_dphi_dn_imag,
-                                       matrVectProdN_imag,
-                                       matrVectProdD_imag);
+      collocation_fmm_products(serv_phi_imag,
+                               serv_dphi_dn_imag,
+                               matrVectProdN_imag,
+                               matrVectProdD_imag);
 
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
@@ -4525,11 +4507,12 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
         SolverGMRES<TrilinosWrappers::MPI::Vector>::AdditionalData(100));
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      TrilinosWrappers::PreconditionILU &fma_preconditioner =
-        fma.FMA_preconditioner(alpha, constraints);
+      TrilinosWrappers::PreconditionBase &fma_preconditioner =
+        assemble_fmm_preconditioner();
       solver.solve(cc, sol, system_rhs, fma_preconditioner);
       pcout << "GMRES iterations: " << solver_control.last_step()
             << ", final residual: " << solver_control.last_value() << std::endl;
+      collocation_fmm.print_statistics(pcout.get_stream());
     }
 
   TrilinosWrappers::MPI::Vector unpreconditioned_residual(this_cpu_set,
@@ -4622,7 +4605,7 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      auto &fma_preconditioner = fma.FMA_preconditioner(alpha, constraints);
+      auto &fma_preconditioner = assemble_fmm_preconditioner();
       auto  precond = BlockPreconditioner<TrilinosWrappers::PreconditionBase>(
         fma_preconditioner);
 
@@ -4632,6 +4615,8 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
 
   pcout << "Solve terminated at step " << solver_control.last_step()
         << std::endl;
+  if (solution_method == "FMA")
+    collocation_fmm.print_statistics(pcout.get_stream());
 
   for (auto i : this_cpu_set)
     {
@@ -4795,10 +4780,7 @@ BEMProblem<dim>::solve(TrilinosWrappers::MPI::Vector       &phi,
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      fma.generate_octree_blocking();
-      // fma.compute_m2l_flags();
-      fma.direct_integrals();
-      fma.multipole_integrals();
+      setup_collocation_fmm();
     }
 
   solve_system(phi, dphi_dn, tmp_rhs);
@@ -4875,9 +4857,7 @@ BEMProblem<dim>::solve(
         {
           AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-          fma.generate_octree_blocking();
-          fma.direct_integrals();
-          fma.multipole_integrals();
+          setup_collocation_fmm();
         }
     }
 
@@ -5243,6 +5223,129 @@ BEMProblem<dim>::assemble_preconditioner()
       preconditioner.initialize(band_system);
     }
 }
+
+template <int dim>
+void
+BEMProblem<dim>::setup_collocation_fmm()
+{
+  if constexpr (dim == 3)
+    {
+      Teuchos::TimeMonitor       LocalTimer(*AssembleTime);
+      LaplaceFMM::AdditionalData data;
+      data.order               = fma.truncation_order();
+      data.theta               = fma.opening_criterion();
+      data.max_points_per_leaf = fma.points_per_leaf();
+      data.kappa = kernel_type == "screened" ? screened_kappa : 0.;
+      pcout << "Setting up the collocation FMM: order " << data.order
+            << ", opening criterion " << data.theta << ", at most "
+            << data.max_points_per_leaf << " points per leaf" << std::endl;
+      std::vector<Point<dim>> support_points(dh.n_dofs());
+      DoFTools::map_dofs_to_support_points<dim - 1, dim>(*mapping,
+                                                         dh,
+                                                         support_points);
+      // The rows of the dense assembly on the near cells; the regular ones
+      // are those of the point sums.
+      CollocationRuleStatistics statistics;
+      collocation_fmm.reinit(
+        dh,
+        *mapping,
+        *quadrature,
+        support_points,
+        this_cpu_set,
+        quasi_singular_distance_ratio,
+        [&](const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
+            const std::vector<types::global_dof_index>                    &dofs,
+            const types::global_dof_index                                  i,
+            Vector<double> &neumann_row,
+            Vector<double> &dirichlet_row) {
+          return integrate_collocation_rows(cell,
+                                            dofs,
+                                            i,
+                                            support_points,
+                                            nullptr,
+                                            neumann_row,
+                                            dirichlet_row,
+                                            statistics) !=
+                 CollocationRule::regular;
+        },
+        data);
+    }
+  else
+    AssertThrow(false, ExcMessage("FMA only works in 3D"));
+}
+
+
+
+template <int dim>
+void
+BEMProblem<dim>::collocation_fmm_products(
+  const TrilinosWrappers::MPI::Vector &phi,
+  const TrilinosWrappers::MPI::Vector &dphi_dn,
+  TrilinosWrappers::MPI::Vector       &neumann,
+  TrilinosWrappers::MPI::Vector       &dirichlet) const
+{
+  AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
+  collocation_fmm.vmult(phi, dphi_dn, neumann, dirichlet);
+}
+
+
+
+template <int dim>
+TrilinosWrappers::PreconditionBase &
+BEMProblem<dim>::assemble_fmm_preconditioner()
+{
+  Teuchos::TimeMonitor LocalTimer(*AssembleTime);
+  // The entries of assemble_preconditioner() on the near band: the double
+  // layer and the free term on the columns of the unknown potential (with
+  // the Robin flux -(a/b) u), minus the single layer on those of the
+  // unknown flux.
+  const Vector<double> column_dirichlet_nodes(dirichlet_nodes);
+  const Vector<double> column_robin_nodes(robin_nodes);
+  const Vector<double> column_robin_diagonal(robin_matrix_diagonal);
+  const TrilinosWrappers::SparseMatrix &band_n = collocation_fmm.band_neumann();
+  const TrilinosWrappers::SparseMatrix &band_d =
+    collocation_fmm.band_dirichlet();
+  fmm_band_system.reinit(band_n);
+  fmm_band_system = 0;
+  for (const auto i : this_cpu_set)
+    {
+      if (constraints.is_constrained(i))
+        {
+          fmm_band_system.set(i, i, 1.);
+          continue;
+        }
+      auto d = band_d.begin(i);
+      for (auto n = band_n.begin(i); n != band_n.end(i); ++n, ++d)
+        {
+          const types::global_dof_index j = n->column();
+          Assert(d->column() == j, ExcInternalError());
+          double value;
+          if (column_dirichlet_nodes(j) == 0)
+            {
+              value = n->value();
+              if (column_robin_nodes(j) == 1)
+                value += d->value() * column_robin_diagonal(j);
+              if (i == j)
+                value += alpha(i);
+            }
+          else
+            value = -d->value();
+          fmm_band_system.set(i, j, value);
+        }
+    }
+  fmm_band_system.compress(VectorOperation::insert);
+  if (preconditioner_type == "AMG")
+    {
+      TrilinosWrappers::PreconditionAMG::AdditionalData data;
+      data.higher_order_elements = fe->degree > 1;
+      preconditioner_amg.initialize(fmm_band_system, data);
+      return preconditioner_amg;
+    }
+  preconditioner.initialize(fmm_band_system);
+  return preconditioner;
+}
+
+
 
 template <int dim>
 void
