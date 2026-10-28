@@ -2,9 +2,10 @@ name: Indent
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, fmm-galerkin ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, fmm-galerkin ]
+  workflow_dispatch:
 
 jobs:
   build:
