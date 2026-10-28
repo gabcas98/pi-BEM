@@ -16,6 +16,7 @@ jobs:
       run: docker build -f docker/Dockerfile.ci -t pi-bem-ci:9.8.0 .
     - name: Test Debug and Release without compiler warnings
       run: |
+        set -o pipefail
         docker run --rm \
           -e OMPI_ALLOW_RUN_AS_ROOT=1 -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
           -v "$PWD:/workspace" -w /workspace pi-bem-ci:9.8.0 bash -lc '
@@ -29,4 +30,24 @@ jobs:
             test -x build-docker/9.8.0-ci/bem_fma_3d.g
             cd build-docker/9.8.0-ci
             ctest --output-on-failure
-          '
+          ' 2>&1 | tee ci.log
+    # Only members of the repository can read the log of a job; annotations
+    # are public, and show next to the changes of a pull request.
+    - name: Report the first compiler error and the failed tests
+      if: failure()
+      run: |
+        annotate() {
+          echo "::error title=$1::$(sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+        }
+        first=$(grep -n -m 1 -E 'error:|warning:|CMake Error' ci.log | cut -d: -f1)
+        if [ -n "$first" ]; then
+          start=$(( first > 15 ? first - 15 : 1 ))
+          sed -n "${start},$(( first + 45 ))p" ci.log | annotate "First compiler error"
+        fi
+        if grep -q 'The following tests FAILED' ci.log; then
+          sed -n '/The following tests FAILED/,$p' ci.log | head -40 | annotate "Failed tests"
+          grep -A 25 -E 'DIFF failed|RUN failed' ci.log | head -150 | annotate "Test output"
+        fi
+        if [ -z "$first" ] && ! grep -q 'The following tests FAILED' ci.log; then
+          tail -60 ci.log | annotate "End of the log"
+        fi
