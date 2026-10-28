@@ -290,7 +290,8 @@ LaplaceFMM::build_tree()
         }
     }
 
-  // In each leaf the targets first, up to target_end.
+  // In each leaf the targets first, up to target_end; the targets of each
+  // subtree, summed from the leaves up (children follow their parents).
   for (auto &box : boxes)
     {
       box.target_end = box.end;
@@ -301,7 +302,16 @@ LaplaceFMM::build_tree()
                                                  return target_flags[i];
                                                }) -
                          permutation.begin();
+      box.n_targets = box.is_leaf() ? box.target_end - box.begin : 0;
     }
+  for (std::size_t b = boxes.size(); b-- > 1;)
+    boxes[boxes[b].parent].n_targets += boxes[b].n_targets;
+  target_positions.clear();
+  if (!target_flags.empty())
+    for (const auto &box : boxes)
+      if (box.is_leaf())
+        for (unsigned int i = box.begin; i < box.target_end; ++i)
+          target_positions.push_back(i);
 
   sorted_points.resize(n);
   for (unsigned int i = 0; i < n; ++i)
@@ -328,6 +338,8 @@ LaplaceFMM::traverse(const unsigned int a, const unsigned int b)
 {
   const Box &A = boxes[a];
   const Box &B = boxes[b];
+  if (A.n_targets == 0)
+    return;
   if (a == b)
     {
       if (A.is_leaf())
@@ -462,6 +474,10 @@ LaplaceFMM::distribute_work() const
       if (boxes[b].is_leaf() && owner[b] == this_mpi_process)
         my_leaves.push_back(b);
     }
+  my_target_boxes.clear();
+  for (const unsigned int b : my_boxes)
+    if (boxes[b].n_targets > 0)
+      my_target_boxes.push_back(b);
   my_m2l_pairs.clear();
   for (const auto &pair : m2l_pairs)
     if (owner[pair.first] == this_mpi_process || owner[pair.first] == invalid)
@@ -1120,7 +1136,7 @@ LaplaceFMM::complex_locals(LE::complex *L, const unsigned int k) const
   const std::size_t   n_boxes = boxes.size();
   std::vector<double> real(nr);
   for (unsigned int s = 0; s < k; ++s)
-    for (const unsigned int b : my_boxes)
+    for (const unsigned int b : my_target_boxes)
       {
         LE::complex *const Lb = L + (s * n_boxes + b) * nc;
         const double      *Lr = reinterpret_cast<const double *>(Lb);
@@ -1313,7 +1329,7 @@ LaplaceFMM::far_field_laplace_multiple(
   for (unsigned int s = 0; s < k; ++s)
     {
       LE::complex *Ls = &L[s * n_boxes * nc];
-      for (const unsigned int b : my_boxes)
+      for (const unsigned int b : my_target_boxes)
         if (boxes[b].parent != invalid)
           {
             const Box &box = boxes[b];
@@ -1417,11 +1433,38 @@ LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
                           const std::vector<std::vector<Tensor<1, 3>>> &dipoles,
                           std::vector<std::vector<double>> &potentials) const
 {
-  const unsigned int kq = charges.size(), kd = dipoles.size(), k = kq + kd;
-  const unsigned int n = points.size();
-  AssertThrow(k >= 1 && kq <= 8 && kd <= 4,
+  const unsigned int k = charges.size() + dipoles.size();
+  AssertThrow(k >= 1 && charges.size() <= 8 && dipoles.size() <= 4,
               ExcMessage("At most eight sets of charges and four of "
                          "dipoles at once."));
+  evaluate_sets(charges, dipoles, potentials, false);
+}
+
+
+
+void
+LaplaceFMM::evaluate_combined_sets(
+  const std::vector<std::vector<double>>       &charges,
+  const std::vector<std::vector<Tensor<1, 3>>> &dipoles,
+  std::vector<std::vector<double>>             &potentials) const
+{
+  AssertThrow(charges.size() == dipoles.size() && charges.size() >= 1 &&
+                charges.size() <= 4,
+              ExcMessage("One to four sets of charges and as many of "
+                         "dipoles."));
+  evaluate_sets(charges, dipoles, potentials, true);
+}
+
+
+
+void
+LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
+                          const std::vector<std::vector<Tensor<1, 3>>> &dipoles,
+                          std::vector<std::vector<double>> &potentials,
+                          const bool                        combined) const
+{
+  const unsigned int  kq = charges.size(), kd = dipoles.size(), k = kq + kd;
+  const unsigned int  n = points.size();
   std::vector<double> q(kq * n), d(3 * kd * n);
   for (unsigned int s = 0; s < kq; ++s)
     {
@@ -1439,26 +1482,26 @@ LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
           d[(3 * s + c) * n + i] = dipoles[s][permutation[i]][c];
     }
 
-  // The far field, set by set.
+  // The far field, set by set; combined, the charges and the dipoles of a
+  // set together.
   const std::array<double, 6> times_before = phase_time;
   std::vector<double>         u(k * n, 0.);
   {
     std::vector<double>       set_charges, set_potentials(n);
     std::vector<Tensor<1, 3>> set_dipoles;
-    for (unsigned int s = 0; s < k; ++s)
+    for (unsigned int s = 0; s < (combined ? kq : k); ++s)
       {
+        set_charges.clear();
+        set_dipoles.clear();
         if (s < kq)
+          set_charges.assign(q.begin() + s * n, q.begin() + (s + 1) * n);
+        if (s >= kq || combined)
           {
-            set_charges.assign(q.begin() + s * n, q.begin() + (s + 1) * n);
-            set_dipoles.clear();
-          }
-        else
-          {
-            set_charges.clear();
+            const unsigned int sd = combined ? s : s - kq;
             set_dipoles.resize(n);
             for (unsigned int i = 0; i < n; ++i)
               for (unsigned int c = 0; c < 3; ++c)
-                set_dipoles[i][c] = d[(3 * (s - kq) + c) * n + i];
+                set_dipoles[i][c] = d[(3 * sd + c) * n + i];
           }
         std::fill(set_potentials.begin(), set_potentials.end(), 0.);
         if (data.kappa > 0)
@@ -1483,15 +1526,43 @@ LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
   phase_time[4] += seconds_since(start);
 
   start = std::chrono::steady_clock::now();
-  std::vector<double> all(k * n, 0.);
-  for (unsigned int s = 0; s < k; ++s)
-    for (unsigned int i = 0; i < n; ++i)
-      all[s * n + permutation[i]] = u[s * n + i];
-  if (n_mpi_processes > 1)
-    sum_over_processes(all, mpi_communicator);
-  potentials.resize(k);
-  for (unsigned int s = 0; s < k; ++s)
-    potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+  // Combined, the direct interactions of the dipoles of each set join
+  // those of its charges.
+  const unsigned int k_out = combined ? kq : k;
+  if (combined)
+    for (unsigned int s = 0; s < kq; ++s)
+      for (unsigned int i = 0; i < n; ++i)
+        u[s * n + i] += u[(kq + s) * n + i];
+  potentials.resize(k_out);
+  if (target_flags.empty())
+    {
+      std::vector<double> all(k_out * n, 0.);
+      for (unsigned int s = 0; s < k_out; ++s)
+        for (unsigned int i = 0; i < n; ++i)
+          all[s * n + permutation[i]] = u[s * n + i];
+      if (n_mpi_processes > 1)
+        sum_over_processes(all, mpi_communicator);
+      for (unsigned int s = 0; s < k_out; ++s)
+        potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+    }
+  else
+    {
+      // The processes sum the potentials at the targets only, the others
+      // being zero.
+      const unsigned int  nt = target_positions.size();
+      std::vector<double> sums(k_out * nt);
+      for (unsigned int s = 0; s < k_out; ++s)
+        for (unsigned int t = 0; t < nt; ++t)
+          sums[s * nt + t] = u[s * n + target_positions[t]];
+      if (n_mpi_processes > 1)
+        sum_over_processes(sums, mpi_communicator);
+      for (unsigned int s = 0; s < k_out; ++s)
+        {
+          potentials[s].assign(n, 0.);
+          for (unsigned int t = 0; t < nt; ++t)
+            potentials[s][permutation[target_positions[t]]] = sums[s * nt + t];
+        }
+    }
   phase_time[5] += seconds_since(start);
   ++n_evaluations;
   if (n_evaluations == 1 && n_mpi_processes > 1)
@@ -2033,7 +2104,7 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
 
   // Downward pass and evaluation at the own points.
   start = std::chrono::steady_clock::now();
-  for (const unsigned int b : my_boxes)
+  for (const unsigned int b : my_target_boxes)
     if (boxes[b].parent != invalid)
       {
         const Box &box = boxes[b];
@@ -2181,7 +2252,7 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
 
   // Downward pass and evaluation at the own points.
   start = std::chrono::steady_clock::now();
-  for (const unsigned int b : my_boxes)
+  for (const unsigned int b : my_target_boxes)
     if (boxes[b].parent != invalid)
       {
         const Box    &box = boxes[b];

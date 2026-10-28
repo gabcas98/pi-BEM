@@ -17,8 +17,10 @@
 // kernel and for the screened one with kappa = 3 and 30: the boxes then
 // span up to about 2 and 20 screening lengths, and with kappa = 30 the
 // pairs of boxes more than 4/3 apart are dropped. Several sets of sources
-// at once, evaluate_multiple() and evaluate_sets(), against one at a time,
-// and the potentials at some of the points only.
+// at once, evaluate_multiple(), evaluate_sets() and
+// evaluate_combined_sets(), against one at a time, and the potentials at
+// some of the points of one sphere only, whose other boxes take no local
+// expansions.
 
 #include "laplace_fmm.h"
 
@@ -118,12 +120,33 @@ main(int argc, char **argv)
                   << ", two sets of charges and one of dipoles at once as "
                      "one at a time: "
                   << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
+
+          // Two sets, each of charges and dipoles together.
+          std::vector<Tensor<1, 3>> d2(points.size());
+          for (unsigned int i = 0; i < points.size(); ++i)
+            d2[i] = q[i] * normals[i];
+          fmm.evaluate_combined_sets({q, q2}, {d, d2}, sets);
+          fmm.evaluate(q, d, first);
+          fmm.evaluate(q2, d2, second);
+          deviation = 0;
+          size      = 0;
+          for (unsigned int i = 0; i < points.size(); ++i)
+            {
+              deviation = std::max({deviation,
+                                    std::abs(sets[0][i] - first[i]),
+                                    std::abs(sets[1][i] - second[i])});
+              size = std::max({size, std::abs(first[i]), std::abs(second[i])});
+            }
+          deallog << "kappa " << kappa << ", order " << order
+                  << ", two sets of charges and dipoles together as one at a "
+                     "time: "
+                  << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
         }
         {
-          // With every third point a target, the same potentials there and
-          // zero at the others.
+          // With every third point of the lower sphere (the even ones) a
+          // target, the same potentials there and zero at the others.
           std::vector<bool> targets(points.size());
-          for (unsigned int i = 0; i < points.size(); i += 3)
+          for (unsigned int i = 0; i < points.size(); i += 6)
             targets[i] = true;
           LaplaceFMM target_fmm;
           target_fmm.reinit(points, data, targets);
@@ -140,7 +163,8 @@ main(int argc, char **argv)
                 size      = std::max(size, std::abs(all[s][i]));
               }
           deallog << "kappa " << kappa << ", order " << order
-                  << ", potentials at a third of the points only: "
+                  << ", potentials at a third of the points of one sphere "
+                     "only: "
                   << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
         }
         if (kappa > 0)

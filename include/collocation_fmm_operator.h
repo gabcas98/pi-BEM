@@ -48,6 +48,8 @@ using namespace dealii;
  * support points as its only targets: the dipoles w_q phi(y_q) n_q / 4 pi
  * give N phi, whose kernel (x - y) . n_y / (4 pi |x - y|^3) is that of the
  * dense assembly, and the charges w_q dphi_dn(y_q) / 4 pi give D dphi_dn.
+ * The collocation takes only N phi - D dphi_dn, so that the dipoles and the
+ * charges, negated, share one evaluation.
  * On the cells where the dense assembly takes the singular or the
  * quasi-singular rule, its rows enter as sparse corrections: the rows of
  * that rule minus those of the regular rule, which the multipole method
@@ -97,12 +99,23 @@ public:
          const RowIntegrator              &rows,
          const LaplaceFMM::AdditionalData &fmm_data);
 
-  /// neumann = N phi and dirichlet = D dphi_dn on the own rows; collective.
+  /// dst = N phi - D dphi_dn on the own rows, the combination that the
+  /// collocation system and its right-hand side take, in one evaluation of
+  /// the charges and the dipoles together; collective.
   void
-  vmult(const TrilinosWrappers::MPI::Vector &phi,
-        const TrilinosWrappers::MPI::Vector &dphi_dn,
-        TrilinosWrappers::MPI::Vector       &neumann,
-        TrilinosWrappers::MPI::Vector       &dirichlet) const;
+  vmult(TrilinosWrappers::MPI::Vector       &dst,
+        const TrilinosWrappers::MPI::Vector &phi,
+        const TrilinosWrappers::MPI::Vector &dphi_dn) const;
+
+  /// The same for up to four pairs at once, dst[s] = N phi[s] - D
+  /// dphi_dn[s], such as the real and the imaginary part of a complex
+  /// problem: the direct interactions and the sums over the processes are
+  /// shared.
+  void
+  vmult(
+    const std::vector<TrilinosWrappers::MPI::Vector *>       &dst,
+    const std::vector<const TrilinosWrappers::MPI::Vector *> &phi,
+    const std::vector<const TrilinosWrappers::MPI::Vector *> &dphi_dn) const;
 
   /// The rows of N and of D on the near band.
   const TrilinosWrappers::SparseMatrix &

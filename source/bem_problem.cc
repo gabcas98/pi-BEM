@@ -3371,13 +3371,12 @@ BEMProblem<dim>::compute_alpha()
       return;
     }
 
-  static TrilinosWrappers::MPI::Vector ones, zeros, dummy;
+  static TrilinosWrappers::MPI::Vector ones, zeros;
   if (ones.size() != dh.n_dofs())
     {
       ones.reinit(this_cpu_set, mpi_communicator);
       vector_shift(ones, -1.);
       zeros.reinit(this_cpu_set, mpi_communicator);
-      dummy.reinit(this_cpu_set, mpi_communicator);
     }
 
   if (solution_method == "Direct")
@@ -3388,7 +3387,7 @@ BEMProblem<dim>::compute_alpha()
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      collocation_fmm_products(ones, zeros, alpha, dummy);
+      collocation_fmm.vmult(alpha, ones, zeros);
     }
 }
 
@@ -3424,13 +3423,12 @@ BEMProblem<dim>::compute_alpha(const double kappa)
     a[d] = kappa / (extent[d] * std::sqrt(sum_inv_sq));
 
   // original section, used in the last part
-  static TrilinosWrappers::MPI::Vector ones, zeros, dum;
+  static TrilinosWrappers::MPI::Vector ones, zeros;
   if (ones.size() != dh.n_dofs())
     {
       ones.reinit(this_cpu_set, mpi_communicator);
       vector_shift(ones, -1.);
       zeros.reinit(this_cpu_set, mpi_communicator);
-      dum.reinit(this_cpu_set, mpi_communicator);
     }
 
   // hanging node constraints matrix
@@ -3602,7 +3600,7 @@ BEMProblem<dim>::compute_alpha(const double kappa)
     {
       AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
 
-      collocation_fmm_products(ones, zeros, alpha, dum);
+      collocation_fmm.vmult(alpha, ones, zeros);
     }
 
   // fill hanging node values by interpolating from master dofs
@@ -3662,22 +3660,15 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
       serv_phi_robin.scale(robin_matrix_diagonal);
       serv_dphi_dn -= serv_phi_robin;
 
-      static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD(this_cpu_set,
-                                                         mpi_communicator);
-      if (matrVectProdN.size() != src.size())
-        {
-          matrVectProdN.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD.reinit(this_cpu_set, mpi_communicator);
-        }
+      // N phi - D dphi_dn
+      static TrilinosWrappers::MPI::Vector matrVectProd(this_cpu_set,
+                                                        mpi_communicator);
+      if (matrVectProd.size() != src.size())
+        matrVectProd.reinit(this_cpu_set, mpi_communicator);
 
-      collocation_fmm_products(serv_phi,
-                               serv_dphi_dn,
-                               matrVectProdN,
-                               matrVectProdD);
+      collocation_fmm.vmult(matrVectProd, serv_phi, serv_dphi_dn);
 
-      dst.add(-1, matrVectProdD, 1, matrVectProdN);
+      dst += matrVectProd;
     }
 
   if (boundary_integral_formulation == "collocation")
@@ -3793,35 +3784,23 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
       serv_phi_robin_imag.scale(robin_matrix_diagonal);
       serv_dphi_dn_imag.add(-1, serv_phi_robin, -1, serv_phi_robin_imag);
 
-      static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdN_imag(this_cpu_set,
-                                                              mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD_imag(this_cpu_set,
-                                                              mpi_communicator);
-      if (matrVectProdN.size() != src.size())
+      // N phi - D dphi_dn of both parts in one evaluation
+      static TrilinosWrappers::MPI::Vector matrVectProd(this_cpu_set,
+                                                        mpi_communicator);
+      static TrilinosWrappers::MPI::Vector matrVectProd_imag(this_cpu_set,
+                                                             mpi_communicator);
+      if (matrVectProd.size() != src.size())
         {
-          matrVectProdN.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdN_imag.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD_imag.reinit(this_cpu_set, mpi_communicator);
+          matrVectProd.reinit(this_cpu_set, mpi_communicator);
+          matrVectProd_imag.reinit(this_cpu_set, mpi_communicator);
         }
 
-      // now, products between the plain matrices and the spiked vectors
-      collocation_fmm_products(serv_phi,
-                               serv_dphi_dn,
-                               matrVectProdN,
-                               matrVectProdD);
+      collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
+                            {&serv_phi, &serv_phi_imag},
+                            {&serv_dphi_dn, &serv_dphi_dn_imag});
 
-      collocation_fmm_products(serv_phi_imag,
-                               serv_dphi_dn_imag,
-                               matrVectProdN_imag,
-                               matrVectProdD_imag);
-
-      dst.add(-1, matrVectProdD, 1, matrVectProdN);
-      dst_imag.add(-1, matrVectProdD_imag, 1, matrVectProdN_imag);
+      dst += matrVectProd;
+      dst_imag += matrVectProd_imag;
 
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
@@ -3927,26 +3906,18 @@ BEMProblem<dim>::compute_rhs(TrilinosWrappers::MPI::Vector       &dst,
       // well as the near field.
       serv_dphi_dn += serv_phi_robin;
 
-      static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD(this_cpu_set,
-                                                         mpi_communicator);
-      if (matrVectProdN.size() != src.size())
-        {
-          matrVectProdN.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD.reinit(this_cpu_set, mpi_communicator);
-        }
+      // N phi - D dphi_dn
+      static TrilinosWrappers::MPI::Vector matrVectProd(this_cpu_set,
+                                                        mpi_communicator);
+      if (matrVectProd.size() != src.size())
+        matrVectProd.reinit(this_cpu_set, mpi_communicator);
 
-      collocation_fmm_products(serv_phi,
-                               serv_dphi_dn,
-                               matrVectProdN,
-                               matrVectProdD);
-      dst += matrVectProdN;
+      collocation_fmm.vmult(matrVectProd, serv_phi, serv_dphi_dn);
+      dst += matrVectProd;
       TrilinosWrappers::MPI::Vector jump_term(this_cpu_set, mpi_communicator);
       apply_jump_term(jump_term, serv_phi);
       dst += jump_term;
       dst *= -1;
-      dst += matrVectProdD;
     }
 }
 
@@ -4006,39 +3977,26 @@ BEMProblem<dim>::compute_rhs(
       serv_dphi_dn += serv_phi_robin;
       serv_dphi_dn_imag += serv_phi_robin_imag;
 
-      static TrilinosWrappers::MPI::Vector matrVectProdN(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdN_imag(this_cpu_set,
-                                                              mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD(this_cpu_set,
-                                                         mpi_communicator);
-      static TrilinosWrappers::MPI::Vector matrVectProdD_imag(this_cpu_set,
-                                                              mpi_communicator);
-      if (matrVectProdN.size() != src.size())
+      // N phi - D dphi_dn of both parts in one evaluation
+      static TrilinosWrappers::MPI::Vector matrVectProd(this_cpu_set,
+                                                        mpi_communicator);
+      static TrilinosWrappers::MPI::Vector matrVectProd_imag(this_cpu_set,
+                                                             mpi_communicator);
+      if (matrVectProd.size() != src.size())
         {
-          matrVectProdN.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdN_imag.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD.reinit(this_cpu_set, mpi_communicator);
-          matrVectProdD_imag.reinit(this_cpu_set, mpi_communicator);
+          matrVectProd.reinit(this_cpu_set, mpi_communicator);
+          matrVectProd_imag.reinit(this_cpu_set, mpi_communicator);
         }
 
-      collocation_fmm_products(serv_phi,
-                               serv_dphi_dn,
-                               matrVectProdN,
-                               matrVectProdD);
-
-      collocation_fmm_products(serv_phi_imag,
-                               serv_dphi_dn_imag,
-                               matrVectProdN_imag,
-                               matrVectProdD_imag);
+      collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
+                            {&serv_phi, &serv_phi_imag},
+                            {&serv_dphi_dn, &serv_dphi_dn_imag});
 
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
 
-      dst.add(-1, matrVectProdN, -1, serv_phi);
-      dst_imag.add(-1, matrVectProdN_imag, -1, serv_phi_imag);
-      dst += matrVectProdD;
-      dst_imag += matrVectProdD_imag;
+      dst.add(-1, matrVectProd, -1, serv_phi);
+      dst_imag.add(-1, matrVectProd_imag, -1, serv_phi_imag);
     }
 }
 
@@ -5272,20 +5230,6 @@ BEMProblem<dim>::setup_collocation_fmm()
     }
   else
     AssertThrow(false, ExcMessage("FMA only works in 3D"));
-}
-
-
-
-template <int dim>
-void
-BEMProblem<dim>::collocation_fmm_products(
-  const TrilinosWrappers::MPI::Vector &phi,
-  const TrilinosWrappers::MPI::Vector &dphi_dn,
-  TrilinosWrappers::MPI::Vector       &neumann,
-  TrilinosWrappers::MPI::Vector       &dirichlet) const
-{
-  AssertThrow(dim == 3, ExcMessage("FMA only works in 3D"));
-  collocation_fmm.vmult(phi, dphi_dn, neumann, dirichlet);
 }
 
 

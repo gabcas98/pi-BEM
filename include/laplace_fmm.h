@@ -160,6 +160,18 @@ public:
                 const std::vector<std::vector<dealii::Tensor<1, 3>>> &dipoles,
                 std::vector<std::vector<double>> &potentials) const;
 
+  /**
+   * As evaluate_sets(), but the set s of the charges and the set s of the
+   * dipoles are one set of sources, whose potentials are those of
+   * evaluate(charges[s], dipoles[s]): the far field once for each, the
+   * direct interactions of all at once. At most four sets.
+   */
+  void
+  evaluate_combined_sets(
+    const std::vector<std::vector<double>>               &charges,
+    const std::vector<std::vector<dealii::Tensor<1, 3>>> &dipoles,
+    std::vector<std::vector<double>>                     &potentials) const;
+
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
   evaluate_directly(const std::vector<double>               &charges,
@@ -192,7 +204,10 @@ private:
     double       radius;
     unsigned int begin, end; // range in the sorted points
     /// In a leaf, the targets come first, up to target_end.
-    unsigned int target_end  = 0;
+    unsigned int target_end = 0;
+    /// The targets in the subtree: none, and the box takes no local
+    /// expansion and no direct interactions.
+    unsigned int n_targets   = 0;
     unsigned int first_child = invalid, n_children = 0;
     unsigned int parent = invalid;
     unsigned int level  = 0;
@@ -209,6 +224,13 @@ private:
 
   void
   traverse(const unsigned int a, const unsigned int b);
+
+  /// evaluate_sets(), or evaluate_combined_sets() if combined.
+  void
+  evaluate_sets(const std::vector<std::vector<double>>               &charges,
+                const std::vector<std::vector<dealii::Tensor<1, 3>>> &dipoles,
+                std::vector<std::vector<double>> &potentials,
+                const bool                        combined) const;
 
   /**
    * Deal the subtrees of the targets out to the processes. The cost of a
@@ -355,6 +377,8 @@ private:
   std::vector<dealii::Point<3>> points, sorted_points;
   /// The targets, by the original numbering; empty for all points.
   std::vector<bool> target_flags;
+  /// With target_flags, the positions of the targets in the sorted points.
+  std::vector<unsigned int> target_positions;
   /// sorted_points[i] = points[permutation[i]]
   std::vector<unsigned int> permutation;
   /// The sorted coordinates, one array per component, for the direct
@@ -376,6 +400,8 @@ private:
   /// M2L and P2P pairs whose target it owns (or shares), boxes whose
   /// expansions it translates.
   mutable std::vector<unsigned int> my_leaves, my_boxes;
+  /// The boxes of my_boxes with targets, for the downward pass.
+  mutable std::vector<unsigned int>                          my_target_boxes;
   mutable std::vector<std::pair<unsigned int, unsigned int>> my_m2l_pairs,
     my_p2p_pairs;
 

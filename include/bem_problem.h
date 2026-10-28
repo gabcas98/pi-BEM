@@ -408,14 +408,6 @@ public:
   void
   setup_collocation_fmm();
 
-  /// neumann = N phi and dirichlet = D dphi_dn, the collocation matrices
-  /// through the FMM.
-  void
-  collocation_fmm_products(const TrilinosWrappers::MPI::Vector &phi,
-                           const TrilinosWrappers::MPI::Vector &dphi_dn,
-                           TrilinosWrappers::MPI::Vector       &neumann,
-                           TrilinosWrappers::MPI::Vector &dirichlet) const;
-
   /// The preconditioner of the collocation system through the FMM, the
   /// ILU (or AMG) of the system on the near band, assembled as by
   /// assemble_preconditioner().

@@ -228,48 +228,66 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
 
 
 void
-CollocationFMMOperator::vmult(const TrilinosWrappers::MPI::Vector &phi,
-                              const TrilinosWrappers::MPI::Vector &dphi_dn,
-                              TrilinosWrappers::MPI::Vector       &neumann,
-                              TrilinosWrappers::MPI::Vector &dirichlet) const
+CollocationFMMOperator::vmult(
+  TrilinosWrappers::MPI::Vector       &dst,
+  const TrilinosWrappers::MPI::Vector &phi,
+  const TrilinosWrappers::MPI::Vector &dphi_dn) const
 {
-  const auto start = std::chrono::steady_clock::now();
-  // The sources on all cells, from the values on all degrees of freedom.
-  const Vector<double>                   phi_all(phi), dphi_dn_all(dphi_dn);
-  const unsigned int                     dpc = shape.n();
-  std::vector<std::vector<double>>       charges(1), potentials;
-  std::vector<std::vector<Tensor<1, 3>>> dipoles(1);
-  charges[0].assign(n_sources + n_dofs, 0.);
-  dipoles[0].assign(n_sources + n_dofs, Tensor<1, 3>());
-  for (unsigned int c = 0; c < cell_dofs.size(); ++c)
-    for (unsigned int q = 0; q < n_q_points; ++q)
-      {
-        const unsigned int p     = c * n_q_points + q;
-        double             value = 0, normal_derivative = 0;
-        for (unsigned int j = 0; j < dpc; ++j)
-          {
-            value += shape(q, j) * phi_all[cell_dofs[c][j]];
-            normal_derivative += shape(q, j) * dphi_dn_all[cell_dofs[c][j]];
-          }
-        charges[0][p] = inverse_4pi * JxW[p] * normal_derivative;
-        dipoles[0][p] = inverse_4pi * JxW[p] * value * normals[p];
-      }
-  fmm.evaluate_sets(charges, dipoles, potentials);
+  vmult({&dst}, {&phi}, {&dphi_dn});
+}
 
-  correction_n.vmult(neumann, phi);
-  correction_d.vmult(dirichlet, dphi_dn);
-  TrilinosWrappers::MPI::Vector far_n(neumann), far_d(dirichlet);
-  for (const auto i : neumann.locally_owned_elements())
+
+
+void
+CollocationFMMOperator::vmult(
+  const std::vector<TrilinosWrappers::MPI::Vector *>       &dst,
+  const std::vector<const TrilinosWrappers::MPI::Vector *> &phi,
+  const std::vector<const TrilinosWrappers::MPI::Vector *> &dphi_dn) const
+{
+  const unsigned int k = dst.size();
+  AssertThrow(phi.size() == k && dphi_dn.size() == k,
+              ExcDimensionMismatch(phi.size(), k));
+  const auto start = std::chrono::steady_clock::now();
+  // The sources on all cells, from the values on all degrees of freedom:
+  // the dipoles of phi and the charges of -dphi_dn.
+  const unsigned int                     dpc = shape.n();
+  std::vector<std::vector<double>>       charges(k), potentials;
+  std::vector<std::vector<Tensor<1, 3>>> dipoles(k);
+  for (unsigned int s = 0; s < k; ++s)
     {
-      far_n(i) = potentials[1][n_sources + i];
-      far_d(i) = potentials[0][n_sources + i];
+      const Vector<double> phi_all(*phi[s]), dphi_dn_all(*dphi_dn[s]);
+      charges[s].assign(n_sources + n_dofs, 0.);
+      dipoles[s].assign(n_sources + n_dofs, Tensor<1, 3>());
+      for (unsigned int c = 0; c < cell_dofs.size(); ++c)
+        for (unsigned int q = 0; q < n_q_points; ++q)
+          {
+            const unsigned int p     = c * n_q_points + q;
+            double             value = 0, normal_derivative = 0;
+            for (unsigned int j = 0; j < dpc; ++j)
+              {
+                value += shape(q, j) * phi_all[cell_dofs[c][j]];
+                normal_derivative += shape(q, j) * dphi_dn_all[cell_dofs[c][j]];
+              }
+            charges[s][p] = -inverse_4pi * JxW[p] * normal_derivative;
+            dipoles[s][p] = inverse_4pi * JxW[p] * value * normals[p];
+          }
     }
-  far_n.compress(VectorOperation::insert);
-  far_d.compress(VectorOperation::insert);
-  neumann += far_n;
-  dirichlet += far_d;
+  fmm.evaluate_combined_sets(charges, dipoles, potentials);
+
+  for (unsigned int s = 0; s < k; ++s)
+    {
+      TrilinosWrappers::MPI::Vector &result = *dst[s];
+      TrilinosWrappers::MPI::Vector  single(result), far(result);
+      correction_n.vmult(result, *phi[s]);
+      correction_d.vmult(single, *dphi_dn[s]);
+      result -= single;
+      for (const auto i : result.locally_owned_elements())
+        far(i) = potentials[s][n_sources + i];
+      far.compress(VectorOperation::insert);
+      result += far;
+    }
   time_products += seconds_since(start);
-  ++n_products;
+  n_products += k;
 }
 
 
