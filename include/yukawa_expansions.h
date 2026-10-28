@@ -1042,6 +1042,108 @@ namespace YukawaExpansions
         }
     }
 
+    /**
+     * The translation along z between the unnormalized bases of the kernel
+     * e^{-kappa r} / r at complex kappa, as z_translation_unscaled(): kappa =
+     * -i k gives the Helmholtz kernel e^{i k r} / r. The radial functions of
+     * complex argument are the caller's (HelmholtzExpansions), f[l] =
+     * k_l(kappa |v|) for M2L and i_l(kappa |v|) otherwise, l <= 2p; the
+     * entries are complex, in the layout of z_translation().
+     */
+    void
+    z_translation_unscaled_complex(const Basis                 from,
+                                   const Basis                 to,
+                                   const std::complex<double> *f,
+                                   std::complex<double>       *Tz) const
+    {
+      AssertThrow(!(from == Basis::local && to == Basis::outgoing),
+                  dealii::ExcMessage("A local expansion has no outgoing "
+                                     "one."));
+      for (unsigned int m = 0; m <= p; ++m)
+        {
+          std::complex<double> *block = Tz + block_start[m];
+          for (unsigned int n2 = m; n2 <= p; ++n2)
+            for (unsigned int n = m; n <= p; ++n)
+              {
+                std::complex<double> sum = 0.;
+                for (unsigned int l = (n > n2 ? n - n2 : n2 - n); l <= n + n2;
+                     l += 2)
+                  sum +=
+                    gaunt[gaunt_index(m, n, n2, l)] * axis_factor[l] * f[l];
+                double sign = 1.;
+                if (from == Basis::outgoing && to == Basis::local)
+                  sign = (n % 2) ? -1. : 1.;
+                else if (from == Basis::local)
+                  sign = ((n + n2) % 2) ? -1. : 1.;
+                block[(n2 - m) * (p + 1 - m) + (n - m)] = sign * sum;
+              }
+        }
+    }
+
+    /**
+     * Y += T X for B complex expansions with a translation along z for each,
+     * Tz[j] of z_translation_unscaled_complex() or scaled: X and Y in 2B
+     * real lanes, the real parts of the expansions in the lanes 0..B-1 and
+     * the imaginary parts in the lanes B..2B-1. The rotations are real and
+     * act on both; the translation along z combines them. X is overwritten;
+     * work holds 2 B nc entries.
+     */
+    template <unsigned int B>
+    void
+    translate_complex(const Angles                      &a,
+                      const std::complex<double> *const *Tz,
+                      double                            *X,
+                      double                            *Y,
+                      double                            *work) const
+    {
+      constexpr unsigned int L = 2 * B;
+      rotate_z<L>(a.cos_phi.data(), a.sin_phi.data(), -1., X);
+      apply_swap<L>(X, work);
+      rotate_z<L>(a.cos_theta.data(), a.sin_theta.data(), 1., work);
+      apply_swap<L>(work, X);
+      apply_z_complex<B>(Tz, X, work);
+      apply_swap<L>(work, X);
+      rotate_z<L>(a.cos_theta.data(), a.sin_theta.data(), -1., X);
+      apply_swap<L>(X, work);
+      rotate_z<L>(a.cos_phi.data(), a.sin_phi.data(), 1., work);
+      for (unsigned int i = 0; i < nc * L; ++i)
+        Y[i] += work[i];
+    }
+
+    /**
+     * The dense complex matrix of a translation by v with the translation
+     * along z Tz (unnormalized), row by row: T_{a'a} = to_factor[n']
+     * (D^T T_z D)_{a'a} from_factor[n], the factors of the normalizations.
+     */
+    void
+    dense_translation_complex(const std::complex<double> *Tz,
+                              const dealii::Tensor<1, 3> &v,
+                              const double               *from_factor,
+                              const double               *to_factor,
+                              std::complex<double>       *T) const
+    {
+      Angles a;
+      angles(v, a);
+      std::vector<double>               X(2 * nc), Y(2 * nc), work(2 * nc);
+      const std::complex<double> *const lanes[1] = {Tz};
+      for (unsigned int b = 0; b < nc; ++b)
+        {
+          std::fill(X.begin(), X.end(), 0.);
+          std::fill(Y.begin(), Y.end(), 0.);
+          X[2 * b] = 1.;
+          translate_complex<1>(a, lanes, X.data(), Y.data(), work.data());
+          const unsigned int n =
+            static_cast<unsigned int>(std::sqrt(double(b)));
+          for (unsigned int r = 0; r < nc; ++r)
+            {
+              const unsigned int n2 =
+                static_cast<unsigned int>(std::sqrt(double(r)));
+              T[r * nc + b] = to_factor[n2] * from_factor[n] *
+                              std::complex<double>(Y[2 * r], Y[2 * r + 1]);
+            }
+        }
+    }
+
   private:
     unsigned int
     gaunt_index(const unsigned int m,
@@ -1260,6 +1362,50 @@ namespace YukawaExpansions
 #pragma omp simd
                   for (unsigned int j = 0; j < B; ++j)
                     y0[j] = s0[j];
+                }
+            }
+        }
+    }
+
+    /// Y = T_z X for B complex expansions in 2B lanes, as in
+    /// translate_complex(), with the translation Tz[j] of expansion j.
+    template <unsigned int B>
+    void
+    apply_z_complex(const std::complex<double> *const *Tz,
+                    const double                      *X,
+                    double                            *Y) const
+    {
+      constexpr unsigned int L = 2 * B;
+      for (unsigned int m = 0; m <= p; ++m)
+        {
+          const unsigned int size = p + 1 - m;
+          for (int sign = (m == 0 ? 1 : -1); sign <= 1; sign += 2)
+            {
+              const int order = sign * int(m);
+              for (unsigned int n2 = m; n2 <= p; ++n2)
+                {
+                  double re[B], im[B];
+                  for (unsigned int j = 0; j < B; ++j)
+                    re[j] = im[j] = 0.;
+                  const unsigned int row = block_start[m] + (n2 - m) * size;
+                  for (unsigned int n = m; n <= p; ++n)
+                    {
+                      const double      *x = X + index(n, order) * L;
+                      const unsigned int e = row + (n - m);
+                      for (unsigned int j = 0; j < B; ++j)
+                        {
+                          const double tr = Tz[j][e].real(),
+                                       ti = Tz[j][e].imag();
+                          re[j] += tr * x[j] - ti * x[B + j];
+                          im[j] += tr * x[B + j] + ti * x[j];
+                        }
+                    }
+                  double *y = Y + index(n2, order) * L;
+                  for (unsigned int j = 0; j < B; ++j)
+                    {
+                      y[j]     = re[j];
+                      y[B + j] = im[j];
+                    }
                 }
             }
         }

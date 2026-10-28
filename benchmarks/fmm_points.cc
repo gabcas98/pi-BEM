@@ -14,7 +14,10 @@
 //        followed by pairs "order theta" (default: a small sweep)
 //
 // The screening parameter kappa of the kernel e^{-kappa r}/r is read from
-// the environment variable FMM_KAPPA; without it the kernel is 1/r.
+// the environment variable FMM_KAPPA; without it the kernel is 1/r. The
+// wavenumber k of the Helmholtz kernel e^{i k r}/r from FMM_WAVENUMBER:
+// then the charges and dipoles are complex, and the error is measured
+// against a complex direct sum at the same targets.
 //
 // ---------------------------------------------------------------------
 
@@ -24,6 +27,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -120,10 +124,13 @@ main(int argc, char **argv)
   const MPI_Comm                   comm = MPI_COMM_WORLD;
   const bool root = Utilities::MPI::this_mpi_process(comm) == 0;
 
-  const char        *kappa_variable = std::getenv("FMM_KAPPA");
-  const double       kappa = kappa_variable ? std::atof(kappa_variable) : 0.;
-  const unsigned int n     = argc > 1 ? std::atoi(argv[1]) : 100000;
-  const unsigned int leaf  = argc > 2 ? std::atoi(argv[2]) : 64;
+  const char  *kappa_variable = std::getenv("FMM_KAPPA");
+  const double kappa          = kappa_variable ? std::atof(kappa_variable) : 0.;
+  const char  *wavenumber_variable = std::getenv("FMM_WAVENUMBER");
+  const double wavenumber =
+    wavenumber_variable ? std::atof(wavenumber_variable) : 0.;
+  const unsigned int n    = argc > 1 ? std::atoi(argv[1]) : 100000;
+  const unsigned int leaf = argc > 2 ? std::atoi(argv[2]) : 64;
   std::vector<std::pair<unsigned int, double>> settings;
   for (int i = 3; i + 1 < argc; i += 2)
     settings.emplace_back(std::atoi(argv[i]), std::atof(argv[i + 1]));
@@ -155,7 +162,70 @@ main(int argc, char **argv)
       data.theta               = theta;
       data.max_points_per_leaf = leaf;
       data.kappa               = kappa;
+      data.wavenumber          = wavenumber;
       fmm.reinit(points, data);
+
+      if (wavenumber > 0.)
+        {
+          // Complex charges and dipoles: the charges plus i times their
+          // square, the dipoles plus i times them turned by the charge.
+          using complex = std::complex<double>;
+          std::vector<std::vector<complex>>               q(1);
+          std::vector<std::vector<Tensor<1, 3, complex>>> d(1);
+          q[0].resize(n);
+          d[0].resize(n);
+          for (unsigned int i = 0; i < n; ++i)
+            {
+              q[0][i] = complex(charges[i], charges[i] * charges[i]);
+              for (unsigned int c = 0; c < 3; ++c)
+                d[0][i][c] = complex(dipoles[i][c], charges[i] * dipoles[i][c]);
+            }
+          std::vector<std::vector<complex>> u_fmm;
+          auto start = std::chrono::steady_clock::now();
+          fmm.evaluate_complex_sets(q, d, u_fmm, true);
+          const double seconds = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - start)
+                                   .count();
+          fmm.print_statistics(std::cout);
+          if (root)
+            {
+              double error = 0, scale = 0;
+              for (const unsigned int t : targets)
+                {
+                  complex exact = 0.;
+                  for (unsigned int j = 0; j < n; ++j)
+                    {
+                      if (j == t)
+                        continue;
+                      const Tensor<1, 3> r = points[t] - points[j];
+                      const double       s = r.norm();
+                      const complex      e = complex(std::cos(wavenumber * s),
+                                                std::sin(wavenumber * s)) /
+                                        s;
+                      exact += q[0][j] * e +
+                               (d[0][j][0] * r[0] + d[0][j][1] * r[1] +
+                                d[0][j][2] * r[2]) *
+                                 complex(1., -wavenumber * s) * e / (s * s);
+                    }
+                  error = std::max(error, std::abs(u_fmm[0][t] - exact));
+                  scale = std::max(scale, std::abs(exact));
+                }
+              std::cout << "  relative error, complex charges and dipoles: "
+                        << std::scientific << std::setprecision(2)
+                        << error / scale << std::defaultfloat << '\n';
+            }
+          start = std::chrono::steady_clock::now();
+          fmm.evaluate_complex_sets(q, d, u_fmm, true);
+          const double seconds_again =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          start)
+              .count();
+          if (root)
+            std::cout << "  first evaluation " << std::setprecision(3)
+                      << seconds << " s, after rebalancing " << seconds_again
+                      << " s\n\n";
+          continue;
+        }
 
       std::vector<double> potentials;
       const auto          start = std::chrono::steady_clock::now();

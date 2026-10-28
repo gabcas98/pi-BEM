@@ -1,0 +1,21 @@
+
+DEAL::k 1.00000, order 8, charges: relative error below 1.00000e-05: yes
+DEAL::k 1.00000, order 8, dipoles: relative error below 1.00000e-05: yes
+DEAL::k 1.00000, order 8, charges and dipoles: relative error below 1.00000e-05: yes
+DEAL::k 1.00000, order 8, several and combined sets as one at a time: yes
+DEAL::k 1.00000, order 8, potentials at a third of the points of one sphere only: yes
+DEAL::k 1.00000, order 14, charges: relative error below 1.00000e-08: yes
+DEAL::k 1.00000, order 14, dipoles: relative error below 1.00000e-08: yes
+DEAL::k 1.00000, order 14, charges and dipoles: relative error below 1.00000e-08: yes
+DEAL::k 1.00000, order 14, several and combined sets as one at a time: yes
+DEAL::k 1.00000, order 14, potentials at a third of the points of one sphere only: yes
+DEAL::k 3.00000, order 8, charges: relative error below 1.00000e-05: yes
+DEAL::k 3.00000, order 8, dipoles: relative error below 1.00000e-05: yes
+DEAL::k 3.00000, order 8, charges and dipoles: relative error below 1.00000e-05: yes
+DEAL::k 3.00000, order 8, several and combined sets as one at a time: yes
+DEAL::k 3.00000, order 8, potentials at a third of the points of one sphere only: yes
+DEAL::k 3.00000, order 14, charges: relative error below 1.00000e-08: yes
+DEAL::k 3.00000, order 14, dipoles: relative error below 1.00000e-08: yes
+DEAL::k 3.00000, order 14, charges and dipoles: relative error below 1.00000e-08: yes
+DEAL::k 3.00000, order 14, several and combined sets as one at a time: yes
+DEAL::k 3.00000, order 14, potentials at a third of the points of one sphere only: yes

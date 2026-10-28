@@ -117,6 +117,22 @@ public:
     const std::vector<const TrilinosWrappers::MPI::Vector *> &phi,
     const std::vector<const TrilinosWrappers::MPI::Vector *> &dphi_dn) const;
 
+  /**
+   * The Helmholtz kernel (LaplaceFMM::AdditionalData::wavenumber): dst +
+   * i dst_imag = N (phi + i phi_imag) - D (dphi_dn + i dphi_dn_imag), with
+   * the complex matrices of the kernel exp(i k r) / (4 pi r). The near
+   * corrections, and the band, are those of its real part, singular: the
+   * dense assembly integrates the imaginary part, analytic, with the
+   * regular rule on every cell, as the point sums do. Collective.
+   */
+  void
+  vmult_complex(TrilinosWrappers::MPI::Vector       &dst,
+                TrilinosWrappers::MPI::Vector       &dst_imag,
+                const TrilinosWrappers::MPI::Vector &phi,
+                const TrilinosWrappers::MPI::Vector &phi_imag,
+                const TrilinosWrappers::MPI::Vector &dphi_dn,
+                const TrilinosWrappers::MPI::Vector &dphi_dn_imag) const;
+
   /// The rows of N and of D on the near band.
   const TrilinosWrappers::SparseMatrix &
   band_neumann() const
@@ -140,6 +156,8 @@ private:
   types::global_dof_index n_dofs     = 0;
   unsigned int            n_q_points = 0;
   unsigned int            n_sources  = 0;
+  /// The wavenumber of the Helmholtz kernel, zero for the others.
+  double wavenumber = 0.;
 
   /// The degrees of freedom of every cell.
   std::vector<std::vector<types::global_dof_index>> cell_dofs;

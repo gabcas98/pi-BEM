@@ -22,6 +22,7 @@
 
 #include <array>
 #include <cmath>
+#include <complex>
 #include <iosfwd>
 #include <memory>
 #include <utility>
@@ -47,6 +48,14 @@
  * yukawa_expansions.h. Pairs of boxes so far apart that
  * $e^{-\kappa (|c_A - c_B| - R_A - R_B)}$ is below $10^{-17}$ are dropped:
  * their interaction is negligible against that of the near sources.
+ *
+ * With a wavenumber $k > 0$ the kernel is that of the Helmholtz equation
+ * $\Delta u + k^2 u = 0$, $e^{i k r}/r$, with complex sources and
+ * potentials and the dipole term $d_j \cdot (x_i - x_j)(1 - i k r)
+ * e^{i k r} / r^3$, through evaluate_complex_sets(): the expansions of
+ * helmholtz_expansions.h, the screened ones at $\kappa = -i k$. It is a
+ * low-frequency method: the order must grow with $k$ times the size of the
+ * boxes that interact through expansions.
  *
  * Nothing in the class knows about boundary elements: in a Galerkin method
  * the points are the quadrature points, the charges and dipoles carry the
@@ -86,6 +95,10 @@ public:
     /// Screening parameter kappa of the kernel e^{-kappa r}/r; zero for the
     /// Laplace kernel.
     double kappa = 0.;
+    /// Wavenumber k of the Helmholtz kernel e^{i k r}/r, whose sources and
+    /// potentials are complex (evaluate_complex_sets()); zero for the
+    /// others. Not with kappa.
+    double wavenumber = 0.;
   };
 
   explicit LaplaceFMM(const MPI_Comm comm = MPI_COMM_WORLD);
@@ -171,6 +184,22 @@ public:
     const std::vector<std::vector<double>>               &charges,
     const std::vector<std::vector<dealii::Tensor<1, 3>>> &dipoles,
     std::vector<std::vector<double>>                     &potentials) const;
+
+  /**
+   * The Helmholtz kernel (AdditionalData::wavenumber): the potentials at all
+   * points, on every process, of several sets of complex charges and
+   * dipoles, first those of the sets of charges, then those of the sets of
+   * dipoles; with combined, the set s of the charges and the set s of the
+   * dipoles are one set of sources, as in evaluate_combined_sets(). At most
+   * eight sets.
+   */
+  void
+  evaluate_complex_sets(
+    const std::vector<std::vector<std::complex<double>>> &charges,
+    const std::vector<std::vector<dealii::Tensor<1, 3, std::complex<double>>>>
+                                                   &dipoles,
+    std::vector<std::vector<std::complex<double>>> &potentials,
+    const bool                                      combined = false) const;
 
   /// Direct sum at the listed targets, for tests.
   std::vector<double>
@@ -361,6 +390,25 @@ private:
                    const std::vector<dealii::Tensor<1, 3>> &d,
                    std::vector<double>                     &u) const;
 
+  /// The far field of the Helmholtz kernel, complex, in the sorted order.
+  void
+  far_field_helmholtz(
+    const std::vector<std::complex<double>>                       &q,
+    const std::vector<dealii::Tensor<1, 3, std::complex<double>>> &d,
+    std::vector<std::complex<double>>                             &u) const;
+
+  /// The direct interactions of the Helmholtz kernel between the targets
+  /// of a and the points of b, for kq sets of charges q (set-major, sorted)
+  /// and kd of dipoles d (three components per set), into u.
+  void
+  particle_to_particle_helmholtz(const unsigned int          a,
+                                 const unsigned int          b,
+                                 const unsigned int          kq,
+                                 const unsigned int          kd,
+                                 const std::complex<double> *q,
+                                 const std::complex<double> *d,
+                                 std::complex<double>       *u) const;
+
   /// Normalization radius of the screened expansions of a box.
   static double
   yukawa_radius(const Box &box)
@@ -459,6 +507,14 @@ private:
    * different ones.
    */
   mutable std::vector<double> yukawa_tz;
+  /// The same for the Helmholtz kernel, complex; the expansions of all
+  /// boxes, the dense M2M and L2L matrices of each level and octant and the
+  /// normalizations of each level (HelmholtzExpansions::normalizations()),
+  /// in the layout of the screened ones.
+  mutable std::vector<std::complex<double>> helmholtz_tz, helmholtz_multipoles,
+    helmholtz_locals;
+  std::vector<std::complex<double>> helmholtz_m2m, helmholtz_l2l;
+  std::vector<double> helmholtz_outgoing_scale, helmholtz_local_scale;
   /// The rotations about y of the polar angles of the groups
   /// (YukawaExpansions::Operators::rotation_blocks()), shared by the
   /// groups of the same polar angle (Laplace kernel).

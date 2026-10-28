@@ -18,6 +18,7 @@
 // the Calderon preconditioner, GMRES, the errors and the indicators of the
 // adaptive refinement.
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -599,9 +600,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // The Helmholtz kernel: the operators above of its real part, these of
       // its imaginary part, which couple the parts.
       const bool helmholtz = kernel_type == "helmholtz";
-      AssertThrow(!helmholtz || (n_parts == 2 && !through_fmm),
-                  ExcMessage("The Helmholtz kernel needs a complex problem "
-                             "and dense matrices."));
+      AssertThrow(!helmholtz || n_parts == 2,
+                  ExcMessage("The Helmholtz kernel needs a complex problem."));
       TrilinosWrappers::SparseMatrix &single_layer_imag =
                                        mixed_single_layer_imag,
                                      &double_layer_imag =
@@ -641,40 +641,54 @@ BEMProblem<dim>::solve_galerkin_mixed(
             }
         }
 
-      GalerkinPanelPairIntegrator<3> integrator(
-        *mapping,
-        *fe,
-        galerkin_singular_quadrature == "iterated_duffy" ?
-          GalerkinSingularQuadrature::iterated_duffy :
-          GalerkinSingularQuadrature::sauter_schwab,
-        galerkin_singular_quadrature_order,
-        galerkin_duffy_outer_subdivisions,
-        galerkin_near_singular_distance_ratio,
-        galerkin_near_singular_maximum_depth,
-        galerkin_near_singular_quadrature_order);
-      integrator.set_far_field_tolerance(galerkin_far_field_tolerance);
-      if (helmholtz)
-        integrator.set_helmholtz(helmholtz_wavenumber, false);
-      else
-        integrator.set_screening(galerkin_screening());
-      integrator.set_light_geometry(galerkin_light_geometry);
-      integrator.set_folded_singular_order(
-        galerkin_folded_singular_quadrature_order);
-      integrator.set_material_singular_order(
-        galerkin_singular_quadrature_material_ids,
-        galerkin_material_singular_quadrature_order);
-      integrator.set_skewed_singular_order(
-        galerkin_skewed_singular_quadrature_order,
-        galerkin_skewed_minimum_angle);
-      integrator.set_kinked_singular_order(
-        galerkin_kinked_singular_quadrature_order,
-        galerkin_kinked_minimum_angle);
-      integrator.set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
-      integrator.set_dof_index_map(
-        [&](const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
+      // The integrator, and with the Helmholtz kernel through the FMM a
+      // second one of its imaginary part, with the same rules.
+      const auto make_integrator = [&]() {
+        auto result = std::make_unique<GalerkinPanelPairIntegrator<3>>(
+          *mapping,
+          *fe,
+          galerkin_singular_quadrature == "iterated_duffy" ?
+            GalerkinSingularQuadrature::iterated_duffy :
+            GalerkinSingularQuadrature::sauter_schwab,
+          galerkin_singular_quadrature_order,
+          galerkin_duffy_outer_subdivisions,
+          galerkin_near_singular_distance_ratio,
+          galerkin_near_singular_maximum_depth,
+          galerkin_near_singular_quadrature_order);
+        result->set_far_field_tolerance(galerkin_far_field_tolerance);
+        if (helmholtz)
+          result->set_helmholtz(helmholtz_wavenumber, false);
+        else
+          result->set_screening(galerkin_screening());
+        result->set_light_geometry(galerkin_light_geometry);
+        result->set_folded_singular_order(
+          galerkin_folded_singular_quadrature_order);
+        result->set_material_singular_order(
+          galerkin_singular_quadrature_material_ids,
+          galerkin_material_singular_quadrature_order);
+        result->set_skewed_singular_order(
+          galerkin_skewed_singular_quadrature_order,
+          galerkin_skewed_minimum_angle);
+        result->set_kinked_singular_order(
+          galerkin_kinked_singular_quadrature_order,
+          galerkin_kinked_minimum_angle);
+        result->set_kinked_distance_ratio(galerkin_kinked_distance_ratio);
+        result->set_dof_index_map(
+          [&](
+            const typename DoFHandler<dim - 1, dim>::active_cell_iterator &cell,
             std::vector<types::global_dof_index> &indices) {
-          indices = indices_of(cell);
-        });
+            indices = indices_of(cell);
+          });
+        return result;
+      };
+      const auto                      integrator_owner = make_integrator();
+      GalerkinPanelPairIntegrator<3> &integrator       = *integrator_owner;
+      std::unique_ptr<GalerkinPanelPairIntegrator<3>> integrator_imag;
+      if (helmholtz && through_fmm)
+        {
+          integrator_imag = make_integrator();
+          integrator_imag->set_helmholtz(helmholtz_wavenumber, true);
+        }
       const auto assembly_start = std::chrono::steady_clock::now();
       const auto seconds_since  = [](const auto &since) {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -738,7 +752,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
                            constraints,
                            integrator,
                            data,
-                           reuse_near_field ? &near_field_cache : nullptr);
+                           reuse_near_field ? &near_field_cache : nullptr,
+                           integrator_imag.get());
           pcout << "Mixed Galerkin problem: FMM set up in "
                 << seconds_since(assembly_start) << " s" << std::endl;
           calderon->print_statistics(pcout.get_stream());
@@ -952,10 +967,29 @@ BEMProblem<dim>::solve_galerkin_mixed(
             for (unsigned int p = 0; p < n_parts; ++p)
               t[p] -= r[p];
           }
+        // The Helmholtz kernel through the FMM: the complex rows of both
+        // parts at once.
+        std::array<Vector<double>, 2> complex_dirichlet, complex_neumann;
+        if (through_fmm && helmholtz)
+          calderon->vmult_rows_complex(t[0],
+                                       t[1],
+                                       u[0],
+                                       u[1],
+                                       k_sign,
+                                       complex_dirichlet[0],
+                                       complex_dirichlet[1],
+                                       complex_neumann[0],
+                                       complex_neumann[1],
+                                       relaxed_rows);
         for (unsigned int p = 0; p < n_parts; ++p)
           {
             Vector<double> dirichlet_rows, neumann_rows, rows;
-            if (through_fmm)
+            if (through_fmm && helmholtz)
+              {
+                dirichlet_rows = complex_dirichlet[p];
+                neumann_rows   = complex_neumann[p];
+              }
+            else if (through_fmm)
               calderon->vmult_rows(
                 t[p], u[p], k_sign, dirichlet_rows, neumann_rows, relaxed_rows);
             else
@@ -995,7 +1029,18 @@ BEMProblem<dim>::solve_galerkin_mixed(
       // The right-hand side: 1/2 M u + k K u - V g on the flux rows and
       // 1/2 M g - k K^T g - W u on the potential rows, the mass terms minus
       // the rows of the operator at (g, u), through the FMM in one product.
-      Vector<double> rhs(n_parts * n);
+      Vector<double>                rhs(n_parts * n);
+      std::array<Vector<double>, 2> complex_dirichlet, complex_neumann;
+      if (through_fmm && helmholtz)
+        calderon->vmult_rows_complex(g_data[0],
+                                     g_data[1],
+                                     u_data[0],
+                                     u_data[1],
+                                     k_sign,
+                                     complex_dirichlet[0],
+                                     complex_dirichlet[1],
+                                     complex_neumann[0],
+                                     complex_neumann[1]);
       for (unsigned int p = 0; p < n_parts; ++p)
         {
           Vector<double> dirichlet_rows(n), neumann_rows(n), zero(n), rows;
@@ -1003,7 +1048,12 @@ BEMProblem<dim>::solve_galerkin_mixed(
           dirichlet_rows *= 0.5;
           mass.vmult(neumann_rows, g_data[p]);
           neumann_rows *= 0.5;
-          if (through_fmm)
+          if (through_fmm && helmholtz)
+            {
+              dirichlet_rows -= complex_dirichlet[p];
+              neumann_rows -= complex_neumann[p];
+            }
+          else if (through_fmm)
             {
               Vector<double> operator_dirichlet, operator_neumann;
               calderon->vmult_rows(g_data[p],

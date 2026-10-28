@@ -276,6 +276,27 @@ CASES = {
     # The same in the mixed Galerkin problem: V, K and W of the real and of
     # the imaginary part of the kernel, coupling the parts, Calderon
     # preconditioner.
+    # The same through the multipole method of the Helmholtz kernel, whose
+    # sources and potentials are complex: the collocation, and the mixed
+    # Galerkin problem with the near field of both parts of the kernel.
+    'helmholtz_collocation_robin_fma': ('sphere_helmholtz_robin.prm',
+                                        {'Solution method': 'FMA',
+                                         'FMA Truncation Order': '10'},
+                                        ['phi_nodes', 'flux', 'gradient',
+                                         'steps']),
+    'helmholtz_galerkin_robin_fma': ('sphere_helmholtz_robin.prm',
+                                     {'Boundary integral formulation':
+                                        'galerkin',
+                                      'Linear solver': 'CG',
+                                      'Preconditioner': 'BlockJacobi',
+                                      'Mixed Galerkin preconditioner':
+                                        'calderon',
+                                      'Solution method': 'FMA',
+                                      'FMA Truncation Order': '8'},
+                                     ['mixed_flux_real',
+                                      'mixed_potential_real', 'mixed_flux',
+                                      'mixed_potential', 'mixed_robin_flux',
+                                      'iterations']),
     'helmholtz_galerkin_robin': ('sphere_helmholtz_robin.prm',
                                  {'Boundary integral formulation': 'galerkin',
                                   'Linear solver': 'CG',

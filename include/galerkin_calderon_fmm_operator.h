@@ -86,6 +86,16 @@
  * of the mixed problem take two calls of LaplaceFMM::evaluate_sets(), with
  * seven sets of charges and four of dipoles, which share the direct
  * interactions and the sums over the processes.
+ *
+ * With the Helmholtz kernel exp(i k r) / (4 pi r) the integrator of reinit()
+ * gives its real part and a second one its imaginary part
+ * (GalerkinPanelPairIntegrator::set_helmholtz()); the point sums are those of
+ * the complex fast multipole method, the sets of the screened kernel with
+ * complex sources and -k^2 for the term of W, and the near field has the
+ * corrections of both parts. vmult_rows_complex() applies the complex
+ * operators; vmult(), the products of the preconditioner and diagonal() are
+ * those of the real part, the real part of the complex product of a real
+ * vector, as the preconditioners of the mixed problem take them.
  */
 class GalerkinCalderonFMMOperator
 {
@@ -158,7 +168,8 @@ public:
          const AffineConstraints<double>                         &constraints,
          const GalerkinPanelPairIntegrator<3>                    &integrator,
          const AdditionalData                                    &data,
-         NearFieldCache *cache = nullptr);
+         NearFieldCache                       *cache     = nullptr,
+         const GalerkinPanelPairIntegrator<3> *imaginary = nullptr);
 
   /// dst = A src, whole vectors on every process; collective.
   void
@@ -199,6 +210,23 @@ public:
              Vector<double>       &dirichlet,
              Vector<double>       &neumann,
              const bool            relaxed = false) const;
+
+  /**
+   * The Helmholtz kernel: the rows of vmult_rows() for the complex t + i
+   * t_imag and u + i u_imag, with the complex operators: the parts of each
+   * row; collective.
+   */
+  void
+  vmult_rows_complex(const Vector<double> &t,
+                     const Vector<double> &t_imag,
+                     const Vector<double> &u,
+                     const Vector<double> &u_imag,
+                     const double          k,
+                     Vector<double>       &dirichlet,
+                     Vector<double>       &dirichlet_imag,
+                     Vector<double>       &neumann,
+                     Vector<double>       &neumann_imag,
+                     const bool            relaxed = false) const;
 
   /// The diagonal of V or of W, from the exact blocks of the near field,
   /// whole on every process.
@@ -266,6 +294,32 @@ private:
                     Vector<double>                  &y,
                     const LaplaceFMM                &fmm) const;
 
+  /**
+   * The Helmholtz kernel: V t, K u, K^T t and W u of the complex t and u
+   * (real and imaginary part at 0 and 1, the constraints distributed), as
+   * many as are asked for by a pointer, without the near field, tested on
+   * the own cells and added to them: the charges of t, of the curl of u and
+   * of n u through charges, the dipoles of u and of t through dipoles.
+   */
+  void
+  helmholtz_point_sums(const std::array<Vector<double>, 2> &t,
+                       const std::array<Vector<double>, 2> &u,
+                       const LaplaceFMM                    &charges,
+                       const LaplaceFMM                    &dipoles,
+                       std::array<Vector<double>, 2>       *v_t,
+                       std::array<Vector<double>, 2>       *k_u,
+                       std::array<Vector<double>, 2>       *kt_t,
+                       std::array<Vector<double>, 2>       *w_u) const;
+
+  /// The Helmholtz kernel: the real part of the operator applied to the
+  /// real src, with the near field, through the given expansions.
+  void
+  helmholtz_real_part(const Operator        op,
+                      Vector<double>       &dst,
+                      const Vector<double> &src,
+                      const LaplaceFMM     &charges,
+                      const LaplaceFMM     &dipoles) const;
+
   /// V src or W src with the given expansions.
   void
   apply(const Operator        op,
@@ -286,6 +340,8 @@ private:
   std::vector<unsigned int> own_cells;
   /// Screening parameter of the kernel, that of the integrator.
   double kappa = 0.;
+  /// Wavenumber of the Helmholtz kernel, that of the integrators.
+  double wavenumber = 0.;
 
   /// Data at the quadrature points, cell by cell, and the surface curls of
   /// the shape functions, at (point * dofs_per_cell + i).
@@ -304,7 +360,10 @@ private:
   /// Corrections of the near pairs of this process, condensed.
   SparsityPattern      near_sparsity;
   SparseMatrix<double> near_single, near_double, near_hypersingular;
-  Vector<double>       single_diagonal, hypersingular_diagonal;
+  /// With the Helmholtz kernel, those of its imaginary part.
+  SparseMatrix<double> near_single_imag, near_double_imag,
+    near_hypersingular_imag;
+  Vector<double> single_diagonal, hypersingular_diagonal;
 
   unsigned long n_near_pairs = 0;
   /// Near pairs whose blocks came from the cache, and those integrated.

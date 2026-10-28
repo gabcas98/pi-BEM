@@ -217,6 +217,20 @@ public:
            kernel_factor == KernelFactor::helmholtz_imaginary;
   }
 
+  /// The wavenumber of the Helmholtz kernel, and whether the part is the
+  /// imaginary one.
+  double
+  get_wavenumber() const
+  {
+    return wavenumber;
+  }
+
+  bool
+  is_imaginary_part() const
+  {
+    return kernel_factor == KernelFactor::helmholtz_imaginary;
+  }
+
   /// Free the work arrays that the direct path keeps from pair to pair, at
   /// the end of an assembly, so that they do not add to the memory of what
   /// follows; they grow again when needed.

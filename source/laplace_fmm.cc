@@ -17,6 +17,8 @@
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/mpi.h>
 
+#include "../include/helmholtz_expansions.h"
+
 #if defined(__AVX2__) && defined(__FMA__)
 #  include <immintrin.h>
 #endif
@@ -37,6 +39,7 @@
 using namespace dealii;
 namespace LE = LaplaceExpansions;
 namespace YE = YukawaExpansions;
+namespace HE = HelmholtzExpansions;
 
 namespace
 {
@@ -110,6 +113,10 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
               ExcMessage("A leaf must hold at least one point."));
   AssertThrow(data_in.kappa >= 0,
               ExcMessage("The screening parameter must not be negative."));
+  AssertThrow(data_in.wavenumber >= 0 &&
+                !(data_in.kappa > 0 && data_in.wavenumber > 0),
+              ExcMessage("A wavenumber, not negative, or a screening "
+                         "parameter, not both."));
   const auto start = std::chrono::steady_clock::now();
   data             = data_in;
   points           = points_in;
@@ -131,10 +138,11 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
   speed.clear();
   // Rough relative costs until the first evaluation measures them; the
   // screened translations are cheaper, its direct interactions dearer.
-  cost_m2l   = 1.;
-  cost_p2p   = data.kappa > 0 ? 1. / 150. : 1. / 1500.;
-  cost_point = data.kappa > 0 ? 0.5 : 0.05;
-  rotations  = std::make_unique<YE::Operators>(data.order);
+  cost_m2l               = 1.;
+  const bool oscillatory = data.kappa > 0 || data.wavenumber > 0;
+  cost_p2p               = oscillatory ? 1. / 150. : 1. / 1500.;
+  cost_point             = oscillatory ? 0.5 : 0.05;
+  rotations              = std::make_unique<YE::Operators>(data.order);
   if (data.kappa > 0)
     {
       // Translations between a parent and its child in each octant, level
@@ -190,6 +198,81 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
         }
       yukawa_multipoles.assign(boxes.size() * nc, 0.);
       yukawa_locals.assign(boxes.size() * nc, 0.);
+      multipoles.clear();
+      locals.clear();
+    }
+  else if (data.wavenumber > 0)
+    {
+      // As for the screened kernel, complex, with the normalizations of
+      // HelmholtzExpansions: before a translation an outgoing coefficient
+      // is multiplied by the factor of its level, after it a local one.
+      const unsigned int p     = data.order;
+      const unsigned int nc    = YE::n_coefficients(p);
+      const double       k     = data.wavenumber;
+      unsigned int       depth = 0;
+      for (const auto &box : boxes)
+        depth = std::max(depth, box.level);
+      helmholtz_m2m.assign((depth + 1) * 8 * nc * nc, 0.);
+      helmholtz_l2l.assign((depth + 1) * 8 * nc * nc, 0.);
+      helmholtz_outgoing_scale.resize((depth + 1) * (p + 1));
+      helmholtz_local_scale.resize((depth + 1) * (p + 1));
+      const double root_half_side = boxes.empty() ? 1. : boxes[0].half_side;
+      for (unsigned int level = 0; level <= depth; ++level)
+        HE::normalizations(p,
+                           k,
+                           std::sqrt(3.) * root_half_side / double(1u << level),
+                           &helmholtz_outgoing_scale[level * (p + 1)],
+                           &helmholtz_local_scale[level * (p + 1)]);
+      std::vector<std::complex<double>> Tz(rotations->z_translation_size());
+      std::vector<double>               to_outgoing(p + 1), from_local(p + 1);
+      for (unsigned int level = 1; level <= depth; ++level)
+        {
+          const double  h         = root_half_side / double(1u << level);
+          const double *child_out = &helmholtz_outgoing_scale[level * (p + 1)];
+          const double *parent_out =
+            &helmholtz_outgoing_scale[(level - 1) * (p + 1)];
+          const double *child_loc = &helmholtz_local_scale[level * (p + 1)];
+          const double *parent_loc =
+            &helmholtz_local_scale[(level - 1) * (p + 1)];
+          for (unsigned int n = 0; n <= p; ++n)
+            {
+              to_outgoing[n] = 1. / parent_out[n];
+              from_local[n]  = 1. / parent_loc[n];
+            }
+          for (unsigned int o = 0; o < 8; ++o)
+            {
+              Tensor<1, 3> child_minus_parent;
+              for (unsigned int d = 0; d < 3; ++d)
+                child_minus_parent[d] = ((o >> d) & 1) ? h : -h;
+              const double distance = child_minus_parent.norm();
+              HE::z_translation(*rotations,
+                                YE::Basis::outgoing,
+                                YE::Basis::outgoing,
+                                k,
+                                distance,
+                                Tz.data());
+              rotations->dense_translation_complex(
+                Tz.data(),
+                child_minus_parent,
+                child_out,
+                to_outgoing.data(),
+                &helmholtz_m2m[(level * 8 + o) * nc * nc]);
+              HE::z_translation(*rotations,
+                                YE::Basis::local,
+                                YE::Basis::local,
+                                k,
+                                distance,
+                                Tz.data());
+              rotations->dense_translation_complex(
+                Tz.data(),
+                -child_minus_parent,
+                from_local.data(),
+                child_loc,
+                &helmholtz_l2l[(level * 8 + o) * nc * nc]);
+            }
+        }
+      helmholtz_multipoles.assign(boxes.size() * nc, 0.);
+      helmholtz_locals.assign(boxes.size() * nc, 0.);
       multipoles.clear();
       locals.clear();
     }
@@ -509,8 +592,37 @@ LaplaceFMM::distribute_work() const
   // pairs of a group are sorted by it first, so that a batch mostly shares
   // one.
   yukawa_tz.clear();
+  helmholtz_tz.clear();
   m2l_tz.assign(my_m2l_pairs.size(), 0);
-  if (data.kappa == 0.)
+  if (data.wavenumber > 0)
+    {
+      std::map<std::pair<int, unsigned int>, unsigned int> start_of;
+      const unsigned int size = rotations->z_translation_size();
+      for (const auto &[key, members] : by_offset)
+        {
+          const int tau2 = key[0] * key[0] + key[1] * key[1] + key[2] * key[2];
+          for (const unsigned int i : members)
+            {
+              const unsigned int level =
+                std::max(boxes[my_m2l_pairs[i].first].level,
+                         boxes[my_m2l_pairs[i].second].level);
+              const auto [entry, inserted] =
+                start_of.try_emplace({tau2, level}, helmholtz_tz.size());
+              if (inserted)
+                {
+                  helmholtz_tz.resize(helmholtz_tz.size() + size);
+                  HE::z_translation(*rotations,
+                                    YE::Basis::outgoing,
+                                    YE::Basis::local,
+                                    data.wavenumber,
+                                    std::sqrt(double(tau2)) * m2l_unit[i],
+                                    &helmholtz_tz[entry->second]);
+                }
+              m2l_tz[i] = entry->second;
+            }
+        }
+    }
+  else if (data.kappa == 0.)
     {
       std::map<int, unsigned int> start_of;
       const unsigned int          size = rotations->z_translation_size();
@@ -581,7 +693,7 @@ LaplaceFMM::distribute_work() const
   // offset determines by its component along z and its distance from the
   // axis.
   m2l_rotations.clear();
-  if (data.kappa == 0.)
+  if (data.kappa == 0. && data.wavenumber == 0.)
     {
       const std::size_t size = rotations->rotation_size();
       std::map<std::array<long, 2>, std::size_t> start_of;
@@ -1368,7 +1480,7 @@ LaplaceFMM::evaluate_multiple(
   const std::vector<std::vector<double>> &charges,
   std::vector<std::vector<double>>       &potentials) const
 {
-  AssertThrow(data.kappa == 0.,
+  AssertThrow(data.kappa == 0. && data.wavenumber == 0.,
               ExcMessage("Several sets of charges are implemented for the "
                          "Laplace kernel."));
   const unsigned int k = charges.size();
@@ -1463,6 +1575,9 @@ LaplaceFMM::evaluate_sets(const std::vector<std::vector<double>>       &charges,
                           std::vector<std::vector<double>> &potentials,
                           const bool                        combined) const
 {
+  AssertThrow(data.wavenumber == 0.,
+              ExcMessage("The Helmholtz kernel takes complex sources "
+                         "(evaluate_complex_sets())."));
   const unsigned int  kq = charges.size(), kd = dipoles.size(), k = kq + kd;
   const unsigned int  n = points.size();
   std::vector<double> q(kq * n), d(3 * kd * n);
@@ -1855,7 +1970,7 @@ LaplaceFMM::evaluate_mixed(
   std::vector<double>                      &potentials_d,
   std::array<std::vector<double>, 3>       &potentials_c) const
 {
-  AssertThrow(data.kappa == 0.,
+  AssertThrow(data.kappa == 0. && data.wavenumber == 0.,
               ExcMessage("The mixed sums are implemented for the Laplace "
                          "kernel."));
   const unsigned int n = points.size();
@@ -1926,7 +2041,7 @@ LaplaceFMM::evaluate_with_gradient(const std::vector<double> &charges,
                                    std::vector<double>       &potentials,
                                    std::vector<Tensor<1, 3>> &gradients) const
 {
-  AssertThrow(data.kappa == 0.,
+  AssertThrow(data.kappa == 0. && data.wavenumber == 0.,
               ExcMessage("Gradients are implemented for the Laplace kernel."));
   const unsigned int n = points.size();
   AssertThrow(charges.size() == n, ExcDimensionMismatch(charges.size(), n));
@@ -1981,6 +2096,9 @@ LaplaceFMM::evaluate(const std::vector<double>       &charges,
                      const std::vector<Tensor<1, 3>> &dipoles,
                      std::vector<double>             &potentials) const
 {
+  AssertThrow(data.wavenumber == 0.,
+              ExcMessage("The Helmholtz kernel takes complex sources "
+                         "(evaluate_complex_sets())."));
   const unsigned int n = points.size();
   AssertThrow(charges.empty() || charges.size() == n,
               ExcDimensionMismatch(charges.size(), n));
@@ -2364,7 +2482,9 @@ LaplaceFMM::print_statistics(std::ostream &out) const
           << " points, "
           << (data.kappa > 0 ?
                 "screened kernel, kappa " + std::to_string(data.kappa) + ", " :
-                std::string())
+              data.wavenumber > 0 ? "Helmholtz kernel, k " +
+                                      std::to_string(data.wavenumber) + ", " :
+                                    std::string())
           << "order " << data.order << ", theta " << data.theta << ", at most "
           << data.max_points_per_leaf << " points per leaf\n"
           << "  tree: " << boxes.size() << " boxes, " << n_leaves
@@ -2389,5 +2509,311 @@ LaplaceFMM::print_statistics(std::ostream &out) const
           << ", sum of multipoles " << t[1] << ", M2L " << t[2] << ", L2L+L2P "
           << t[3] << ", P2P " << t[4] << ", sum of potentials " << t[5] << '\n'
           << std::setprecision(precision);
+    }
+}
+
+
+
+void
+LaplaceFMM::far_field_helmholtz(
+  const std::vector<std::complex<double>>               &q,
+  const std::vector<Tensor<1, 3, std::complex<double>>> &d,
+  std::vector<std::complex<double>>                     &u) const
+{
+  using complex         = std::complex<double>;
+  const unsigned int p  = data.order;
+  const unsigned int nc = YE::n_coefficients(p);
+  const double       k  = data.wavenumber;
+  std::fill(helmholtz_multipoles.begin(), helmholtz_multipoles.end(), 0.);
+  std::fill(helmholtz_locals.begin(), helmholtz_locals.end(), 0.);
+  HE::Workspace w(p);
+
+  // Upward pass, as for the screened kernel, complex.
+  auto start = std::chrono::steady_clock::now();
+  for (const unsigned int leaf : my_leaves)
+    {
+      const Box     &box = boxes[leaf];
+      complex *const M   = &helmholtz_multipoles[leaf * nc];
+      const double   rho = yukawa_radius(box);
+      for (unsigned int i = box.begin; i < box.end; ++i)
+        {
+          const Tensor<1, 3> offset = sorted_points[i] - box.center;
+          if (!q.empty() && q[i] != 0.)
+            HE::add_charge(w, k, rho, q[i], offset, M);
+          if (!d.empty())
+            HE::add_dipole(w, k, rho, d[i], offset, M);
+        }
+    }
+  for (auto b = my_boxes.rbegin(); b != my_boxes.rend(); ++b)
+    if (boxes[*b].parent != invalid)
+      {
+        const Box     &box = boxes[*b];
+        const complex *T =
+          &helmholtz_m2m[(box.level * 8 + octant_of(box, boxes[box.parent])) *
+                         nc * nc];
+        const complex *M      = &helmholtz_multipoles[*b * nc];
+        complex       *parent = &helmholtz_multipoles[box.parent * nc];
+        for (unsigned int r = 0; r < nc; ++r)
+          {
+            complex sum = 0.;
+            for (unsigned int c = 0; c < nc; ++c)
+              sum += T[r * nc + c] * M[c];
+            parent[r] += sum;
+          }
+      }
+  phase_time[0] += seconds_since(start);
+
+  start = std::chrono::steady_clock::now();
+  if (n_mpi_processes > 1)
+    sum_over_processes(helmholtz_multipoles, mpi_communicator);
+  phase_time[1] += seconds_since(start);
+
+  // M2L by groups of pairs with the same scaled offset: the real rotations
+  // of the group act on the real and the imaginary parts, B expansions in
+  // 2 B lanes, and the translation along z of each pair is complex.
+  start = std::chrono::steady_clock::now();
+  {
+    constexpr unsigned int B = 8;
+    std::vector<double>    X(2 * nc * B), Y(2 * nc * B), work(2 * nc * B);
+    std::array<const complex *, B> Tz;
+    YE::Operators::Angles          angles;
+    for (const auto &group : m2l_groups)
+      {
+        rotations->angles(-group.tau, angles);
+        for (unsigned int first = group.begin; first < group.end; first += B)
+          {
+            const unsigned int count = std::min(B, group.end - first);
+            for (unsigned int j = 0; j < count; ++j)
+              {
+                const unsigned int pair = m2l_order[first + j];
+                const unsigned int b    = my_m2l_pairs[pair].second;
+                const complex     *M    = &helmholtz_multipoles[b * nc];
+                const double      *scale =
+                  &helmholtz_outgoing_scale[boxes[b].level * (p + 1)];
+                for (unsigned int n = 0; n <= p; ++n)
+                  for (unsigned int a = n * n; a < (n + 1) * (n + 1); ++a)
+                    {
+                      X[a * 2 * B + j]     = scale[n] * M[a].real();
+                      X[a * 2 * B + B + j] = scale[n] * M[a].imag();
+                    }
+                Tz[j] = &helmholtz_tz[m2l_tz[pair]];
+              }
+            for (unsigned int j = count; j < B; ++j)
+              {
+                for (unsigned int a = 0; a < nc; ++a)
+                  X[a * 2 * B + j] = X[a * 2 * B + B + j] = 0.;
+                Tz[j] = Tz[0];
+              }
+            std::fill(Y.begin(), Y.end(), 0.);
+            rotations->translate_complex<B>(
+              angles, Tz.data(), X.data(), Y.data(), work.data());
+            for (unsigned int j = 0; j < count; ++j)
+              {
+                const unsigned int a_box =
+                  my_m2l_pairs[m2l_order[first + j]].first;
+                complex      *L = &helmholtz_locals[a_box * nc];
+                const double *scale =
+                  &helmholtz_local_scale[boxes[a_box].level * (p + 1)];
+                for (unsigned int n = 0; n <= p; ++n)
+                  for (unsigned int a = n * n; a < (n + 1) * (n + 1); ++a)
+                    L[a] += scale[n] *
+                            complex(Y[a * 2 * B + j], Y[a * 2 * B + B + j]);
+              }
+          }
+      }
+  }
+  phase_time[2] += seconds_since(start);
+
+  // Downward pass and evaluation at the own targets.
+  start = std::chrono::steady_clock::now();
+  for (const unsigned int b : my_target_boxes)
+    if (boxes[b].parent != invalid)
+      {
+        const Box     &box = boxes[b];
+        const complex *T =
+          &helmholtz_l2l[(box.level * 8 + octant_of(box, boxes[box.parent])) *
+                         nc * nc];
+        const complex *parent = &helmholtz_locals[box.parent * nc];
+        complex       *L      = &helmholtz_locals[b * nc];
+        for (unsigned int r = 0; r < nc; ++r)
+          {
+            complex sum = 0.;
+            for (unsigned int c = 0; c < nc; ++c)
+              sum += T[r * nc + c] * parent[c];
+            L[r] += sum;
+          }
+      }
+  for (const unsigned int leaf : my_leaves)
+    {
+      const Box   &box = boxes[leaf];
+      const double rho = yukawa_radius(box);
+      for (unsigned int i = box.begin; i < box.target_end; ++i)
+        u[i] += HE::evaluate_local(w,
+                                   k,
+                                   rho,
+                                   &helmholtz_locals[leaf * nc],
+                                   sorted_points[i] - box.center);
+    }
+  phase_time[3] += seconds_since(start);
+}
+
+
+
+void
+LaplaceFMM::particle_to_particle_helmholtz(const unsigned int          a,
+                                           const unsigned int          b,
+                                           const unsigned int          kq,
+                                           const unsigned int          kd,
+                                           const std::complex<double> *q,
+                                           const std::complex<double> *d,
+                                           std::complex<double>       *u) const
+{
+  using complex        = std::complex<double>;
+  const Box         &A = boxes[a];
+  const Box         &B = boxes[b];
+  const double      *x = sorted_coordinates[0].data();
+  const double      *y = sorted_coordinates[1].data();
+  const double      *z = sorted_coordinates[2].data();
+  const unsigned int n = points.size();
+  const double       k = data.wavenumber;
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
+    for (unsigned int j = B.begin; j < B.end; ++j)
+      {
+        const double rx = x[i] - x[j], ry = y[i] - y[j], rz = z[i] - z[j];
+        const double r2 = rx * rx + ry * ry + rz * rz;
+        if (r2 == 0.)
+          continue;
+        const double  r = std::sqrt(r2);
+        const complex e = complex(std::cos(k * r), std::sin(k * r)) / r;
+        for (unsigned int s = 0; s < kq; ++s)
+          u[s * n + i] += q[s * n + j] * e;
+        if (kd > 0)
+          {
+            // d . (x_i - x_j) (1 - i k r) e^{i k r} / r^3
+            const complex factor = complex(1., -k * r) * e / r2;
+            for (unsigned int s = 0; s < kd; ++s)
+              {
+                const complex *ds = d + 3 * s * n;
+                u[(kq + s) * n + i] +=
+                  (ds[j] * rx + ds[n + j] * ry + ds[2 * n + j] * rz) * factor;
+              }
+          }
+      }
+}
+
+
+
+void
+LaplaceFMM::evaluate_complex_sets(
+  const std::vector<std::vector<std::complex<double>>>               &charges,
+  const std::vector<std::vector<Tensor<1, 3, std::complex<double>>>> &dipoles,
+  std::vector<std::vector<std::complex<double>>> &potentials,
+  const bool                                      combined) const
+{
+  using complex = std::complex<double>;
+  AssertThrow(data.wavenumber > 0.,
+              ExcMessage("Complex sources need the Helmholtz kernel."));
+  const unsigned int kq = charges.size(), kd = dipoles.size(), k = kq + kd;
+  const unsigned int n = points.size();
+  AssertThrow(k >= 1 && k <= 8 && (!combined || kq == kd),
+              ExcMessage("One to eight sets, as many of charges as of "
+                         "dipoles if combined."));
+  // An empty set is a set of zeros.
+  std::vector<complex> q(kq * n), d(3 * kd * n);
+  for (unsigned int s = 0; s < kq; ++s)
+    {
+      AssertThrow(charges[s].empty() || charges[s].size() == n,
+                  ExcDimensionMismatch(charges[s].size(), n));
+      if (!charges[s].empty())
+        for (unsigned int i = 0; i < n; ++i)
+          q[s * n + i] = charges[s][permutation[i]];
+    }
+  for (unsigned int s = 0; s < kd; ++s)
+    {
+      AssertThrow(dipoles[s].empty() || dipoles[s].size() == n,
+                  ExcDimensionMismatch(dipoles[s].size(), n));
+      if (!dipoles[s].empty())
+        for (unsigned int i = 0; i < n; ++i)
+          for (unsigned int c = 0; c < 3; ++c)
+            d[(3 * s + c) * n + i] = dipoles[s][permutation[i]][c];
+    }
+
+  // The far field, set by set; combined, the charges and the dipoles of a
+  // set together.
+  const std::array<double, 6> times_before = phase_time;
+  std::vector<complex>        u(k * n, 0.);
+  {
+    std::vector<complex>               set_charges, set_potentials(n);
+    std::vector<Tensor<1, 3, complex>> set_dipoles;
+    for (unsigned int s = 0; s < (combined ? kq : k); ++s)
+      {
+        set_charges.clear();
+        set_dipoles.clear();
+        if (s < kq)
+          set_charges.assign(q.begin() + s * n, q.begin() + (s + 1) * n);
+        if (s >= kq || combined)
+          {
+            const unsigned int sd = combined ? s : s - kq;
+            set_dipoles.resize(n);
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int c = 0; c < 3; ++c)
+                set_dipoles[i][c] = d[(3 * sd + c) * n + i];
+          }
+        std::fill(set_potentials.begin(), set_potentials.end(), 0.);
+        far_field_helmholtz(set_charges, set_dipoles, set_potentials);
+        std::copy(set_potentials.begin(),
+                  set_potentials.end(),
+                  u.begin() + s * n);
+      }
+  }
+
+  // The direct interactions of all sets at once.
+  auto start = std::chrono::steady_clock::now();
+  for (const auto &[a, b] : my_p2p_pairs)
+    particle_to_particle_helmholtz(a, b, kq, kd, q.data(), d.data(), u.data());
+  phase_time[4] += seconds_since(start);
+
+  start                    = std::chrono::steady_clock::now();
+  const unsigned int k_out = combined ? kq : k;
+  if (combined)
+    for (unsigned int s = 0; s < kq; ++s)
+      for (unsigned int i = 0; i < n; ++i)
+        u[s * n + i] += u[(kq + s) * n + i];
+  potentials.resize(k_out);
+  if (target_flags.empty())
+    {
+      std::vector<complex> all(k_out * n, 0.);
+      for (unsigned int s = 0; s < k_out; ++s)
+        for (unsigned int i = 0; i < n; ++i)
+          all[s * n + permutation[i]] = u[s * n + i];
+      if (n_mpi_processes > 1)
+        sum_over_processes(all, mpi_communicator);
+      for (unsigned int s = 0; s < k_out; ++s)
+        potentials[s].assign(all.begin() + s * n, all.begin() + (s + 1) * n);
+    }
+  else
+    {
+      const unsigned int   nt = target_positions.size();
+      std::vector<complex> sums(k_out * nt);
+      for (unsigned int s = 0; s < k_out; ++s)
+        for (unsigned int t = 0; t < nt; ++t)
+          sums[s * nt + t] = u[s * n + target_positions[t]];
+      if (n_mpi_processes > 1)
+        sum_over_processes(sums, mpi_communicator);
+      for (unsigned int s = 0; s < k_out; ++s)
+        {
+          potentials[s].assign(n, 0.);
+          for (unsigned int t = 0; t < nt; ++t)
+            potentials[s][permutation[target_positions[t]]] = sums[s * nt + t];
+        }
+    }
+  phase_time[5] += seconds_since(start);
+  ++n_evaluations;
+  if (n_evaluations == 1 && n_mpi_processes > 1)
+    {
+      std::array<double, 6> times;
+      for (unsigned int i = 0; i < times.size(); ++i)
+        times[i] = phase_time[i] - times_before[i];
+      rebalance(times);
     }
 }

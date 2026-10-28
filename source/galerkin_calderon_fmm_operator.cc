@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -83,12 +84,20 @@ GalerkinCalderonFMMOperator::reinit(
   const AffineConstraints<double>                         &constraints_in,
   const GalerkinPanelPairIntegrator<3>                    &integrator,
   const AdditionalData                                    &data,
-  NearFieldCache                                          *cache)
+  NearFieldCache                                          *cache,
+  const GalerkinPanelPairIntegrator<3>                    *imaginary)
 {
-  kappa = integrator.get_screening();
-  AssertThrow(!integrator.is_helmholtz(),
-              ExcMessage("The FMM has the expansions of the Laplace and the "
-                         "screened kernel only."));
+  kappa      = integrator.get_screening();
+  wavenumber = integrator.is_helmholtz() ? integrator.get_wavenumber() : 0.;
+  AssertThrow(wavenumber == 0. ||
+                (!integrator.is_imaginary_part() && imaginary != nullptr &&
+                 imaginary->is_imaginary_part() &&
+                 imaginary->get_wavenumber() == wavenumber),
+              ExcMessage("The Helmholtz kernel needs the integrators of its "
+                         "real and of its imaginary part."));
+  // The blocks of the imaginary part are not kept.
+  if (wavenumber > 0.)
+    cache = nullptr;
   n_indices = n;
   indices   = cell_indices;
   constraints.copy_from(constraints_in);
@@ -145,6 +154,7 @@ GalerkinCalderonFMMOperator::reinit(
   start                               = std::chrono::steady_clock::now();
   LaplaceFMM::AdditionalData fmm_data = data.fmm;
   fmm_data.kappa                      = kappa;
+  fmm_data.wavenumber                 = wavenumber;
   charge_fmm.reinit(points, fmm_data);
   separate_preconditioner = data.preconditioner_order > 0 ||
                             data.preconditioner_theta > 0 ||
@@ -176,7 +186,8 @@ GalerkinCalderonFMMOperator::reinit(
   // The fused pass holds the multipoles of five sets of all boxes at once:
   // only while they take less than 256 MB per process. The screened
   // expansions have no fused pass.
-  fused_rows = kappa == 0. && data.dipole_order_increase == 0 &&
+  fused_rows = kappa == 0. && wavenumber == 0. &&
+               data.dipole_order_increase == 0 &&
                charge_fmm.expansion_bytes(5) < (std::size_t(256) << 20) &&
                std::getenv("PIBEM_UNFUSED_ROWS") == nullptr;
   setup_tree = seconds_since(start);
@@ -478,12 +489,47 @@ GalerkinCalderonFMMOperator::reinit(
   near_single.reinit(near_sparsity);
   near_double.reinit(near_sparsity);
   near_hypersingular.reinit(near_sparsity);
+  if (wavenumber > 0.)
+    {
+      near_single_imag.reinit(near_sparsity);
+      near_double_imag.reinit(near_sparsity);
+      near_hypersingular_imag.reinit(near_sparsity);
+    }
+  else
+    {
+      near_single_imag.clear();
+      near_double_imag.clear();
+      near_hypersingular_imag.clear();
+    }
   single_diagonal.reinit(n_indices);
   hypersingular_diagonal.reinit(n_indices);
 
+  // The kernel f(r) / (4 pi r), its normal derivatives those of the Laplace
+  // kernel times E(r), and the term c (n_x . n_y) G of W, as in the
+  // integrator: f = exp(-kappa r), c = kappa^2 for the screened kernel, f =
+  // cos(k r) and sin(k r), c = -k^2, for the parts of the Helmholtz kernel.
+  const bool   normal_term = kappa > 0. || wavenumber > 0.;
+  const double normal_coefficient =
+    kappa > 0. ? kappa * kappa : -wavenumber * wavenumber;
+  bool       imaginary_pass = false;
+  const auto radial         = [&](const double r, double &f, double &e) {
+    if (wavenumber > 0.)
+      {
+        const double kr = wavenumber * r, c = std::cos(kr), s = std::sin(kr);
+        f = imaginary_pass ? s : c;
+        e = imaginary_pass ? s - kr * c : c + kr * s;
+      }
+    else if (kappa > 0.)
+      {
+        f = std::exp(-kappa * r);
+        e = (1. + kappa * r) * f;
+      }
+    else
+      f = e = 1.;
+  };
   FullMatrix<double> kernel(n_q_points, n_q_points),
     dipole(n_q_points, n_q_points), dipole_back(n_q_points, n_q_points),
-    normal_kernel(kappa > 0. ? n_q_points : 0, kappa > 0. ? n_q_points : 0),
+    normal_kernel(normal_term ? n_q_points : 0, normal_term ? n_q_points : 0),
     partial(dpc, n_q_points), block(dpc, dpc), back(dpc, dpc),
     transposed(dpc, dpc), normal_block(dpc, dpc);
   const auto contract = [&](const FullMatrix<double> &k,
@@ -506,145 +552,174 @@ GalerkinCalderonFMMOperator::reinit(
           result(i, j) = sum;
         }
   };
-  for (unsigned int k = 0; k < my_pairs.size(); ++k)
+  // The corrections of the real part, then, for the Helmholtz kernel, of
+  // the imaginary one, from its exact blocks.
+  std::deque<FullMatrix<double>> imaginary_blocks;
+  for (const bool pass : {false, true})
     {
-      const auto [t, r]               = my_pairs[k];
-      const bool                self  = t == r;
-      const FullMatrix<double> &exact = *exact_blocks[k];
-      const auto correction_start     = std::chrono::steady_clock::now();
-
-      // The part of the point sums: the kernels of the pairs of points,
-      // without the coincident points of a cell with itself.
-      for (unsigned int q = 0; q < n_q_points; ++q)
+      if (pass && wavenumber == 0.)
+        break;
+      imaginary_pass = pass;
+      if (pass)
         {
-          const unsigned int a = t * n_q_points + q;
-          for (unsigned int s = 0; s < n_q_points; ++s)
+          exact_blocks.clear();
+          for (const auto &[t, r] : my_pairs)
             {
-              const unsigned int b = r * n_q_points + s;
-              if (a == b)
-                {
-                  kernel(q, s) = dipole(q, s) = dipole_back(s, q) = 0;
-                  if (kappa > 0.)
-                    normal_kernel(q, s) = 0;
-                  continue;
-                }
-              const Tensor<1, 3> x_minus_y = points[a] - points[b];
-              const double       distance  = x_minus_y.norm();
-              const double weight = inverse_4pi * JxW[a] * JxW[b] / distance;
-              const double cube   = distance * distance;
-              // The screened kernel e^{-kappa r} G_0, its normal derivatives
-              // those of G_0 times (1 + kappa r) e^{-kappa r}, and the term
-              // kappa^2 (n_x . n_y) G of W.
-              const double exponential =
-                kappa == 0. ? 1. : std::exp(-kappa * distance);
-              const double factor = (1. + kappa * distance) * exponential;
-              kernel(q, s)        = weight * exponential;
-              dipole(q, s) = weight * (x_minus_y * normals[b]) / cube * factor;
-              dipole_back(s, q) =
-                -weight * (x_minus_y * normals[a]) / cube * factor;
-              if (kappa > 0.)
-                normal_kernel(q, s) =
-                  kappa * kappa * kernel(q, s) * (normals[a] * normals[b]);
+              imaginary_blocks.push_back(
+                t == r ? imaginary->integrate_single_double_hypersingular(
+                           cells[t], cells[r], data.quadrature_order) :
+                         imaginary->integrate_single_double_hypersingular_both(
+                           cells[t], cells[r], data.quadrature_order));
+              exact_blocks.push_back(&imaginary_blocks.back());
             }
         }
+      SparseMatrix<double> &target_single =
+                             pass ? near_single_imag : near_single,
+                           &target_double =
+                             pass ? near_double_imag : near_double,
+                           &target_hypersingular = pass ?
+                                                     near_hypersingular_imag :
+                                                     near_hypersingular;
+      for (unsigned int k = 0; k < my_pairs.size(); ++k)
+        {
+          const auto [t, r]               = my_pairs[k];
+          const bool                self  = t == r;
+          const FullMatrix<double> &exact = *exact_blocks[k];
+          const auto correction_start     = std::chrono::steady_clock::now();
 
-      // Single layer.
-      contract(kernel, block);
-      for (unsigned int i = 0; i < dpc; ++i)
-        for (unsigned int j = 0; j < dpc; ++j)
-          block(i, j) = exact(i, j) - block(i, j);
-      constraints.distribute_local_to_global(block,
-                                             indices[t],
-                                             indices[r],
-                                             near_single);
-      if (!self)
-        {
-          transposed.copy_transposed(block);
-          constraints.distribute_local_to_global(transposed,
-                                                 indices[r],
-                                                 indices[t],
-                                                 near_single);
-        }
-      // Double layer, both ways.
-      contract(dipole, block);
-      for (unsigned int i = 0; i < dpc; ++i)
-        for (unsigned int j = 0; j < dpc; ++j)
-          block(i, j) = exact(i, dpc + j) - block(i, j);
-      constraints.distribute_local_to_global(block,
-                                             indices[t],
-                                             indices[r],
-                                             near_double);
-      if (!self)
-        {
-          contract(dipole_back, back);
-          for (unsigned int j = 0; j < dpc; ++j)
-            for (unsigned int i = 0; i < dpc; ++i)
-              back(j, i) = exact(i, 3 * dpc + j) - back(j, i);
-          constraints.distribute_local_to_global(back,
-                                                 indices[r],
-                                                 indices[t],
-                                                 near_double);
-        }
-      // Hypersingular: the kernel block against the curls of both cells.
-      block = 0;
-      for (unsigned int d = 0; d < 3; ++d)
-        {
-          for (unsigned int i = 0; i < dpc; ++i)
-            for (unsigned int s = 0; s < n_q_points; ++s)
-              {
-                double sum = 0;
-                for (unsigned int q = 0; q < n_q_points; ++q)
-                  sum += shape_curls[(t * n_q_points + q) * dpc + i][d] *
-                         kernel(q, s);
-                partial(i, s) = sum;
-              }
+          // The part of the point sums: the kernels of the pairs of points,
+          // without the coincident points of a cell with itself.
+          for (unsigned int q = 0; q < n_q_points; ++q)
+            {
+              const unsigned int a = t * n_q_points + q;
+              for (unsigned int s = 0; s < n_q_points; ++s)
+                {
+                  const unsigned int b = r * n_q_points + s;
+                  if (a == b)
+                    {
+                      kernel(q, s) = dipole(q, s) = dipole_back(s, q) = 0;
+                      if (normal_term)
+                        normal_kernel(q, s) = 0;
+                      continue;
+                    }
+                  const Tensor<1, 3> x_minus_y = points[a] - points[b];
+                  const double       distance  = x_minus_y.norm();
+                  const double       weight =
+                    inverse_4pi * JxW[a] * JxW[b] / distance;
+                  const double cube = distance * distance;
+                  double       f, factor;
+                  radial(distance, f, factor);
+                  kernel(q, s) = weight * f;
+                  dipole(q, s) =
+                    weight * (x_minus_y * normals[b]) / cube * factor;
+                  dipole_back(s, q) =
+                    -weight * (x_minus_y * normals[a]) / cube * factor;
+                  if (normal_term)
+                    normal_kernel(q, s) = normal_coefficient * kernel(q, s) *
+                                          (normals[a] * normals[b]);
+                }
+            }
+
+          // Single layer.
+          contract(kernel, block);
           for (unsigned int i = 0; i < dpc; ++i)
             for (unsigned int j = 0; j < dpc; ++j)
-              {
-                double sum = 0;
-                for (unsigned int s = 0; s < n_q_points; ++s)
-                  sum += partial(i, s) *
-                         shape_curls[(r * n_q_points + s) * dpc + j][d];
-                block(i, j) += sum;
-              }
-        }
-      if (kappa > 0.)
-        {
-          contract(normal_kernel, normal_block);
-          block.add(1., normal_block);
-        }
-      for (unsigned int i = 0; i < dpc; ++i)
-        for (unsigned int j = 0; j < dpc; ++j)
-          block(i, j) = exact(i, 2 * dpc + j) - block(i, j);
-      constraints.distribute_local_to_global(block,
-                                             indices[t],
-                                             indices[r],
-                                             near_hypersingular);
-      if (!self)
-        {
-          transposed.copy_transposed(block);
-          constraints.distribute_local_to_global(transposed,
-                                                 indices[r],
+              block(i, j) = exact(i, j) - block(i, j);
+          constraints.distribute_local_to_global(block,
                                                  indices[t],
-                                                 near_hypersingular);
-        }
-
-      // The diagonals of V and W, from the exact blocks, for the
-      // preconditioner; an exchanged pair adds the same entry again.
-      for (unsigned int i = 0; i < dpc; ++i)
-        for (unsigned int j = 0; j < dpc; ++j)
-          if (indices[t][i] == indices[r][j])
+                                                 indices[r],
+                                                 target_single);
+          if (!self)
             {
-              const double times = self ? 1. : 2.;
-              single_diagonal[indices[t][i]] += times * exact(i, j);
-              hypersingular_diagonal[indices[t][i]] +=
-                times * exact(i, 2 * dpc + j);
+              transposed.copy_transposed(block);
+              constraints.distribute_local_to_global(transposed,
+                                                     indices[r],
+                                                     indices[t],
+                                                     target_single);
             }
-      if (report_profile)
-        profile_seconds[6] += seconds_since(correction_start);
+          // Double layer, both ways.
+          contract(dipole, block);
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              block(i, j) = exact(i, dpc + j) - block(i, j);
+          constraints.distribute_local_to_global(block,
+                                                 indices[t],
+                                                 indices[r],
+                                                 target_double);
+          if (!self)
+            {
+              contract(dipole_back, back);
+              for (unsigned int j = 0; j < dpc; ++j)
+                for (unsigned int i = 0; i < dpc; ++i)
+                  back(j, i) = exact(i, 3 * dpc + j) - back(j, i);
+              constraints.distribute_local_to_global(back,
+                                                     indices[r],
+                                                     indices[t],
+                                                     target_double);
+            }
+          // Hypersingular: the kernel block against the curls of both cells.
+          block = 0;
+          for (unsigned int d = 0; d < 3; ++d)
+            {
+              for (unsigned int i = 0; i < dpc; ++i)
+                for (unsigned int s = 0; s < n_q_points; ++s)
+                  {
+                    double sum = 0;
+                    for (unsigned int q = 0; q < n_q_points; ++q)
+                      sum += shape_curls[(t * n_q_points + q) * dpc + i][d] *
+                             kernel(q, s);
+                    partial(i, s) = sum;
+                  }
+              for (unsigned int i = 0; i < dpc; ++i)
+                for (unsigned int j = 0; j < dpc; ++j)
+                  {
+                    double sum = 0;
+                    for (unsigned int s = 0; s < n_q_points; ++s)
+                      sum += partial(i, s) *
+                             shape_curls[(r * n_q_points + s) * dpc + j][d];
+                    block(i, j) += sum;
+                  }
+            }
+          if (normal_term)
+            {
+              contract(normal_kernel, normal_block);
+              block.add(1., normal_block);
+            }
+          for (unsigned int i = 0; i < dpc; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              block(i, j) = exact(i, 2 * dpc + j) - block(i, j);
+          constraints.distribute_local_to_global(block,
+                                                 indices[t],
+                                                 indices[r],
+                                                 target_hypersingular);
+          if (!self)
+            {
+              transposed.copy_transposed(block);
+              constraints.distribute_local_to_global(transposed,
+                                                     indices[r],
+                                                     indices[t],
+                                                     target_hypersingular);
+            }
+
+          // The diagonals of V and W, from the exact blocks, for the
+          // preconditioner; an exchanged pair adds the same entry again.
+          for (unsigned int i = 0; i < dpc && !pass; ++i)
+            for (unsigned int j = 0; j < dpc; ++j)
+              if (indices[t][i] == indices[r][j])
+                {
+                  const double times = self ? 1. : 2.;
+                  single_diagonal[indices[t][i]] += times * exact(i, j);
+                  hypersingular_diagonal[indices[t][i]] +=
+                    times * exact(i, 2 * dpc + j);
+                }
+          if (report_profile)
+            profile_seconds[6] += seconds_since(correction_start);
+        }
     }
   const double own_near_time = seconds_since(start);
   integrator.release_work_memory();
+  if (imaginary != nullptr)
+    imaginary->release_work_memory();
   // The blocks of the pairs that are gone, refined, leave the cache.
   if (cache != nullptr)
     {
@@ -785,9 +860,16 @@ GalerkinCalderonFMMOperator::vmult(const Operator        op,
                                    Vector<double>       &dst,
                                    const Vector<double> &src) const
 {
-  const auto         start = std::chrono::steady_clock::now();
-  const unsigned int dpc   = dofs_per_cell;
-  const unsigned int np    = points.size();
+  const auto start = std::chrono::steady_clock::now();
+  if (wavenumber > 0.)
+    {
+      helmholtz_real_part(op, dst, src, charge_fmm, dipole_fmm);
+      time_product[static_cast<unsigned int>(op)] += seconds_since(start);
+      ++n_products[static_cast<unsigned int>(op)];
+      return;
+    }
+  const unsigned int dpc = dofs_per_cell;
+  const unsigned int np  = points.size();
   Vector<double>     x(src);
   if (constraints.n_constraints() > 0)
     constraints.distribute(x);
@@ -1006,6 +1088,9 @@ GalerkinCalderonFMMOperator::vmult_rows(const Vector<double> &t,
                                         Vector<double>       &neumann,
                                         const bool            relaxed) const
 {
+  AssertThrow(wavenumber == 0.,
+              ExcMessage("The Helmholtz kernel has complex rows "
+                         "(vmult_rows_complex())."));
   const auto         start = std::chrono::steady_clock::now();
   const unsigned int np    = points.size();
   Vector<double>     x_t(t), x_u(u);
@@ -1150,6 +1235,11 @@ GalerkinCalderonFMMOperator::apply(const Operator        op,
 {
   AssertThrow(op == Operator::single_layer || op == Operator::hypersingular,
               ExcMessage("V or W only."));
+  if (wavenumber > 0.)
+    {
+      helmholtz_real_part(op, dst, src, fmm, fmm);
+      return;
+    }
   const unsigned int np = points.size();
   Vector<double>     x(src);
   if (constraints.n_constraints() > 0)
@@ -1208,6 +1298,15 @@ GalerkinCalderonFMMOperator::vmult_preconditioner_pair(
   const auto        start = std::chrono::steady_clock::now();
   const LaplaceFMM &fmm =
     separate_preconditioner ? preconditioner_fmm : charge_fmm;
+  if (wavenumber > 0.)
+    {
+      // The real parts, V_r v_src and W_r w_src.
+      helmholtz_real_part(Operator::single_layer, v, v_src, fmm, fmm);
+      helmholtz_real_part(Operator::hypersingular, w, w_src, fmm, fmm);
+      time_product[5] += seconds_since(start);
+      n_products[5] += 2;
+      return;
+    }
   const unsigned int np = points.size();
   Vector<double>     x_v(v_src), x_w(w_src);
   if (constraints.n_constraints() > 0)
@@ -1264,6 +1363,287 @@ GalerkinCalderonFMMOperator::vmult_preconditioner_pair(
     }
   time_product[5] += seconds_since(start);
   n_products[5] += 2;
+}
+
+
+
+void
+GalerkinCalderonFMMOperator::helmholtz_point_sums(
+  const std::array<Vector<double>, 2> &t,
+  const std::array<Vector<double>, 2> &u,
+  const LaplaceFMM                    &charge_sums,
+  const LaplaceFMM                    &dipole_sums,
+  std::array<Vector<double>, 2>       *v_t,
+  std::array<Vector<double>, 2>       *k_u,
+  std::array<Vector<double>, 2>       *kt_t,
+  std::array<Vector<double>, 2>       *w_u) const
+{
+  using complex         = std::complex<double>;
+  const unsigned int np = points.size();
+  const double       k  = wavenumber;
+  // The values of t and of u, and the curl of u, at the points.
+  std::array<std::vector<double>, 2>       values_t, values_u;
+  std::array<std::vector<Tensor<1, 3>>, 2> curls_u;
+  for (unsigned int part = 0; part < 2; ++part)
+    {
+      if (v_t != nullptr || kt_t != nullptr)
+        evaluate_field(t[part], values_t[part], nullptr);
+      if (k_u != nullptr || w_u != nullptr)
+        evaluate_field(u[part],
+                       values_u[part],
+                       w_u != nullptr ? &curls_u[part] : nullptr);
+    }
+  const auto value_t = [&](const unsigned int p) {
+    return complex(values_t[0][p], values_t[1][p]);
+  };
+  const auto value_u = [&](const unsigned int p) {
+    return complex(values_u[0][p], values_u[1][p]);
+  };
+
+  // The charges: t for V; the curl of u and n u for W.
+  std::vector<std::vector<complex>> charges, charge_potentials;
+  if (v_t != nullptr)
+    {
+      charges.emplace_back(np);
+      for (unsigned int p = 0; p < np; ++p)
+        charges.back()[p] = inverse_4pi * JxW[p] * value_t(p);
+    }
+  const unsigned int w_first = charges.size();
+  if (w_u != nullptr)
+    {
+      for (unsigned int d = 0; d < 3; ++d)
+        {
+          charges.emplace_back(np);
+          for (unsigned int p = 0; p < np; ++p)
+            charges.back()[p] = inverse_4pi * JxW[p] *
+                                complex(curls_u[0][p][d], curls_u[1][p][d]);
+        }
+      for (unsigned int d = 0; d < 3; ++d)
+        {
+          charges.emplace_back(np);
+          for (unsigned int p = 0; p < np; ++p)
+            charges.back()[p] =
+              inverse_4pi * JxW[p] * value_u(p) * normals[p][d];
+        }
+    }
+  if (!charges.empty())
+    charge_sums.evaluate_complex_sets(charges, {}, charge_potentials);
+
+  // The dipoles: u n for K; -e_d t for the gradient of the potential of t,
+  // of which K^T takes the normal component.
+  std::vector<std::vector<Tensor<1, 3, complex>>> dipoles;
+  std::vector<std::vector<complex>>               dipole_potentials;
+  if (k_u != nullptr)
+    {
+      dipoles.emplace_back(np);
+      for (unsigned int p = 0; p < np; ++p)
+        for (unsigned int d = 0; d < 3; ++d)
+          dipoles.back()[p][d] =
+            inverse_4pi * JxW[p] * value_u(p) * normals[p][d];
+    }
+  const unsigned int kt_first = dipoles.size();
+  if (kt_t != nullptr)
+    for (unsigned int d = 0; d < 3; ++d)
+      {
+        dipoles.emplace_back(np);
+        for (unsigned int p = 0; p < np; ++p)
+          dipoles.back()[p][d] = -inverse_4pi * JxW[p] * value_t(p);
+      }
+  if (!dipoles.empty())
+    dipole_sums.evaluate_complex_sets({}, dipoles, dipole_potentials);
+
+  // The tests of each part, real operations on the real and on the
+  // imaginary part.
+  std::vector<double> values(np);
+  for (unsigned int part = 0; part < 2; ++part)
+    {
+      const auto take = [part](const complex z) {
+        return part == 0 ? z.real() : z.imag();
+      };
+      if (v_t != nullptr)
+        {
+          for (unsigned int p = 0; p < np; ++p)
+            values[p] = JxW[p] * take(charge_potentials[0][p]);
+          test_values(values, (*v_t)[part]);
+        }
+      if (w_u != nullptr)
+        {
+          std::array<std::vector<double>, 3> curl_potentials;
+          for (unsigned int d = 0; d < 3; ++d)
+            {
+              curl_potentials[d].resize(np);
+              for (unsigned int p = 0; p < np; ++p)
+                curl_potentials[d][p] = take(charge_potentials[w_first + d][p]);
+            }
+          test_curl_potentials(curl_potentials, (*w_u)[part]);
+          // -k^2 (n_x . n_y) G, from the potentials of the components of n u.
+          for (unsigned int p = 0; p < np; ++p)
+            {
+              double sum = 0;
+              for (unsigned int d = 0; d < 3; ++d)
+                sum +=
+                  normals[p][d] * take(charge_potentials[w_first + 3 + d][p]);
+              values[p] = -k * k * JxW[p] * sum;
+            }
+          test_values(values, (*w_u)[part]);
+        }
+      if (k_u != nullptr)
+        {
+          for (unsigned int p = 0; p < np; ++p)
+            values[p] = JxW[p] * take(dipole_potentials[0][p]);
+          test_values(values, (*k_u)[part]);
+        }
+      if (kt_t != nullptr)
+        {
+          for (unsigned int p = 0; p < np; ++p)
+            {
+              double sum = 0;
+              for (unsigned int d = 0; d < 3; ++d)
+                sum += normals[p][d] * take(dipole_potentials[kt_first + d][p]);
+              values[p] = JxW[p] * sum;
+            }
+          test_values(values, (*kt_t)[part]);
+        }
+    }
+}
+
+
+
+void
+GalerkinCalderonFMMOperator::helmholtz_real_part(
+  const Operator        op,
+  Vector<double>       &dst,
+  const Vector<double> &src,
+  const LaplaceFMM     &charge_sums,
+  const LaplaceFMM     &dipole_sums) const
+{
+  // The real part of A x for a real x is A_r x: the point sums of x + 0 i,
+  // and the near field of the real part.
+  std::array<Vector<double>, 2> x{
+    {Vector<double>(src), Vector<double>(n_indices)}};
+  if (constraints.n_constraints() > 0)
+    constraints.distribute(x[0]);
+  std::array<Vector<double>, 2> y{
+    {Vector<double>(n_indices), Vector<double>(n_indices)}};
+  switch (op)
+    {
+      case Operator::single_layer:
+        helmholtz_point_sums(
+          x, x, charge_sums, dipole_sums, &y, nullptr, nullptr, nullptr);
+        near_single.vmult_add(y[0], src);
+        break;
+      case Operator::double_layer:
+        helmholtz_point_sums(
+          x, x, charge_sums, dipole_sums, nullptr, &y, nullptr, nullptr);
+        near_double.vmult_add(y[0], src);
+        break;
+      case Operator::double_layer_transpose:
+        helmholtz_point_sums(
+          x, x, charge_sums, dipole_sums, nullptr, nullptr, &y, nullptr);
+        near_double.Tvmult_add(y[0], src);
+        break;
+      case Operator::hypersingular:
+        helmholtz_point_sums(
+          x, x, charge_sums, dipole_sums, nullptr, nullptr, nullptr, &y);
+        near_hypersingular.vmult_add(y[0], src);
+        break;
+    }
+  sum_over_processes(y[0], mpi_communicator);
+  dst = y[0];
+}
+
+
+
+void
+GalerkinCalderonFMMOperator::vmult_rows_complex(const Vector<double> &t,
+                                                const Vector<double> &t_imag,
+                                                const Vector<double> &u,
+                                                const Vector<double> &u_imag,
+                                                const double          k,
+                                                Vector<double>       &dirichlet,
+                                                Vector<double> &dirichlet_imag,
+                                                Vector<double> &neumann,
+                                                Vector<double> &neumann_imag,
+                                                const bool      relaxed) const
+{
+  AssertThrow(wavenumber > 0.,
+              ExcMessage("The complex rows are those of the Helmholtz "
+                         "kernel."));
+  const auto                    start = std::chrono::steady_clock::now();
+  std::array<Vector<double>, 2> x_t{
+    {Vector<double>(t), Vector<double>(t_imag)}},
+    x_u{{Vector<double>(u), Vector<double>(u_imag)}};
+  if (constraints.n_constraints() > 0)
+    for (unsigned int part = 0; part < 2; ++part)
+      {
+        constraints.distribute(x_t[part]);
+        constraints.distribute(x_u[part]);
+      }
+  // Relaxed, through the expansions of the preconditioner, as vmult_rows().
+  const bool use_relaxed =
+    relaxed && (separate_relaxed || separate_preconditioner);
+  const LaplaceFMM &charge_sums = !use_relaxed     ? charge_fmm :
+                                  separate_relaxed ? relaxed_fmm :
+                                                     preconditioner_fmm;
+  const LaplaceFMM &dipole_sums = use_relaxed ? charge_sums : dipole_fmm;
+  const auto        zero        = [&]() {
+    return std::array<Vector<double>, 2>{
+      {Vector<double>(n_indices), Vector<double>(n_indices)}};
+  };
+  std::array<Vector<double>, 2> v_t = zero(), k_u = zero(), kt_t = zero(),
+                                w_u = zero();
+  helmholtz_point_sums(
+    x_t, x_u, charge_sums, dipole_sums, &v_t, &k_u, &kt_t, &w_u);
+
+  // The near field: that of the real part on each part, that of the
+  // imaginary one across, (A_r + i A_i)(x + i x_imag).
+  const std::array<const Vector<double> *, 2> T = {{&t, &t_imag}},
+                                              U = {{&u, &u_imag}};
+  for (unsigned int part = 0; part < 2; ++part)
+    {
+      near_single.vmult_add(v_t[part], *T[part]);
+      near_double.vmult_add(k_u[part], *U[part]);
+      near_double.Tvmult_add(kt_t[part], *T[part]);
+      near_hypersingular.vmult_add(w_u[part], *U[part]);
+    }
+  Vector<double> across(n_indices);
+  for (unsigned int part = 0; part < 2; ++part)
+    {
+      const double sign    = part == 0 ? -1. : 1.;
+      const auto  &t_other = *T[1 - part], &u_other = *U[1 - part];
+      near_single_imag.vmult(across, t_other);
+      v_t[part].add(sign, across);
+      near_double_imag.vmult(across, u_other);
+      k_u[part].add(sign, across);
+      near_double_imag.Tvmult(across, t_other);
+      kt_t[part].add(sign, across);
+      near_hypersingular_imag.vmult(across, u_other);
+      w_u[part].add(sign, across);
+    }
+
+  // dirichlet = V t - k K u and neumann = W u + k K^T t, all four in one
+  // sum over the processes.
+  Vector<double> rows(4 * n_indices);
+  for (unsigned int part = 0; part < 2; ++part)
+    for (types::global_dof_index i = 0; i < n_indices; ++i)
+      {
+        rows[part * n_indices + i]       = v_t[part][i] - k * k_u[part][i];
+        rows[(2 + part) * n_indices + i] = w_u[part][i] + k * kt_t[part][i];
+      }
+  sum_over_processes(rows, mpi_communicator);
+  Vector<double> *const out[4] = {&dirichlet,
+                                  &dirichlet_imag,
+                                  &neumann,
+                                  &neumann_imag};
+  for (unsigned int r = 0; r < 4; ++r)
+    {
+      out[r]->reinit(n_indices);
+      for (types::global_dof_index i = 0; i < n_indices; ++i)
+        (*out[r])[i] = rows[r * n_indices + i];
+    }
+  const unsigned int kind = use_relaxed ? 6 : 4;
+  time_product[kind] += seconds_since(start);
+  n_products[kind] += 2;
 }
 
 

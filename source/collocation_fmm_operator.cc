@@ -27,6 +27,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <map>
 #include <ostream>
 
@@ -134,8 +135,10 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
     own_rows.size());
   std::vector<unsigned long> row_pairs(own_rows.size(), 0),
     row_corrections(own_rows.size(), 0);
-  const double kappa     = fmm_data.kappa;
-  const auto   integrate = [&](const std::size_t begin, const std::size_t end) {
+  const double kappa   = fmm_data.kappa;
+  const double k       = fmm_data.wavenumber;
+  wavenumber           = k;
+  const auto integrate = [&](const std::size_t begin, const std::size_t end) {
     Vector<double> exact_n(dpc), exact_d(dpc), point_n(dpc), point_d(dpc);
     std::vector<std::pair<BoundingBox<3>, unsigned int>> hits;
     for (std::size_t r = begin; r < end; ++r)
@@ -161,12 +164,26 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
                 const double       r = R.norm();
                 if (r == 0.)
                   continue;
-                const double exponential =
-                  kappa == 0. ? 1. : std::exp(-kappa * r);
-                const double single = inverse_4pi * exponential / r * JxW[p];
-                const double dipole = -inverse_4pi * (R * normals[p]) *
-                                      (1. + kappa * r) * exponential /
-                                      (r * r * r) * JxW[p];
+                // f(r) / (4 pi r) and its gradient E(r) R / (4 pi r^3):
+                // f = exp(-kappa r), E = (1 + kappa r) f; the Helmholtz
+                // kernel exp(i k r) has the real part f = cos(k r), E =
+                // cos(k r) + k r sin(k r), and the dense assembly
+                // integrates its imaginary part with this rule on every
+                // cell, so that it needs no correction.
+                double f = 1., e = 1.;
+                if (k > 0.)
+                  {
+                    f = std::cos(k * r);
+                    e = f + k * r * std::sin(k * r);
+                  }
+                else if (kappa > 0.)
+                  {
+                    f = std::exp(-kappa * r);
+                    e = (1. + kappa * r) * f;
+                  }
+                const double single = inverse_4pi * f / r * JxW[p];
+                const double dipole =
+                  -inverse_4pi * (R * normals[p]) * e / (r * r * r) * JxW[p];
                 for (unsigned int j = 0; j < dpc; ++j)
                   {
                     point_n[j] += dipole * shape(q, j);
@@ -288,6 +305,67 @@ CollocationFMMOperator::vmult(
     }
   time_products += seconds_since(start);
   n_products += k;
+}
+
+
+
+void
+CollocationFMMOperator::vmult_complex(
+  TrilinosWrappers::MPI::Vector       &dst,
+  TrilinosWrappers::MPI::Vector       &dst_imag,
+  const TrilinosWrappers::MPI::Vector &phi,
+  const TrilinosWrappers::MPI::Vector &phi_imag,
+  const TrilinosWrappers::MPI::Vector &dphi_dn,
+  const TrilinosWrappers::MPI::Vector &dphi_dn_imag) const
+{
+  using complex = std::complex<double>;
+  AssertThrow(wavenumber > 0.,
+              ExcMessage("The complex product is that of the Helmholtz "
+                         "kernel."));
+  const auto start = std::chrono::steady_clock::now();
+  // The complex sources on all cells: the dipoles of phi and the charges
+  // of -dphi_dn, one set.
+  const unsigned int   dpc = shape.n();
+  const Vector<double> phi_all(phi), phi_all_imag(phi_imag),
+    dphi_dn_all(dphi_dn), dphi_dn_all_imag(dphi_dn_imag);
+  std::vector<std::vector<complex>>               charges(1), potentials;
+  std::vector<std::vector<Tensor<1, 3, complex>>> dipoles(1);
+  charges[0].assign(n_sources + n_dofs, 0.);
+  dipoles[0].assign(n_sources + n_dofs, Tensor<1, 3, complex>());
+  for (unsigned int c = 0; c < cell_dofs.size(); ++c)
+    for (unsigned int q = 0; q < n_q_points; ++q)
+      {
+        const unsigned int p     = c * n_q_points + q;
+        complex            value = 0, normal_derivative = 0;
+        for (unsigned int j = 0; j < dpc; ++j)
+          {
+            const auto i = cell_dofs[c][j];
+            value += shape(q, j) * complex(phi_all[i], phi_all_imag[i]);
+            normal_derivative +=
+              shape(q, j) * complex(dphi_dn_all[i], dphi_dn_all_imag[i]);
+          }
+        charges[0][p] = -inverse_4pi * JxW[p] * normal_derivative;
+        for (unsigned int d = 0; d < 3; ++d)
+          dipoles[0][p][d] = inverse_4pi * JxW[p] * value * normals[p][d];
+      }
+  fmm.evaluate_complex_sets(charges, dipoles, potentials, true);
+
+  // The near corrections are those of the real part of the kernel, real.
+  for (const bool imaginary : {false, true})
+    {
+      TrilinosWrappers::MPI::Vector &result = imaginary ? dst_imag : dst;
+      TrilinosWrappers::MPI::Vector  single(result), far(result);
+      correction_n.vmult(result, imaginary ? phi_imag : phi);
+      correction_d.vmult(single, imaginary ? dphi_dn_imag : dphi_dn);
+      result -= single;
+      for (const auto i : result.locally_owned_elements())
+        far(i) = imaginary ? potentials[0][n_sources + i].imag() :
+                             potentials[0][n_sources + i].real();
+      far.compress(VectorOperation::insert);
+      result += far;
+    }
+  time_products += seconds_since(start);
+  n_products += 2;
 }
 
 

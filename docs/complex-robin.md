@@ -215,7 +215,7 @@ whatever the mesh.
 `Kernel type = helmholtz` takes the outgoing fundamental solution of
 `Delta u + k^2 u = 0`, `G = exp(i k r) / (4 pi r)`, with
 `k = Helmholtz wavenumber`, in the collocation formulation and in the mixed
-Galerkin problem, with dense matrices (`Solution method = Direct`), in 3D. Its potential is complex, so
+Galerkin problem, with dense matrices or the multipole method, in 3D. Its potential is complex, so
 its real component must be listed in `Driver<3>/Complex components`; a real
 component stops with a message. The kernel is the screened one with
 `kappa = -i k`. Its real part `cos(k r) / (4 pi r)` is singular as the
@@ -283,6 +283,56 @@ against `0.305311 + 0.379142 i`. On the plane wave above, p = 1:
 With Dirichlet conditions everywhere the flux equals the best approximation
 in the space to four digits (real 0.054134 against 0.054134, imaginary
 0.156899 against 0.156898, one cycle).
+
+### The multipole method of the Helmholtz kernel
+
+`LaplaceFMM::AdditionalData::wavenumber` switches LaplaceFMM to the kernel
+`exp(i k r) / r` with complex charges and dipoles
+(`LaplaceFMM::evaluate_complex_sets()`); `include/helmholtz_expansions.h`
+holds its expansions. The kernel is the screened one at `kappa = -i k`, and
+the addition theorem, the translations and their derivation hold unchanged
+by analytic continuation, with the radial functions
+`i_n(-i x) = i^{-n} j_n(x)` and `k_n(-i x) = -i^n h_n(x)`. The coefficients
+are complex in the same real harmonics. The rotations of the translations
+are real and act on the real and imaginary parts as two lanes; only the
+translation along z is complex
+(`YukawaExpansions::Operators::translate_complex()`). The normalizations
+of the screened kernel, the radial functions at the radius of the box,
+would vanish at the zeros of `j_n`: they are real and positive, `|h_n(k rho)|`
+for the outgoing basis and `1 / (k rho |h_n(k rho)|)` for the local one,
+of the size of the functions. A dipole is the derivative of the coefficient
+of a unit charge, by a complex step on the real function `j_n(k r) Y_a`,
+along the real and the imaginary part of its moment. `j_n` comes from
+Miller's recurrence, normalized by `j_0` or `j_1`, whichever is larger: one
+of them is not zero. It is a low-frequency method: the order must grow with
+k times the size of the boxes that interact through expansions. On two
+spheres of radius 1 (`tests/helmholtz_fmm.cc`, 4000 points, theta 0.5) the
+relative error is 2e-7 to 9e-7 at order 8 and 1e-10 to 4e-10 at order 14,
+for k = 1 and 3.
+
+The collocation takes the combined sets of the real and imaginary part
+(`CollocationFMMOperator::vmult_complex()`). Its near corrections are those
+of the real part of the kernel: the dense assembly integrates the imaginary
+part with the regular rule on every cell, as the point sums do. On the plane
+wave, two cycles, order 10 gives the potential at the nodes to five digits
+(0.00188609 against 0.00188614) and order 14 to the last digit; 48 GMRES
+steps against 51.
+
+The mixed Galerkin problem takes a second integrator, of the imaginary part,
+for the near field of `GalerkinCalderonFMMOperator`, which then holds the
+corrections of both parts. `vmult_rows_complex()` applies the complex
+operators: the sets of the screened kernel, seven of charges and four of
+dipoles, with complex sources, and `-k^2` for the term of W. The products of
+the preconditioner, and `vmult()`, are the real parts, the real part of the
+complex product of a real vector. On the plane wave order 8 gives the
+errors of the dense matrices to five or six digits and order 12 to the last
+one, in the same GMRES steps (41 at one cycle, 45 at two). The cost is that
+of a first version: 36 s against 3.4 s with dense matrices at one cycle,
+137 s against 38 s at two (8 processes), half of it in the preconditioner;
+with the coarse expansions of `docs/settings.md` for the preconditioner
+(order 2, opening 0.95, 32 points per leaf) 105 s and 55 steps. Each set of
+sources has a far field of its own, and the direct interactions are scalar
+complex arithmetic with a sine and a cosine each.
 
 ## Robin conditions and geometry IDs
 

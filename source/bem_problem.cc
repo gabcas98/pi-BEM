@@ -1685,11 +1685,8 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
   }
   prm.leave_subsection();
 
-  AssertThrow(kernel_type != "helmholtz" ||
-                (dim == 3 && solution_method == "Direct"),
-              ExcMessage("Kernel type = helmholtz is implemented in 3D, with "
-                         "Solution method = Direct: the collocation, and the "
-                         "mixed Galerkin problem."));
+  AssertThrow(kernel_type != "helmholtz" || dim == 3,
+              ExcMessage("Kernel type = helmholtz is implemented in 3D."));
 
   if (boundary_integral_formulation == "galerkin")
     {
@@ -1698,19 +1695,20 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
       // Solution method = FMA applies the single layer through
       // GalerkinFMMOperator; the rest of the Galerkin machinery, and the
       // dense path, are unchanged.
-      AssertThrow(solution_method == "Direct" ||
-                    ((kernel_type == "laplace" || kernel_type == "screened") &&
-                     linear_solver == "CG" &&
-                     (preconditioner_type == "None" ||
-                      preconditioner_type == "Jacobi" ||
-                      preconditioner_type == "BlockJacobi" ||
-                      preconditioner_type == "PatchSchwarz")),
-                  ExcMessage("The Galerkin FMM (Solution method = FMA) "
-                             "supports the Laplace and screened kernels, the "
-                             "single-layer "
-                             "formulation, Linear solver = CG and "
-                             "Preconditioner = None, Jacobi, BlockJacobi or "
-                             "PatchSchwarz."));
+      AssertThrow(
+        solution_method == "Direct" ||
+          ((kernel_type == "laplace" || kernel_type == "screened" ||
+            kernel_type == "helmholtz") &&
+           linear_solver == "CG" &&
+           (preconditioner_type == "None" || preconditioner_type == "Jacobi" ||
+            preconditioner_type == "BlockJacobi" ||
+            preconditioner_type == "PatchSchwarz")),
+        ExcMessage(
+          "The Galerkin FMM (Solution method = FMA) "
+          "supports the Laplace, screened and Helmholtz "
+          "kernels, the single-layer formulation, Linear solver = CG and "
+          "Preconditioner = None, Jacobi, BlockJacobi or "
+          "PatchSchwarz."));
       AssertThrow(preconditioner_type != "PatchSchwarz" ||
                     solution_method == "FMA",
                   ExcMessage("Preconditioner = PatchSchwarz builds its blocks "
@@ -3895,9 +3893,17 @@ BEMProblem<dim>::vmult(TrilinosWrappers::MPI::Vector       &dst,
           matrVectProd_imag.reinit(this_cpu_set, mpi_communicator);
         }
 
-      collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
-                            {&serv_phi, &serv_phi_imag},
-                            {&serv_dphi_dn, &serv_dphi_dn_imag});
+      if (kernel_type == "helmholtz")
+        collocation_fmm.vmult_complex(matrVectProd,
+                                      matrVectProd_imag,
+                                      serv_phi,
+                                      serv_phi_imag,
+                                      serv_dphi_dn,
+                                      serv_dphi_dn_imag);
+      else
+        collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
+                              {&serv_phi, &serv_phi_imag},
+                              {&serv_dphi_dn, &serv_dphi_dn_imag});
 
       dst += matrVectProd;
       dst_imag += matrVectProd_imag;
@@ -4105,9 +4111,17 @@ BEMProblem<dim>::compute_rhs(
           matrVectProd_imag.reinit(this_cpu_set, mpi_communicator);
         }
 
-      collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
-                            {&serv_phi, &serv_phi_imag},
-                            {&serv_dphi_dn, &serv_dphi_dn_imag});
+      if (kernel_type == "helmholtz")
+        collocation_fmm.vmult_complex(matrVectProd,
+                                      matrVectProd_imag,
+                                      serv_phi,
+                                      serv_phi_imag,
+                                      serv_dphi_dn,
+                                      serv_dphi_dn_imag);
+      else
+        collocation_fmm.vmult({&matrVectProd, &matrVectProd_imag},
+                              {&serv_phi, &serv_phi_imag},
+                              {&serv_dphi_dn, &serv_dphi_dn_imag});
 
       serv_phi.scale(alpha);
       serv_phi_imag.scale(alpha);
@@ -5322,7 +5336,8 @@ BEMProblem<dim>::setup_collocation_fmm()
       data.order               = fma.truncation_order();
       data.theta               = fma.opening_criterion();
       data.max_points_per_leaf = fma.points_per_leaf();
-      data.kappa = kernel_type == "screened" ? screened_kappa : 0.;
+      data.kappa      = kernel_type == "screened" ? screened_kappa : 0.;
+      data.wavenumber = kernel_type == "helmholtz" ? helmholtz_wavenumber : 0.;
       pcout << "Setting up the collocation FMM: order " << data.order
             << ", opening criterion " << data.theta << ", at most "
             << data.max_points_per_leaf << " points per leaf" << std::endl;
