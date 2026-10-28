@@ -82,8 +82,11 @@ GalerkinFMMOperator::reinit(const DoFHandler<2, 3>          &dh,
 {
   dof_handler = &dh;
   constraints.copy_from(constraints_in);
-  regularize                     = rhs.regularize;
-  kappa                          = integrator.get_screening();
+  regularize = rhs.regularize;
+  kappa      = integrator.get_screening();
+  AssertThrow(!integrator.is_helmholtz(),
+              ExcMessage("The FMM has the expansions of the Laplace and the "
+                         "screened kernel only."));
   const FiniteElement<2, 3> &fe  = dh.get_fe();
   const unsigned int         dpc = fe.dofs_per_cell;
 

@@ -2158,6 +2158,11 @@ GalerkinPanelPairIntegrator<spacedim>::integrate(
   const Function<spacedim> *trial_function,
   const bool                regularize_trial_function) const
 {
+  AssertThrow(!regularize_trial_function ||
+                kernel_factor != KernelFactor::helmholtz_imaginary,
+              ExcMessage("The regularised double layer holds the jump, which "
+                         "the imaginary part of the Helmholtz kernel has "
+                         "not."));
   if (takes_light_path(operator_type, trial_function))
     return integrate_light(test_cell,
                            test_patch,
@@ -2306,7 +2311,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
   // The screened W has a term in the values of the trial function, which a
   // gradient does not give.
   AssertThrow(operator_type != OperatorType::weak_hypersingular ||
-                trial_function == nullptr || screening == 0.0,
+                trial_function == nullptr || !has_kernel_factor(),
               ExcMessage("The weak hypersingular operator applied to a "
                          "function is implemented for the Laplace kernel "
                          "only."));
@@ -2407,9 +2412,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_pairs(
       // The screened W adds kappa^2 (n_x . n_y) psi(x) phi(y) G to the
       // product of the surface curls.
       const double normal_term =
-        screening == 0.0 ?
+        !has_kernel_factor() ?
           0.0 :
-          screening * screening * single *
+          normal_coefficient() * single *
             (test_values.normal_vector(q) * trial_values.normal_vector(qt));
       if (is_joint(operator_type))
         {
@@ -3948,18 +3953,18 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
           if (both)
             back_weight[p] = single_weight[p] * (displacement * x.normals[p]) /
                              (distance * distance);
-          if (screening != 0.0)
+          if (has_kernel_factor())
             {
-              // The screened kernel e^{-kappa r} G_0, its normal derivatives
-              // those of G_0 times (1 + kappa r) e^{-kappa r}.
-              const double exponential = std::exp(-screening * distance);
-              const double factor = (1.0 + screening * distance) * exponential;
-              curl_weight[p] *= exponential;
-              single_weight[p] *= exponential;
+              // The kernel f(r) G_0, its normal derivatives those of G_0
+              // times E(r) = f(r) - r f'(r).
+              double radial, factor;
+              kernel_factors(distance, radial, factor);
+              curl_weight[p] *= radial;
+              single_weight[p] *= radial;
               double_weight[p] *= factor;
               if (both)
                 back_weight[p] *= factor;
-              normal_weight[p] = screening * screening * single_weight[p] *
+              normal_weight[p] = normal_coefficient() * single_weight[p] *
                                  (x.normals[p] * y.normals[p]);
             }
           g00[p] = c00 * curl_weight[p] * (x.tangents1[p] * y.tangents1[p]);
@@ -4013,7 +4018,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                   for (unsigned int k = 0; k < m; ++k)
                     vb[k] = a[k] * back_weight[begin + k];
                 }
-              if (screening != 0.0)
+              if (has_kernel_factor())
                 {
                   double *vn = &wx_normal[i * block];
 #pragma omp simd
@@ -4058,7 +4063,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                            m,
                            sums_w.data(),
                            dpc);
-          if (screening != 0.0)
+          if (has_kernel_factor())
             add_row_products(wx_normal,
                              block,
                              dpc,
@@ -4103,7 +4108,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
       // block of kappa^2 (n_x . n_y) G.
       std::vector<double> single_block(nx * ny), double_block(nx * ny),
         curl_block(nx * ny), back_block(both ? nx * ny : 0),
-        normal_block(screening != 0.0 ? nx * ny : 0);
+        normal_block(has_kernel_factor() ? nx * ny : 0);
       for (unsigned int qx = 0; qx < nx; ++qx)
         for (unsigned int qy = 0; qy < ny; ++qy)
           {
@@ -4112,22 +4117,21 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
             const double distance = displacement.norm();
             const double single =
               leaf.test_weights[qx] * leaf.trial_weights[qy] * scale / distance;
-            const double exponential =
-              screening == 0.0 ? 1.0 : std::exp(-screening * distance);
-            const double factor = (1.0 + screening * distance) * exponential;
-            single_block[qx * ny + qy] = single * exponential;
+            double radial, factor;
+            kernel_factors(distance, radial, factor);
+            single_block[qx * ny + qy] = single * radial;
             double_block[qx * ny + qy] = -single *
                                          (displacement * y.normals[qy]) /
                                          (distance * distance) * factor;
             curl_block[qx * ny + qy] =
-              single * exponential / (x.jacobians[qx] * y.jacobians[qy]);
+              single * radial / (x.jacobians[qx] * y.jacobians[qy]);
             if (both)
               back_block[qx * ny + qy] = single *
                                          (displacement * x.normals[qx]) /
                                          (distance * distance) * factor;
-            if (screening != 0.0)
-              normal_block[qx * ny + qy] = screening * screening * single *
-                                           exponential *
+            if (has_kernel_factor())
+              normal_block[qx * ny + qy] = normal_coefficient() * single *
+                                           radial *
                                            (x.normals[qx] * y.normals[qy]);
           }
       std::vector<double> partial(ny);
@@ -4170,7 +4174,7 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_light_hypersingular(
                      curl_block,
                      &cy[c * dpc * ny],
                      w_column);
-          if (screening != 0.0)
+          if (has_kernel_factor())
             contract(&sx[i * nx], normal_block, sy.data(), w_column);
           for (unsigned int j = 0; j < result.n(); ++j)
             result(i, j) += result_row[j];
@@ -4353,9 +4357,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
           const Tensor<1, spacedim> displacement =
             trial.points[qy] - test.points[qx];
           const double distance = displacement.norm();
-          const double exponential =
-            screening == 0.0 ? 1.0 : std::exp(-screening * distance);
-          const double factor = (1.0 + screening * distance) * exponential;
+          double       radial, factor;
+          kernel_factors(distance, radial, factor);
           // For the adjoint double layer this is dG/dn_x instead,
           // (y - x).n_x / (4 pi r^3), times the screening factor.
           const double laplace_double_layer =
@@ -4367,9 +4370,9 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_tensor_sets(
                       0.0;
           if (matrix_part)
             kernel[qx * ny + qy] =
-              trial_weights[qy] *
-              (single_kernel ? exponential / (4.0 * numbers::PI * distance) :
-                               laplace_double_layer * factor);
+              trial_weights[qy] * (single_kernel ?
+                                     radial / (4.0 * numbers::PI * distance) :
+                                     laplace_double_layer * factor);
           if (function_part)
             {
               sum_function += trial_weights[qy] * laplace_double_layer *
@@ -4573,9 +4576,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
     {
       const Tensor<1, spacedim> displacement = trial.points[p] - test.points[p];
       const double              distance     = displacement.norm();
-      const double              exponential =
-        screening == 0.0 ? 1.0 : std::exp(-screening * distance);
-      const double factor = (1.0 + screening * distance) * exponential;
+      double                    radial, factor;
+      kernel_factors(distance, radial, factor);
       const double weight = weights[p] * test.jacobians[p] * trial.jacobians[p];
       const double laplace_double_layer =
         adjoint ? (displacement * test.normals[p]) /
@@ -4588,9 +4590,8 @@ GalerkinPanelPairIntegrator<spacedim>::integrate_paired_sets(
         non_finite = true;
       if (matrix_part)
         matrix_weight[p] =
-          weight * (single_kernel ?
-                      exponential / (4.0 * numbers::PI * distance) :
-                      laplace_double_layer * factor);
+          weight * (single_kernel ? radial / (4.0 * numbers::PI * distance) :
+                                    laplace_double_layer * factor);
       if (function_part)
         function_weight[p] =
           weight * laplace_double_layer *

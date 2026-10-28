@@ -596,6 +596,18 @@ BEMProblem<dim>::solve_galerkin_mixed(
       TrilinosWrappers::SparseMatrix &single_layer  = mixed_single_layer,
                                      &double_layer  = mixed_double_layer,
                                      &hypersingular = mixed_hypersingular;
+      // The Helmholtz kernel: the operators above of its real part, these of
+      // its imaginary part, which couple the parts.
+      const bool helmholtz = kernel_type == "helmholtz";
+      AssertThrow(!helmholtz || (n_parts == 2 && !through_fmm),
+                  ExcMessage("The Helmholtz kernel needs a complex problem "
+                             "and dense matrices."));
+      TrilinosWrappers::SparseMatrix &single_layer_imag =
+                                       mixed_single_layer_imag,
+                                     &double_layer_imag =
+                                       mixed_double_layer_imag,
+                                     &hypersingular_imag =
+                                       mixed_hypersingular_imag;
       std::unique_ptr<GalerkinCalderonFMMOperator> &calderon = mixed_calderon;
       // Another component on the same mesh: the operators of the previous
       // one.
@@ -608,9 +620,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
               << std::endl;
       if (!through_fmm && !reuse)
         {
-          pcout << "Mixed Galerkin problem: three dense matrices of " << n
-                << " x " << n << ", about "
-                << 3.0 * double(n) * double(n) * 16.0 / 1e9
+          const unsigned int n_matrices = helmholtz ? 6 : 3;
+          pcout << "Mixed Galerkin problem: " << n_matrices
+                << " dense matrices of " << n << " x " << n << ", about "
+                << n_matrices * double(n) * double(n) * 16.0 / 1e9
                 << " GB with the column indices" << std::endl;
           TrilinosWrappers::SparsityPattern full(owned, mpi_communicator);
           for (const auto e : owned)
@@ -620,6 +633,12 @@ BEMProblem<dim>::solve_galerkin_mixed(
           single_layer.reinit(full);
           double_layer.reinit(full);
           hypersingular.reinit(full);
+          if (helmholtz)
+            {
+              single_layer_imag.reinit(full);
+              double_layer_imag.reinit(full);
+              hypersingular_imag.reinit(full);
+            }
         }
 
       GalerkinPanelPairIntegrator<3> integrator(
@@ -634,7 +653,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
         galerkin_near_singular_maximum_depth,
         galerkin_near_singular_quadrature_order);
       integrator.set_far_field_tolerance(galerkin_far_field_tolerance);
-      integrator.set_screening(galerkin_screening());
+      if (helmholtz)
+        integrator.set_helmholtz(helmholtz_wavenumber, false);
+      else
+        integrator.set_screening(galerkin_screening());
       integrator.set_light_geometry(galerkin_light_geometry);
       integrator.set_folded_singular_order(
         galerkin_folded_singular_quadrature_order);
@@ -734,6 +756,23 @@ BEMProblem<dim>::solve_galerkin_mixed(
           single_layer.compress(VectorOperation::add);
           double_layer.compress(VectorOperation::add);
           hypersingular.compress(VectorOperation::add);
+          if (helmholtz)
+            {
+              // The imaginary part sin(k r) / (4 pi r), with the same rules.
+              integrator.set_helmholtz(helmholtz_wavenumber, true);
+              integrator.assemble_single_double_hypersingular(
+                dh,
+                constraints,
+                single_layer_imag,
+                double_layer_imag,
+                hypersingular_imag,
+                galerkin_quadrature_order,
+                this_mpi_process);
+              integrator.set_helmholtz(helmholtz_wavenumber, false);
+              single_layer_imag.compress(VectorOperation::add);
+              double_layer_imag.compress(VectorOperation::add);
+              hypersingular_imag.compress(VectorOperation::add);
+            }
         }
       mixed_operators_size = n;
       if (!through_fmm && !reuse)
@@ -813,7 +852,26 @@ BEMProblem<dim>::solve_galerkin_mixed(
       for (types::global_dof_index i = 0; i < n; ++i)
         if (role[i] == hanging)
           plus[i] = minus[i] = mass_ones[i] = 0;
-      const double k_sign = plus.l2_norm() < minus.l2_norm() ? 1.0 : -1.0;
+      // The identity holds for the Laplace kernel, and nearly for small
+      // kappa or k; for the Helmholtz kernel, whose double layer on the
+      // constants departs from it as k grows, the sign follows from the
+      // orientation of the normals instead: out of the enclosed volume,
+      // (1/3) int x.n > 0, as the identity gives for the Laplace kernel.
+      double volume = 0;
+      for (const auto &cell : dh.active_cell_iterators())
+        {
+          values.reinit(cell);
+          for (unsigned int q = 0; q < quadrature.size(); ++q)
+            volume += values.quadrature_point(q) * values.normal_vector(q) *
+                      values.JxW(q) / 3.0;
+        }
+      const double k_sign = helmholtz ?
+                              (volume > 0 ? 1.0 : -1.0) :
+                              (plus.l2_norm() < minus.l2_norm() ? 1.0 : -1.0);
+      if (!helmholtz && (volume > 0) != (k_sign > 0))
+        pcout << "Mixed Galerkin problem: the identity and the orientation of "
+                 "the normals disagree on the sign of K (volume "
+              << volume << ")" << std::endl;
       // PIBEM_MIXED_DIAGNOSTICS: the checks that cost products, |W 1|, the
       // residual of the exact solution and the error of the relaxed
       // products.
@@ -822,7 +880,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
       pcout << "Mixed Galerkin problem: |(1/2 M + K) 1| / |1/2 M 1| = "
             << plus.l2_norm() / (0.5 * mass_ones.l2_norm())
             << ", with K of the opposite sign "
-            << minus.l2_norm() / (0.5 * mass_ones.l2_norm());
+            << minus.l2_norm() / (0.5 * mass_ones.l2_norm())
+            << "; enclosed volume " << volume;
       if (diagnostics)
         pcout << "; |W 1| = " << product(hypersingular, ones, false).l2_norm();
       pcout << std::endl;
@@ -905,6 +964,22 @@ BEMProblem<dim>::solve_galerkin_mixed(
                 dirichlet_rows.add(-k_sign, product(double_layer, u[p], false));
                 neumann_rows = product(hypersingular, u[p], false);
                 neumann_rows.add(k_sign, product(double_layer, t[p], true));
+                if (helmholtz)
+                  {
+                    // The imaginary parts of the operators on the other part:
+                    // (A_r + i A_i)(x_0 + i x_1), with -A_i x_1 in the real
+                    // rows and A_i x_0 in the imaginary ones.
+                    const unsigned int q    = 1 - p;
+                    const double       sign = p == 0 ? -1.0 : 1.0;
+                    dirichlet_rows.add(sign,
+                                       product(single_layer_imag, t[q], false));
+                    dirichlet_rows.add(-sign * k_sign,
+                                       product(double_layer_imag, u[q], false));
+                    neumann_rows.add(sign,
+                                     product(hypersingular_imag, u[q], false));
+                    neumann_rows.add(sign * k_sign,
+                                     product(double_layer_imag, t[q], true));
+                  }
               }
             if (has_robin)
               {
@@ -946,6 +1021,21 @@ BEMProblem<dim>::solve_galerkin_mixed(
               dirichlet_rows.add(-1.0, product(single_layer, g_data[p], false));
               neumann_rows.add(-k_sign, product(double_layer, g_data[p], true));
               neumann_rows.add(-1.0, product(hypersingular, u_data[p], false));
+              if (helmholtz)
+                {
+                  const unsigned int q    = 1 - p;
+                  const double       sign = p == 0 ? -1.0 : 1.0;
+                  dirichlet_rows.add(sign * k_sign,
+                                     product(double_layer_imag,
+                                             u_data[q],
+                                             false));
+                  dirichlet_rows.add(
+                    -sign, product(single_layer_imag, g_data[q], false));
+                  neumann_rows.add(-sign * k_sign,
+                                   product(double_layer_imag, g_data[q], true));
+                  neumann_rows.add(
+                    -sign, product(hypersingular_imag, u_data[q], false));
+                }
             }
           combine(dirichlet_rows, neumann_rows, zero, rows);
           set_part(rhs, p, rows);
@@ -975,15 +1065,35 @@ BEMProblem<dim>::solve_galerkin_mixed(
             v_diagonal = Vector<double>(v_local);
             w_diagonal = Vector<double>(w_local);
           }
+        // The Helmholtz kernel: the diagonals of the imaginary parts too.
+        Vector<double> v_diagonal_imag(n), w_diagonal_imag(n);
+        if (helmholtz)
+          {
+            TrilinosWrappers::MPI::Vector v_local(owned, mpi_communicator),
+              w_local(owned, mpi_communicator);
+            for (const auto e : owned)
+              {
+                v_local[e] = single_layer_imag.diag_element(e);
+                w_local[e] = hypersingular_imag.diag_element(e);
+              }
+            v_local.compress(VectorOperation::insert);
+            w_local.compress(VectorOperation::insert);
+            v_diagonal_imag = Vector<double>(v_local);
+            w_diagonal_imag = Vector<double>(w_local);
+          }
         for (types::global_dof_index i = 0; i < n; ++i)
           if (role[i] == flux)
-            diagonal[i] = v_diagonal[i];
+            {
+              diagonal[i]      = v_diagonal[i];
+              diagonal_imag[i] = v_diagonal_imag[i];
+            }
           else if (role[i] == free_potential || role[i] == tied_potential)
             {
               diagonal[master[i]] +=
                 w_diagonal[i] +
                 (robin[i] ? 0.5 * robin_coefficient[i] * mass.diag_element(i) :
                             0.0);
+              diagonal_imag[master[i]] += w_diagonal_imag[i];
               if (robin[i])
                 diagonal_imag[master[i]] +=
                   0.5 * robin_coefficient_imag[i] * mass.diag_element(i);
@@ -1914,6 +2024,9 @@ BEMProblem<dim>::solve_galerkin_mixed(
           single_layer.clear();
           double_layer.clear();
           hypersingular.clear();
+          single_layer_imag.clear();
+          double_layer_imag.clear();
+          hypersingular_imag.clear();
           calderon.reset();
           mixed_operators_size = 0;
         }

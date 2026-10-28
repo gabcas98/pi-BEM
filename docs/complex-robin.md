@@ -214,8 +214,8 @@ whatever the mesh.
 
 `Kernel type = helmholtz` takes the outgoing fundamental solution of
 `Delta u + k^2 u = 0`, `G = exp(i k r) / (4 pi r)`, with
-`k = Helmholtz wavenumber`, in the collocation formulation with dense
-matrices (`Solution method = Direct`), in 3D. Its potential is complex, so
+`k = Helmholtz wavenumber`, in the collocation formulation and in the mixed
+Galerkin problem, with dense matrices (`Solution method = Direct`), in 3D. Its potential is complex, so
 its real component must be listed in `Driver<3>/Complex components`; a real
 component stops with a message. The kernel is the screened one with
 `kappa = -i k`. Its real part `cos(k r) / (4 pi r)` is singular as the
@@ -245,6 +245,44 @@ flux at order 1, in both parts:
 
 The imaginary flux `k cos(k d.x) (d.n)` has the smaller norm, hence the
 larger relative error.
+
+In the Galerkin formulation `GalerkinPanelPairIntegrator::set_helmholtz()`
+takes the real or the imaginary part. The integrator writes every kernel as
+the Laplace kernel times radial factors: the single layer `f(r) / (4 pi r)`,
+the normal derivatives those of the Laplace kernel times
+`E(r) = f(r) - r f'(r)`, and the weak hypersingular operator the term
+`c (n_x . n_y) psi(x) phi(y) G`. The screened kernel has `f = exp(-kappa r)`
+and `c = kappa^2`; the parts of the Helmholtz kernel have `f = cos(k r)` and
+`f = sin(k r)`, with `c = -k^2`. The singular rules are those of the Laplace
+kernel; the imaginary part is analytic. Its double layer has no jump, so the
+regularised right-hand sides, which subtract the solid-angle identity, stop
+on it. The mixed problem assembles V, K and W of both parts, six dense
+matrices, and the operator and the right-hand side couple the parts through
+the imaginary ones: the rows of the real part take `-A_i x_imag`, those of
+the imaginary part `+A_i x_real`. A Dirichlet problem also goes through the
+mixed solver, since the parts are coupled. The diagonal preconditioner
+divides by the complex diagonal, the Calderon preconditioner takes the real
+parts on each part. The sign of K is that of the orientation of the normals,
+`(1/3) int x.n > 0` out of the enclosed volume, since the identity
+`(1/2 M + K) 1 = 0` that the other kernels use holds only nearly for the real
+part (0.70 against 1.30 for the opposite sign at k = 2).
+
+`tests/galerkin_helmholtz_sphere_eigenvalues.cc` checks V, K and W on the
+unit sphere, k = 2, against their eigenvalues on the spherical harmonics:
+those of the screened kernel at `kappa = -i k`, with `i_n` and `k_n` of
+complex argument. The Rayleigh quotients of the interpolants of degree 1 and
+2 (p = 2) agree to 2e-3, for example V on degree 1, `0.305311 + 0.379134 i`
+against `0.305311 + 0.379142 i`. On the plane wave above, p = 1:
+
+| Mesh | Flux, relative L_2 (real / imaginary) | Potential, relative L_2 (real / imaginary) | GMRES, diagonal | GMRES, Calderon |
+|---|---|---|---|---|
+| 0 cycles | 0.110 / 0.310 | 0.031 / 0.023 | 69 | 36 |
+| 1 cycle | 0.054 / 0.156 | 0.0081 / 0.0058 | 101 | 41 |
+| 2 cycles | 0.027 / 0.078 | 0.0021 / 0.0014 | 133 | 45 |
+
+With Dirichlet conditions everywhere the flux equals the best approximation
+in the space to four digits (real 0.054134 against 0.054134, imaginary
+0.156899 against 0.156898, one cycle).
 
 ## Robin conditions and geometry IDs
 

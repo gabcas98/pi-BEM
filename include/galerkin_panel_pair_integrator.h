@@ -184,7 +184,37 @@ public:
   void
   set_screening(const double kappa)
   {
-    screening = kappa;
+    screening     = kappa;
+    wavenumber    = 0.0;
+    kernel_factor = kappa == 0.0 ? KernelFactor::none : KernelFactor::screened;
+  }
+
+  /** The real or the imaginary part of the kernel exp(i k r) / (4 pi r) of
+   * the Helmholtz equation Delta u + k^2 u = 0, cos(k r) / (4 pi r) or
+   * sin(k r) / (4 pi r): the screened kernel with kappa = -i k. The normal
+   * derivatives are those of the Laplace kernel times E(r) = f(r) - r f'(r),
+   * cos(k r) + k r sin(k r) and sin(k r) - k r cos(k r), and the weak
+   * hypersingular operator adds -k^2 (n_x . n_y) psi(x) phi(y) G. The
+   * imaginary part is analytic, without the jump of the double layer, so the
+   * regularised right-hand sides, which subtract the solid-angle identity,
+   * do not apply to it. Zero k is the Laplace kernel for the real part.
+   */
+  void
+  set_helmholtz(const double k, const bool imaginary_part)
+  {
+    screening     = 0.0;
+    wavenumber    = k;
+    kernel_factor = imaginary_part ? KernelFactor::helmholtz_imaginary :
+                    k == 0.0       ? KernelFactor::none :
+                                     KernelFactor::helmholtz_real;
+  }
+
+  /// Whether the kernel is a part of the Helmholtz kernel.
+  bool
+  is_helmholtz() const
+  {
+    return kernel_factor == KernelFactor::helmholtz_real ||
+           kernel_factor == KernelFactor::helmholtz_imaginary;
   }
 
   /// Free the work arrays that the direct path keeps from pair to pair, at
@@ -1343,9 +1373,19 @@ private:
   static constexpr std::size_t maximum_cached_pair_rules = 48;
   mutable std::map<std::array<int, 7>, CachedPairRule> pair_rule_cache;
 
-  double                    far_field_tolerance = 0.0;
-  double                    screening           = 0.0;
-  const Function<spacedim> *flux_function       = nullptr;
+  double far_field_tolerance = 0.0;
+  double screening           = 0.0;
+  /// The radial factor f of the kernel f(r) / (4 pi r).
+  enum class KernelFactor
+  {
+    none,
+    screened,
+    helmholtz_real,
+    helmholtz_imaginary
+  };
+  KernelFactor              kernel_factor = KernelFactor::none;
+  double                    wavenumber    = 0.0;
+  const Function<spacedim> *flux_function = nullptr;
   /// The flux function on the test and the trial cell of the pair that
   /// integrate_light() integrates: the pieces of their slots.
   mutable const Function<spacedim> *light_test_flux  = nullptr;
@@ -1365,22 +1405,89 @@ private:
       cell->get_dof_indices(indices);
   }
 
-  /// exp(-kappa r) / (4 pi r).
+  /// The kernel f(r) / (4 pi r).
   double
   single_layer_kernel(const double distance) const
   {
-    return (screening == 0.0 ? 1.0 : std::exp(-screening * distance)) /
-           (4.0 * numbers::PI * distance);
+    return single_factor(distance) / (4.0 * numbers::PI * distance);
   }
 
-  /// E(r) = (1 + kappa r) exp(-kappa r): the normal derivatives of the
-  /// screened kernel are those of the Laplace kernel times E.
+  /// Whether the kernel is not that of Laplace: f is not 1.
+  bool
+  has_kernel_factor() const
+  {
+    return kernel_factor != KernelFactor::none;
+  }
+
+  /// f(r): 1, exp(-kappa r), cos(k r) or sin(k r).
+  double
+  single_factor(const double distance) const
+  {
+    switch (kernel_factor)
+      {
+        case KernelFactor::screened:
+          return std::exp(-screening * distance);
+        case KernelFactor::helmholtz_real:
+          return std::cos(wavenumber * distance);
+        case KernelFactor::helmholtz_imaginary:
+          return std::sin(wavenumber * distance);
+        default:
+          return 1.0;
+      }
+  }
+
+  /// f(r) and E(r) = f(r) - r f'(r), the factor of the normal derivatives:
+  /// (1 + kappa r) exp(-kappa r), cos(k r) + k r sin(k r) or
+  /// sin(k r) - k r cos(k r).
+  void
+  kernel_factors(const double distance, double &f, double &e) const
+  {
+    switch (kernel_factor)
+      {
+        case KernelFactor::screened:
+          f = std::exp(-screening * distance);
+          e = (1.0 + screening * distance) * f;
+          return;
+        case KernelFactor::helmholtz_real:
+        case KernelFactor::helmholtz_imaginary:
+          {
+            const double kr = wavenumber * distance;
+            const double c = std::cos(kr), s = std::sin(kr);
+            if (kernel_factor == KernelFactor::helmholtz_real)
+              {
+                f = c;
+                e = c + kr * s;
+              }
+            else
+              {
+                f = s;
+                e = s - kr * c;
+              }
+            return;
+          }
+        default:
+          f = 1.0;
+          e = 1.0;
+      }
+  }
+
+  /// E(r): the normal derivatives of the kernel are those of the Laplace
+  /// kernel times E.
   double
   screening_factor(const double distance) const
   {
-    return screening == 0.0 ?
-             1.0 :
-             (1.0 + screening * distance) * std::exp(-screening * distance);
+    double f, e;
+    kernel_factors(distance, f, e);
+    return e;
+  }
+
+  /// The coefficient c of the term c (n_x . n_y) psi(x) phi(y) G of the weak
+  /// hypersingular operator: kappa^2, or -k^2 for the Helmholtz kernel.
+  double
+  normal_coefficient() const
+  {
+    return kernel_factor == KernelFactor::screened ? screening * screening :
+                                                     -wavenumber * wavenumber;
   }
   // How many far-field pairs each order ended up serving; a diagnostic for
   // whether the reduction is worth its complexity on a given mesh.
@@ -1700,6 +1807,11 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_double_layer_rhs(
   const unsigned int                        selected_trial_component,
   const types::material_id                  selected_test_material) const
 {
+  AssertThrow(!regularize_trial_function ||
+                kernel_factor != KernelFactor::helmholtz_imaginary,
+              ExcMessage("The regularised double layer holds the jump, which "
+                         "the imaginary part of the Helmholtz kernel has "
+                         "not."));
   struct CellQuadratureData
   {
     CellIterator                     cell;
@@ -2153,12 +2265,11 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_weak_hypersingular(
                 {
                   const double distance =
                     test_data.points[qx].distance(trial_data.points[qy]);
-                  const double factor =
-                    test_data.jxw[qx] * trial_data.jxw[qy] /
-                    (4.0 * numbers::PI * distance) *
-                    (screening == 0.0 ? 1.0 : std::exp(-screening * distance));
+                  const double factor = test_data.jxw[qx] * trial_data.jxw[qy] /
+                                        (4.0 * numbers::PI * distance) *
+                                        single_factor(distance);
                   const double normal_factor =
-                    screening * screening * factor *
+                    normal_coefficient() * factor *
                     (test_data.normals[qx] * trial_data.normals[qy]);
                   for (unsigned int i = 0; i < finite_element.dofs_per_cell;
                        ++i)
@@ -2275,7 +2386,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
 
   const unsigned int  n_q = QGauss<spacedim - 1>(order).size();
   std::vector<double> single_block(n_q * n_q), double_block(n_q * n_q),
-    normal_block(screening != 0.0 ? n_q * n_q : 0), partial(dpc * n_q);
+    normal_block(has_kernel_factor() ? n_q * n_q : 0), partial(dpc * n_q);
   std::vector<types::global_dof_index> test_indices(dpc), trial_indices(dpc);
   FullMatrix<double> v_local(dpc, dpc), k_local(dpc, dpc), w_local(dpc, dpc);
 
@@ -2350,19 +2461,18 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                     const double distance = displacement.norm();
                     const double weight =
                       t.jxw[qx] * r.jxw[qy] / (4.0 * numbers::PI * distance);
-                    // The screened kernel e^{-kappa r} G_0, its normal
-                    // derivative that of G_0 times (1 + kappa r)
-                    // e^{-kappa r}, and the term kappa^2 (n_x . n_y) G of W.
-                    const double exponential =
-                      screening == 0.0 ? 1.0 : std::exp(-screening * distance);
-                    single_block[qx * m + qy] = weight * exponential;
-                    double_block[qx * m + qy] =
-                      -weight * (displacement * r.normals[qy]) /
-                      (distance * distance) *
-                      ((1.0 + screening * distance) * exponential);
-                    if (screening != 0.0)
+                    // The kernel f(r) G_0, its normal derivative that of G_0
+                    // times E(r) = f(r) - r f'(r), and the term c (n_x . n_y) G
+                    // of W.
+                    double radial, factor;
+                    kernel_factors(distance, radial, factor);
+                    single_block[qx * m + qy] = weight * radial;
+                    double_block[qx * m + qy] = -weight *
+                                                (displacement * r.normals[qy]) /
+                                                (distance * distance) * factor;
+                    if (has_kernel_factor())
                       normal_block[qx * m + qy] =
-                        screening * screening * weight * exponential *
+                        normal_coefficient() * weight * radial *
                         (t.normals[qx] * r.normals[qy]);
                   }
               v_local              = 0;
@@ -2384,7 +2494,7 @@ GalerkinPanelPairIntegrator<spacedim>::assemble_single_double_hypersingular(
                   };
                   contract(m, single_block, curl_of(t), curl_of(r), w_local);
                 }
-              if (screening != 0.0)
+              if (has_kernel_factor())
                 contract(m, normal_block, values_of(t), values_of(r), w_local);
             }
           else
@@ -2429,6 +2539,11 @@ GalerkinPanelPairIntegrator<spacedim>::
 {
   AssertDimension(dof_handler.get_fe().dofs_per_cell,
                   finite_element.dofs_per_cell);
+  AssertThrow(!regularize_trial_function ||
+                kernel_factor != KernelFactor::helmholtz_imaginary,
+              ExcMessage("The regularised double layer holds the jump, which "
+                         "the imaginary part of the Helmholtz kernel has "
+                         "not."));
 
   struct CellQuadratureData
   {
@@ -2541,7 +2656,7 @@ GalerkinPanelPairIntegrator<spacedim>::
               const std::size_t trial_index = &trial_data - cell_data.data();
 
               // The single layer and the right-hand side with the same rule,
-              // sharing the distance and the exponential of the screened
+              // sharing the distance and the radial factor of the
               // kernel.
               const CellQuadratureData &t_data =
                 data_by_order[pair_order][test_index];
@@ -2557,18 +2672,17 @@ GalerkinPanelPairIntegrator<spacedim>::
                       const Tensor<1, spacedim> displacement =
                         r_data.points[qy] - t_data.points[qx];
                       const double distance = displacement.norm();
-                      const double exponential =
-                        screening == 0.0 ? 1.0 :
-                                           std::exp(-screening * distance);
+                      double       radial, double_factor;
+                      kernel_factors(distance, radial, double_factor);
                       const double weight = t_data.jxw[qx] * r_data.jxw[qy];
                       const double factor =
                         -(displacement * r_data.normals[qy]) * weight /
                         (4.0 * numbers::PI * distance * distance * distance);
                       sum_kernel += factor;
-                      sum_weighted += factor * (1.0 + screening * distance) *
-                                      exponential * r_data.function_values[qy];
+                      sum_weighted +=
+                        factor * double_factor * r_data.function_values[qy];
                       kernel_block[qx * m + qy] =
-                        weight * exponential / (4.0 * numbers::PI * distance);
+                        weight * radial / (4.0 * numbers::PI * distance);
                     }
                   weighted[qx] =
                     sum_weighted - (regularize_trial_function ?

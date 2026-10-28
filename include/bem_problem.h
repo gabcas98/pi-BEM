@@ -857,6 +857,10 @@ public:
   /// number of indices they were built for, zero when there are none.
   TrilinosWrappers::SparseMatrix mixed_single_layer, mixed_double_layer,
     mixed_hypersingular;
+  /// With the Helmholtz kernel, the operators above are the real parts and
+  /// these the imaginary parts.
+  TrilinosWrappers::SparseMatrix mixed_single_layer_imag,
+    mixed_double_layer_imag, mixed_hypersingular_imag;
   std::unique_ptr<GalerkinCalderonFMMOperator> mixed_calderon;
   types::global_dof_index                      mixed_operators_size     = 0;
   bool                                         galerkin_reuse_operators = false;

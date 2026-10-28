@@ -85,7 +85,10 @@ GalerkinCalderonFMMOperator::reinit(
   const AdditionalData                                    &data,
   NearFieldCache                                          *cache)
 {
-  kappa     = integrator.get_screening();
+  kappa = integrator.get_screening();
+  AssertThrow(!integrator.is_helmholtz(),
+              ExcMessage("The FMM has the expansions of the Laplace and the "
+                         "screened kernel only."));
   n_indices = n;
   indices   = cell_indices;
   constraints.copy_from(constraints_in);

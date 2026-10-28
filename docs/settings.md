@@ -138,9 +138,10 @@ them changes the solution.
 - `screened_collocation_robin`, `screened_collocation_robin_fma`: the
   screened kernel in the collocation problem with Dirichlet and Robin parts,
   with the matrices and with the multipole method.
-- `helmholtz_collocation_robin`: the Helmholtz kernel, the plane wave with
-  Dirichlet and impedance parts against the exact solution, collocation with
-  dense matrices.
+- `helmholtz_collocation_robin`, `helmholtz_galerkin_robin`: the Helmholtz
+  kernel, the plane wave with Dirichlet and impedance parts against the
+  exact solution, collocation and mixed Galerkin problem with dense
+  matrices.
 - `screened_mixed_robin`, `screened_mixed_robin_fma`: the screened kernel in
   the mixed Galerkin problem, with Dirichlet and Robin parts, dense and
   multipole, Calderon preconditioner.

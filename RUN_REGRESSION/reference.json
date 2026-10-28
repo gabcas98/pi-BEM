@@ -123,6 +123,14 @@
   "phi_nodes": "0.00693229",
   "steps": "44"
  },
+ "helmholtz_galerkin_robin": {
+  "iterations": "41",
+  "mixed_flux": "0.155709",
+  "mixed_flux_real": "0.0541354",
+  "mixed_potential": "0.00575687",
+  "mixed_potential_real": "0.00813869",
+  "mixed_robin_flux": "0.154855"
+ },
  "naca_mixed_adaptive_p1_fmm": {
   "iterations": "36",
   "memory_kb": "561676",

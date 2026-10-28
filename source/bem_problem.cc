@@ -575,6 +575,9 @@ BEMProblem<dim>::reinit()
   mixed_single_layer.clear();
   mixed_double_layer.clear();
   mixed_hypersingular.clear();
+  mixed_single_layer_imag.clear();
+  mixed_double_layer_imag.clear();
+  mixed_hypersingular_imag.clear();
   mixed_calderon.reset();
   mixed_operators_size = 0;
 
@@ -902,7 +905,8 @@ BEMProblem<dim>::reinit()
       dirichlet_matrix.reinit(full_sparsity_pattern);
       if (boundary_integral_formulation == "collocation")
         neumann_matrix.reinit(full_sparsity_pattern);
-      if (kernel_type == "helmholtz")
+      if (kernel_type == "helmholtz" &&
+          boundary_integral_formulation == "collocation")
         {
           neumann_matrix_imag.reinit(full_sparsity_pattern);
           dirichlet_matrix_imag.reinit(full_sparsity_pattern);
@@ -1682,11 +1686,10 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
   prm.leave_subsection();
 
   AssertThrow(kernel_type != "helmholtz" ||
-                (dim == 3 && boundary_integral_formulation == "collocation" &&
-                 solution_method == "Direct"),
-              ExcMessage("Kernel type = helmholtz is implemented in 3D, for "
-                         "the collocation formulation with Solution method "
-                         "= Direct."));
+                (dim == 3 && solution_method == "Direct"),
+              ExcMessage("Kernel type = helmholtz is implemented in 3D, with "
+                         "Solution method = Direct: the collocation, and the "
+                         "mixed Galerkin problem."));
 
   if (boundary_integral_formulation == "galerkin")
     {
@@ -4897,7 +4900,9 @@ BEMProblem<dim>::solve(
       // Without a Robin part the two parts are not coupled: on the whole
       // surface Dirichlet conditions are two real problems, the second with
       // the single layer of the first; otherwise one mixed system for both.
-      if (globally_dirichlet == dh.n_dofs() &&
+      // The Helmholtz kernel couples the parts through the operators: the
+      // mixed solver also without a Neumann part.
+      if (globally_dirichlet == dh.n_dofs() && kernel_type != "helmholtz" &&
           std::getenv("PIBEM_FORCE_MIXED") == nullptr)
         {
           pcout << "Complex Galerkin problem: the real part" << std::endl;

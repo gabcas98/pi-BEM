@@ -273,6 +273,18 @@ CASES = {
     'helmholtz_collocation_robin': ('sphere_helmholtz_robin.prm', {},
                                     ['phi_nodes', 'flux', 'gradient',
                                      'steps']),
+    # The same in the mixed Galerkin problem: V, K and W of the real and of
+    # the imaginary part of the kernel, coupling the parts, Calderon
+    # preconditioner.
+    'helmholtz_galerkin_robin': ('sphere_helmholtz_robin.prm',
+                                 {'Boundary integral formulation': 'galerkin',
+                                  'Linear solver': 'CG',
+                                  'Preconditioner': 'BlockJacobi',
+                                  'Mixed Galerkin preconditioner':
+                                    'calderon'},
+                                 ['mixed_flux_real', 'mixed_potential_real',
+                                  'mixed_flux', 'mixed_potential',
+                                  'mixed_robin_flux', 'iterations']),
     # Dirichlet and Robin conditions in 2D.
     'robin_2d': ('circle_robin_2d.prm', {},
                  ['phi_nodes', 'robin_residual', 'iterations'], 2),

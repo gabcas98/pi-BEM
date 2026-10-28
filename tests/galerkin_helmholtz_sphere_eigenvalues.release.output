@@ -1,0 +1,11 @@
+
+DEAL::k 2.00000, n = 1: V 0.305311 + 0.379134 i, exact 0.305311 + 0.379142 i
+DEAL::k 2.00000, n = 1: K -0.472991 + 0.0335332 i, exact -0.473002 + 0.0335273 i
+DEAL::k 2.00000, n = 1: W 0.0861041 + -0.00296593 i, exact 0.0860417 + -0.00296479 i
+DEAL::k 2.00000, n = 2: V 0.291223 + 0.0787275 i, exact 0.291318 + 0.0787632 i
+DEAL::k 2.00000, n = 2: K -0.0955896 + 0.109284 i, exact -0.0956416 + 0.109326 i
+DEAL::k 2.00000, n = 2: W 0.828135 + -0.151699 i, exact 0.826768 + -0.151747 i
+DEAL::real part: light and direct path agree to 1e-10
+DEAL::real part: W alone agrees to 1e-10
+DEAL::imaginary part: light and direct path agree to 1e-10
+DEAL::imaginary part: W alone agrees to 1e-10
