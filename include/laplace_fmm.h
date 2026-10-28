@@ -90,10 +90,13 @@ public:
 
   explicit LaplaceFMM(const MPI_Comm comm = MPI_COMM_WORLD);
 
-  /// Build the tree and the interaction lists for the given points.
+  /// Build the tree and the interaction lists for the given points. With
+  /// targets, the potentials are evaluated only at the points it marks,
+  /// and are zero at the others, which are sources only.
   void
   reinit(const std::vector<dealii::Point<3>> &points,
-         const AdditionalData                &data);
+         const AdditionalData                &data,
+         const std::vector<bool>             &targets = {});
 
   /**
    * Potentials at all points, on every process, of the given charges and
@@ -188,6 +191,8 @@ private:
     /// Largest distance of the points of the box from its centre.
     double       radius;
     unsigned int begin, end; // range in the sorted points
+    /// In a leaf, the targets come first, up to target_end.
+    unsigned int target_end  = 0;
     unsigned int first_child = invalid, n_children = 0;
     unsigned int parent = invalid;
     unsigned int level  = 0;
@@ -348,6 +353,8 @@ private:
 
   /// The points in the order of the user, and sorted by boxes.
   std::vector<dealii::Point<3>> points, sorted_points;
+  /// The targets, by the original numbering; empty for all points.
+  std::vector<bool> target_flags;
   /// sorted_points[i] = points[permutation[i]]
   std::vector<unsigned int> permutation;
   /// The sorted coordinates, one array per component, for the direct

@@ -99,8 +99,11 @@ LaplaceFMM::LaplaceFMM(const MPI_Comm comm)
 
 void
 LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
-                   const AdditionalData        &data_in)
+                   const AdditionalData        &data_in,
+                   const std::vector<bool>     &targets)
 {
+  AssertThrow(targets.empty() || targets.size() == points_in.size(),
+              ExcDimensionMismatch(targets.size(), points_in.size()));
   AssertThrow(data_in.theta > 0 && data_in.theta < 1,
               ExcMessage("The opening criterion must lie in (0, 1)."));
   AssertThrow(data_in.max_points_per_leaf > 0,
@@ -110,6 +113,7 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
   const auto start = std::chrono::steady_clock::now();
   data             = data_in;
   points           = points_in;
+  target_flags     = targets;
   build_tree();
   m2l_pairs.clear();
   p2p_pairs.clear();
@@ -121,8 +125,9 @@ LaplaceFMM::reinit(const std::vector<Point<3>> &points_in,
   for (const auto &[a, b] : m2l_pairs)
     ++m2l_count[a];
   for (const auto &[a, b] : p2p_pairs)
-    p2p_count[a] += static_cast<unsigned long>(boxes[a].end - boxes[a].begin) *
-                    (boxes[b].end - boxes[b].begin);
+    p2p_count[a] +=
+      static_cast<unsigned long>(boxes[a].target_end - boxes[a].begin) *
+      (boxes[b].end - boxes[b].begin);
   speed.clear();
   // Rough relative costs until the first evaluation measures them; the
   // screened translations are cheaper, its direct interactions dearer.
@@ -283,6 +288,19 @@ LaplaceFMM::build_tree()
           boxes.push_back(child);
           ++boxes[b].n_children;
         }
+    }
+
+  // In each leaf the targets first, up to target_end.
+  for (auto &box : boxes)
+    {
+      box.target_end = box.end;
+      if (box.is_leaf() && !target_flags.empty())
+        box.target_end = std::stable_partition(permutation.begin() + box.begin,
+                                               permutation.begin() + box.end,
+                                               [&](const unsigned int i) {
+                                                 return target_flags[i];
+                                               }) -
+                         permutation.begin();
     }
 
   sorted_points.resize(n);
@@ -707,7 +725,7 @@ LaplaceFMM::particle_to_particle(const unsigned int a,
   const unsigned int n  = points.size();
   const double      *dx = d, *dy = d + n, *dz = d + 2 * n;
   const double       kappa = data.kappa;
-  for (unsigned int i = A.begin; i < A.end; ++i)
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
       double       sum = 0;
@@ -829,7 +847,7 @@ LaplaceFMM::particle_to_particle_gradient(const unsigned int a,
   const double      *z  = sorted_coordinates[2].data();
   const unsigned int n  = points.size();
   double            *gx = g, *gy = g + n, *gz = g + 2 * n;
-  for (unsigned int i = A.begin; i < A.end; ++i)
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
       double       sum = 0, sx = 0, sy = 0, sz = 0;
@@ -917,7 +935,7 @@ LaplaceFMM::particle_to_particle_multiple(const unsigned int a,
   const double      *y = sorted_coordinates[1].data();
   const double      *z = sorted_coordinates[2].data();
   const unsigned int n = points.size();
-  for (unsigned int i = A.begin; i < A.end; ++i)
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
       double       sum[k];
@@ -1307,7 +1325,7 @@ LaplaceFMM::far_field_laplace_multiple(
       for (const unsigned int leaf : my_leaves)
         {
           const Box &box = boxes[leaf];
-          for (unsigned int i = box.begin; i < box.end; ++i)
+          for (unsigned int i = box.begin; i < box.target_end; ++i)
             {
               u[s * n + i] += LE::evaluate_local(w,
                                                  &Ls[leaf * nc],
@@ -1505,7 +1523,7 @@ LaplaceFMM::particle_to_particle_sets(const unsigned int a,
   const double          *z        = sorted_coordinates[2].data();
   const unsigned int     n        = points.size();
   const double           kappa    = data.kappa;
-  for (unsigned int i = A.begin; i < A.end; ++i)
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
       double       sum[max_sets];
@@ -1632,7 +1650,7 @@ LaplaceFMM::particle_to_particle_mixed(const unsigned int a,
   const unsigned int n  = points.size();
   const double      *q0 = q, *c1 = q + 2 * n, *c2 = q + 3 * n, *c3 = q + 4 * n;
   const double      *dx = d, *dy = d + n, *dz = d + 2 * n;
-  for (unsigned int i = A.begin; i < A.end; ++i)
+  for (unsigned int i = A.begin; i < A.target_end; ++i)
     {
       const double xi = x[i], yi = y[i], zi = z[i];
       double s0 = 0, sx = 0, sy = 0, sz = 0, sd = 0, s1 = 0, s2 = 0, s3 = 0;
@@ -2028,7 +2046,7 @@ LaplaceFMM::far_field_laplace(const std::vector<double>       &q,
   for (const unsigned int leaf : my_leaves)
     {
       const Box &box = boxes[leaf];
-      for (unsigned int i = box.begin; i < box.end; ++i)
+      for (unsigned int i = box.begin; i < box.target_end; ++i)
         {
           u[i] += LE::evaluate_local(w,
                                      &locals[leaf * nc],
@@ -2185,7 +2203,7 @@ LaplaceFMM::far_field_yukawa(const std::vector<double>       &q,
     {
       const Box   &box = boxes[leaf];
       const double rho = yukawa_radius(box);
-      for (unsigned int i = box.begin; i < box.end; ++i)
+      for (unsigned int i = box.begin; i < box.target_end; ++i)
         u[i] += YE::evaluate_local(w,
                                    kappa,
                                    rho,

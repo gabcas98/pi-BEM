@@ -17,7 +17,8 @@
 // kernel and for the screened one with kappa = 3 and 30: the boxes then
 // span up to about 2 and 20 screening lengths, and with kappa = 30 the
 // pairs of boxes more than 4/3 apart are dropped. Several sets of sources
-// at once, evaluate_multiple() and evaluate_sets(), against one at a time.
+// at once, evaluate_multiple() and evaluate_sets(), against one at a time,
+// and the potentials at some of the points only.
 
 #include "laplace_fmm.h"
 
@@ -116,6 +117,30 @@ main(int argc, char **argv)
           deallog << "kappa " << kappa << ", order " << order
                   << ", two sets of charges and one of dipoles at once as "
                      "one at a time: "
+                  << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
+        }
+        {
+          // With every third point a target, the same potentials there and
+          // zero at the others.
+          std::vector<bool> targets(points.size());
+          for (unsigned int i = 0; i < points.size(); i += 3)
+            targets[i] = true;
+          LaplaceFMM target_fmm;
+          target_fmm.reinit(points, data, targets);
+          std::vector<std::vector<double>> all, some;
+          fmm.evaluate_sets({q}, {d}, all);
+          target_fmm.evaluate_sets({q}, {d}, some);
+          double deviation = 0, size = 0;
+          for (unsigned int s = 0; s < 2; ++s)
+            for (unsigned int i = 0; i < points.size(); ++i)
+              {
+                deviation = std::max(deviation,
+                                     std::abs(some[s][i] -
+                                              (targets[i] ? all[s][i] : 0.)));
+                size      = std::max(size, std::abs(all[s][i]));
+              }
+          deallog << "kappa " << kappa << ", order " << order
+                  << ", potentials at a third of the points only: "
                   << (deviation < 1e-12 * size ? "yes" : "no") << std::endl;
         }
         if (kappa > 0)
