@@ -86,6 +86,15 @@ IF(BEM_NATIVE_FMM)
 ENDIF()
 SET_SOURCE_FILES_PROPERTIES(${_fmm_kernel_files} PROPERTIES
   COMPILE_OPTIONS "${_fmm_kernel_options}")
+# The kernels mark their loops with "#pragma omp simd", which the compiler
+# ignores, with a warning, unless -fopenmp-simd is given. deal.II passes it
+# only when it was configured with it. The flag enables these pragmas
+# alone, without the OpenMP runtime.
+INCLUDE(CheckCXXCompilerFlag)
+CHECK_CXX_COMPILER_FLAG("-fopenmp-simd" BEM_HAVE_OPENMP_SIMD)
+IF(BEM_HAVE_OPENMP_SIMD)
+  ADD_COMPILE_OPTIONS(-fopenmp-simd)
+ENDIF()
 
 
 IF($ENV{PBEM_OPENMP})
