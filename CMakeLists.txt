@@ -95,6 +95,16 @@ CHECK_CXX_COMPILER_FLAG("-fopenmp-simd" BEM_HAVE_OPENMP_SIMD)
 IF(BEM_HAVE_OPENMP_SIMD)
   ADD_COMPILE_OPTIONS(-fopenmp-simd)
 ENDIF()
+# FEPointEvaluation<1, 2, 3> instantiates apply_diagonal_transformation()
+# of deal.II 9.8, which loops over spacedim entries of a Tensor<1, dim>.
+# That branch is for Cartesian cells, never taken on a surface, but GCC 15
+# sees the read past the end and warns at -O2.
+CHECK_CXX_COMPILER_FLAG("-Wno-aggressive-loop-optimizations"
+  BEM_HAVE_NO_AGGRESSIVE_LOOP_WARNING)
+IF(BEM_HAVE_NO_AGGRESSIVE_LOOP_WARNING)
+  SET_PROPERTY(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/source/galerkin_fmm_operator.cc
+    APPEND PROPERTY COMPILE_OPTIONS "-Wno-aggressive-loop-optimizations")
+ENDIF()
 
 
 IF($ENV{PBEM_OPENMP})
