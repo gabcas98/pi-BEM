@@ -256,9 +256,9 @@ main()
                                               {2, 2},
                                               Point<2>(-10, -10),
                                               Point<2>(-8, -8));
-    for (auto [mesh, id] : {std::make_pair(&sphere, 1),
-                            std::make_pair(&cylinder, 2),
-                            std::make_pair(&square, 3)})
+    const std::pair<Triangulation<2, 3> *, types::material_id> meshes[] = {
+      {&sphere, 1}, {&cylinder, 2}, {&square, 3}};
+    for (const auto &[mesh, id] : meshes)
       for (const auto &cell : mesh->active_cell_iterators())
         cell->set_material_id(id);
     GridGenerator::merge_triangulations(sphere, cylinder, merged, 0.);

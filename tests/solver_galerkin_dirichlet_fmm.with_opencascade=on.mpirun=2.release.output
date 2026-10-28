@@ -3,4 +3,3 @@ DEAL::rhs_norm: 0.8876459784747455
 DEAL::flux: 0.0135441
 DEAL::gradient: 0.0801258
 DEAL::best_ratio: 1.08392
-DEAL::iterations: 70
