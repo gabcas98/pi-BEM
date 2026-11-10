@@ -2100,9 +2100,10 @@ GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
   // D(eta) = (x - y) / xi for a small radial variable xi, in the physical
   // space, the other variables in the middle of their range: affine in eta
   // on affine cells, D0 + sum_k eta_k d_k.
-  constexpr double xi       = 1e-5;
+  constexpr double small_xi = 1e-5;
   const auto       relative = [&](const unsigned int           region,
-                            const std::array<double, 3> &eta) {
+                            const std::array<double, 3> &eta,
+                            const double                 xi) {
     Point<4> p;
     p[0] = xi;
     p[1] = p[2] = p[3] = 0.5;
@@ -2124,18 +2125,20 @@ GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
     bool                               adapted = false;
     Tensor<1, spacedim>                D0;
     std::array<Tensor<1, spacedim>, 3> d;
+    // The order in which the variables are transformed, outer first.
+    std::array<unsigned int, 3> order = {{0, 1, 2}};
   };
   std::vector<Region> regions(n_regions);
   bool                any = false;
   for (unsigned int r = 0; r < n_regions; ++r)
     {
       Region &region = regions[r];
-      region.D0      = relative(r, {{0., 0., 0.}});
+      region.D0      = relative(r, {{0., 0., 0.}}, small_xi);
       for (unsigned int k = 0; k < n_angles; ++k)
         {
           std::array<double, 3> e = {{0., 0., 0.}};
           e[k]                    = 1.;
-          region.d[k]             = relative(r, e) - region.D0;
+          region.d[k]             = relative(r, e, small_xi) - region.D0;
         }
       // The largest |D| on the corners of the box, and the smallest on a
       // grid of it: below the ratio, the region is adapted.
@@ -2231,22 +2234,26 @@ GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
     double value;
     double weight;
   };
-  // The transformation of variable k of a region given the outer value r
-  // of D, as the images of the Gauss points.
+  // The transformation of the variable at the given position of the order
+  // of a region, given the outer value r of D, as the images of the points
+  // of a Gauss rule.
   const QGauss<1>    gauss(order);
   const unsigned int n          = gauss.size();
   const auto         placements = [&](const Region              &region,
-                              const unsigned int         k,
-                              const Tensor<1, spacedim> &r) {
+                              const unsigned int         position,
+                              const Tensor<1, spacedim> &r,
+                              const QGauss<1>           &rule) {
+    const unsigned int               k = region.order[position];
     std::vector<Tensor<1, spacedim>> inner;
-    for (unsigned int j = k + 1; j < n_angles; ++j)
-      inner.push_back(region.d[j]);
+    for (unsigned int j = position + 1; j < n_angles; ++j)
+      inner.push_back(region.d[region.order[j]]);
     const auto g = [&](const double t) {
       return smallest_over(r + t * region.d[k], inner);
     };
-    std::vector<Placement> result(n);
-    for (unsigned int i = 0; i < n; ++i)
-      result[i] = {gauss.point(i)[0], gauss.weight(i)};
+    const unsigned int     m = rule.size();
+    std::vector<Placement> result(m);
+    for (unsigned int i = 0; i < m; ++i)
+      result[i] = {rule.point(i)[0], rule.weight(i)};
     // The minimum of the convex g, on a range that holds the peaks just
     // outside the interval, by golden sections.
     double       lo = -2., hi = 3.;
@@ -2289,14 +2296,77 @@ GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
     const double below = std::asinh(c / h);
     const double mu    = 0.5 * (above + below);
     const double nu    = 0.5 * (below - above);
-    for (unsigned int i = 0; i < n; ++i)
+    for (unsigned int i = 0; i < m; ++i)
       {
-        const double s = mu * (2. * gauss.point(i)[0] - 1.) - nu;
+        const double s = mu * (2. * rule.point(i)[0] - 1.) - nu;
         result[i]      = {c + h * std::sinh(s),
-                          gauss.weight(i) * 2. * h * mu * std::cosh(s)};
+                          rule.weight(i) * 2. * h * mu * std::cosh(s)};
       }
     return result;
   };
+
+  // The order of the variables matters: on the vertex pairs across a sharp
+  // edge next to a skewed cell, where |D| is small along a ridge, the best
+  // order can be a thousand times more accurate than the worst. The integral
+  // of 1/|D|^2 over the angular box, which needs no kernel and no map,
+  // chooses it: the order whose rules of n and 2n points agree best.
+  const auto test_integral = [&](const Region &region, const QGauss<1> &rule) {
+    double total = 0.;
+    for (const Placement &a : placements(region, 0, region.D0, rule))
+      {
+        const Tensor<1, spacedim> r0 =
+          region.D0 + a.value * region.d[region.order[0]];
+        if (n_angles == 1)
+          {
+            total += a.weight / (r0 * r0);
+            continue;
+          }
+        for (const Placement &b : placements(region, 1, r0, rule))
+          {
+            const Tensor<1, spacedim> r1 =
+              r0 + b.value * region.d[region.order[1]];
+            if (n_angles == 2)
+              {
+                total += a.weight * b.weight / (r1 * r1);
+                continue;
+              }
+            for (const Placement &c : placements(region, 2, r1, rule))
+              {
+                const Tensor<1, spacedim> v =
+                  r1 + c.value * region.d[region.order[2]];
+                total += a.weight * b.weight * c.weight / (v * v);
+              }
+          }
+      }
+    return total;
+  };
+  if (n_angles > 1)
+    {
+      const QGauss<1> fine(2 * order);
+      for (Region &region : regions)
+        if (region.adapted)
+          {
+            std::array<unsigned int, 3> candidate     = {{0, 1, 2}};
+            std::array<unsigned int, 3> best          = candidate;
+            double                      best_estimate = -1.;
+            do
+              {
+                region.order          = candidate;
+                const double coarse   = test_integral(region, gauss);
+                const double accurate = test_integral(region, fine);
+                const double estimate =
+                  std::abs(coarse - accurate) / std::abs(accurate);
+                if (best_estimate < 0. || estimate < best_estimate)
+                  {
+                    best_estimate = estimate;
+                    best          = candidate;
+                  }
+              }
+            while (std::next_permutation(candidate.begin(),
+                                         candidate.begin() + n_angles));
+            region.order = best;
+          }
+    }
 
   ++adapted_pairs;
   test_points.clear();
@@ -2307,76 +2377,97 @@ GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
   weights.reserve(n_regions * n * n * n * n);
   for (unsigned int r = 0; r < n_regions; ++r)
     {
-      const Region &region = regions[r];
       // The angular values and weights of the region, for every tuple of
       // indices of its angular variables (outer first).
       unsigned int n_tuples = 1;
       for (unsigned int k = 0; k < n_angles; ++k)
         n_tuples *= n;
-      std::vector<std::array<double, 3>> angles(n_tuples);
-      std::vector<double>                angle_weights(n_tuples, 1.);
-      if (region.adapted)
-        {
-          const std::vector<Placement> first = placements(region, 0, region.D0);
-          for (unsigned int i0 = 0; i0 < n; ++i0)
-            {
-              const Tensor<1, spacedim> r0 =
-                region.D0 + first[i0].value * region.d[0];
-              const std::vector<Placement> second =
-                n_angles > 1 ? placements(region, 1, r0) :
-                               std::vector<Placement>(1, {0., 1.});
-              for (unsigned int i1 = 0; i1 < second.size(); ++i1)
-                {
-                  const Tensor<1, spacedim> r1 =
-                    n_angles > 1 ? r0 + second[i1].value * region.d[1] : r0;
-                  const std::vector<Placement> third =
-                    n_angles > 2 ? placements(region, 2, r1) :
-                                   std::vector<Placement>(1, {0., 1.});
-                  for (unsigned int i2 = 0; i2 < third.size(); ++i2)
-                    {
-                      const unsigned int t =
-                        i0 + n * (i1 + n * i2 * (n_angles > 2));
-                      angles[t] = {
-                        {first[i0].value, second[i1].value, third[i2].value}};
-                      angle_weights[t] =
-                        first[i0].weight * second[i1].weight * third[i2].weight;
-                    }
-                }
-            }
-        }
-      else
-        for (unsigned int t = 0; t < n_tuples; ++t)
-          for (unsigned int k = 0, code = t; k < n_angles; ++k, code /= n)
-            {
-              angles[t][k] = gauss.point(code % n)[0];
-              angle_weights[t] *= gauss.weight(code % n);
-            }
-
-      // The radial and the positional variables keep their Gauss points.
+      // The radial variable outermost: on cells that are not
+      // parallelograms x - y = xi D(eta) + O(xi^2), and the peak moves with
+      // xi, so that the model of D is taken again at each radial point.
       unsigned int n_other = 1;
       for (unsigned int k = n_angles; k < 3; ++k)
         n_other *= n;
+      std::vector<std::array<double, 3>> angles(n_tuples);
+      std::vector<double>                angle_weights(n_tuples);
       for (unsigned int q0 = 0; q0 < n; ++q0)
-        for (unsigned int t = 0; t < n_tuples; ++t)
-          for (unsigned int o = 0; o < n_other; ++o)
+        {
+          const double xi = gauss.point(q0)[0];
+          std::fill(angle_weights.begin(), angle_weights.end(), 1.);
+          if (regions[r].adapted)
             {
-              Point<4> q;
-              q[0]          = gauss.point(q0)[0];
-              double weight = gauss.weight(q0) * angle_weights[t];
+              Region region = regions[r];
+              region.D0     = relative(r, {{0., 0., 0.}}, xi);
               for (unsigned int k = 0; k < n_angles; ++k)
-                q[1 + k] = angles[t][k];
-              for (unsigned int k = n_angles, code = o; k < 3; ++k, code /= n)
                 {
-                  q[1 + k] = gauss.point(code % n)[0];
-                  weight *= gauss.weight(code % n);
+                  std::array<double, 3> e = {{0., 0., 0.}};
+                  e[k]                    = 1.;
+                  region.d[k]             = relative(r, e, xi) - region.D0;
                 }
-              Point<2> x, y;
-              double   jacobian;
-              sauter_schwab_point(type, r, q, shared, x, y, jacobian);
-              test_points.push_back(x);
-              trial_points.push_back(y);
-              weights.push_back(weight * jacobian);
+              const std::vector<Placement> first =
+                placements(region, 0, region.D0, gauss);
+              for (unsigned int i0 = 0; i0 < n; ++i0)
+                {
+                  const Tensor<1, spacedim> r0 =
+                    region.D0 + first[i0].value * region.d[region.order[0]];
+                  const std::vector<Placement> second =
+                    n_angles > 1 ? placements(region, 1, r0, gauss) :
+                                   std::vector<Placement>(1, {0., 1.});
+                  for (unsigned int i1 = 0; i1 < second.size(); ++i1)
+                    {
+                      const Tensor<1, spacedim> r1 =
+                        n_angles > 1 ?
+                          r0 + second[i1].value * region.d[region.order[1]] :
+                          r0;
+                      const std::vector<Placement> third =
+                        n_angles > 2 ? placements(region, 2, r1, gauss) :
+                                       std::vector<Placement>(1, {0., 1.});
+                      for (unsigned int i2 = 0; i2 < third.size(); ++i2)
+                        {
+                          const unsigned int t =
+                            i0 + n * (i1 + n * i2 * (n_angles > 2));
+                          angles[t][region.order[0]] = first[i0].value;
+                          if (n_angles > 1)
+                            angles[t][region.order[1]] = second[i1].value;
+                          if (n_angles > 2)
+                            angles[t][region.order[2]] = third[i2].value;
+                          angle_weights[t] = first[i0].weight *
+                                             second[i1].weight *
+                                             third[i2].weight;
+                        }
+                    }
+                }
             }
+          else
+            for (unsigned int t = 0; t < n_tuples; ++t)
+              for (unsigned int k = 0, code = t; k < n_angles; ++k, code /= n)
+                {
+                  angles[t][k] = gauss.point(code % n)[0];
+                  angle_weights[t] *= gauss.weight(code % n);
+                }
+
+          // The positional variables keep their Gauss points.
+          for (unsigned int t = 0; t < n_tuples; ++t)
+            for (unsigned int o = 0; o < n_other; ++o)
+              {
+                Point<4> q;
+                q[0]          = xi;
+                double weight = gauss.weight(q0) * angle_weights[t];
+                for (unsigned int k = 0; k < n_angles; ++k)
+                  q[1 + k] = angles[t][k];
+                for (unsigned int k = n_angles, code = o; k < 3; ++k, code /= n)
+                  {
+                    q[1 + k] = gauss.point(code % n)[0];
+                    weight *= gauss.weight(code % n);
+                  }
+                Point<2> x, y;
+                double   jacobian;
+                sauter_schwab_point(type, r, q, shared, x, y, jacobian);
+                test_points.push_back(x);
+                trial_points.push_back(y);
+                weights.push_back(weight * jacobian);
+              }
+        }
     }
   return true;
 }

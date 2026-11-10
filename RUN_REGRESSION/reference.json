@@ -150,9 +150,9 @@
  },
  "naca_mixed_exact_p2_fmm_adapted": {
   "iterations": "49",
-  "memory_kb": "655816",
-  "mixed_flux": "0.0152186",
-  "mixed_gauss": "5.92278e-07",
+  "memory_kb": "626612",
+  "mixed_flux": "0.0152187",
+  "mixed_gauss": "1.72234e-06",
   "mixed_potential": "0.00548079"
  },
  "naca_mixed_exact_p2_fmm_order_from_mesh": {

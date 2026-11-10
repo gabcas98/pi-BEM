@@ -68,18 +68,22 @@ set Galerkin near singular distance ratio for kinked pairs = 1.0
   largest, the angular variables take the iterated sinh transformation of
   Johnston, Johnston and Elliott, centred where `|D|`, minimised over the
   inner variables, is smallest, on the scale of the width of its peak. The
-  number of points does not change, and the rules of well-shaped pairs are
-  the same to the last bit. On the thin rhombi (20 degrees) of the tips at
-  the trailing edge of the wing, with seven points per variable, the double
-  layer of the pair across the edge of the tip goes from an error of 1.5e-3
-  to 9.4e-6, the single layer of two rhombi with a common edge from 1.5e-5
-  to 4.2e-8; with the ratio 0.5 a rhombus with itself from 1.9e-4 to 7.6e-7.
-  At level 3 the flux error at the corners of the trailing edge and the
-  tips falls four times (7.6e-5 to 1.9e-5 of the largest flux for the point
-  source), ten times with the tips in the Dirichlet part, at the cost of
-  the plain rules; a higher order for the skewed cells then changes
-  nothing more. Pairs with a common vertex across a sharp edge do not
-  improve.
+  order of the variables matters: on a pair with a common vertex across a
+  sharp edge next to a skewed cell `|D|` is small along a ridge, and the
+  best order is a thousand times more accurate than the worst; the integral
+  of `1/|D|^2` over the box, with `n` and `2n` points and no kernel or map,
+  chooses it. The number of points does not change, and the rules of
+  well-shaped pairs are the same to the last bit. On the thin rhombi (20
+  degrees) of the tips at the trailing edge of the wing, with seven points
+  per variable, the double layer of the pair across the edge of the tip
+  goes from an error of 1.5e-3 to 6.2e-6, that of the pair with a common
+  vertex across it from 6.9e-4 to 1.0e-5, the single layer of two rhombi
+  with a common edge from 1.8e-5 to 5.5e-7; with the ratio 0.5 a rhombus
+  with itself from 1.9e-4 to 7.6e-7. With the multipole order that the mesh
+  asks for (12 at level 3), the flux error at the corners of the trailing
+  edge and the tips falls at level 3 from 7.6e-5 to 3.9e-6 of the largest
+  flux for the point source, and no longer grows with the mesh; a higher
+  order for the skewed or the kinked pairs changes nothing more.
 
 ### Mesh (`ComputationalDomain<3>`)
 
@@ -140,11 +144,13 @@ mesh, while the discretisation error of a smooth solution decreases as
 sphere of the campaign of the report (section 12) the rule gives the orders
 that were needed there: at `p = 2` order 8 with 1536 cells, 10 with 6144
 and 12 with 24576, for which order 8 left the flux 2.5 to 9.5 times its
-best approximation; at `p = 1` order 8 up to 98304 cells. On a singular
-solution the discretisation error is larger and the rule asks for more than
-is needed: on the NACA wing at level 3, `p = 2`, it asks for 12, where the
-flux error, 9e-4, is far above the floor of order 8 on the sphere, 5e-5;
-`false` keeps order 8 there at about half the time of the solve.
+best approximation; at `p = 1` order 8 up to 98304 cells. On the NACA
+wing at level 3, `p = 2`, it asks for 12. Although the global flux error
+there is far above the floor of order 8, order 8 leaves the error of the
+cells along the edges of the tips growing with the mesh (x3 per level):
+with order 12 their error falls from 1.4e-3 to 3.6e-5 of the largest flux
+(linear solution); 16 changes no more. The solve takes about 1.4 times as
+long.
 The collocation FMM takes its near field from the singular and quasi-singular
 rules of the matrices, so it reproduces `Solution method = Direct` up to the
 truncation: order 10 matches six digits with the Laplace kernel. The screened
