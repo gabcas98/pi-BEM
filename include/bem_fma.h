@@ -23,7 +23,8 @@ using namespace dealii;
 
 /**
  * The parameters of the fast multipole method, in the section BEMFMA<dim>
- * of the parameter file: the truncation order, the opening criterion and
+ * of the parameter file: the truncation order, which by default grows with
+ * the mesh (mesh_order()), the opening criterion and
  * the size of the leaves of LaplaceFMM, for the collocation
  * (CollocationFMMOperator) and the Galerkin formulation
  * (GalerkinFMMOperator, GalerkinCalderonFMMOperator), and the settings of
@@ -46,12 +47,48 @@ public:
   virtual void
   parse_parameters(ParameterHandler &prm) override;
 
-  /// Truncation order of the expansions.
+  /// Truncation order of the expansions in the parameter file.
   unsigned int
   truncation_order() const
   {
     return trunc_order;
   }
+
+  /// Whether the order of the expansions grows with the mesh
+  /// (truncation_order(diameter, cell_size, degree)).
+  bool
+  order_from_mesh() const
+  {
+    return trunc_order_from_mesh;
+  }
+
+  /**
+   * The truncation order that keeps the error of the products of the
+   * multipole method below the discretisation error of a smooth solution,
+   * with elements of the given degree p on a surface of the given diameter
+   * D whose cells have the given mean size h. The error of the products
+   * decreases by about a digit every two orders, the discretisation error
+   * as (h/D)^(p+1), so that the order grows as 2 (p+1) log10(D/h):
+   *
+   *   ceil(2 (p+1) log10(D/h) - 2),
+   *
+   * at most 24. The constant comes from the sphere of the campaign of the
+   * report, on which degree 2 needed order 8 with 1536 cells, 10 with 6144
+   * and 12 with 24576, for both formulations and the three kernels, and
+   * degree 1 order 8 with 98304. On a singular solution, whose
+   * discretisation error is larger, the order is higher than it needs to be.
+   */
+  static unsigned int
+  mesh_order(const double       diameter,
+             const double       cell_size,
+             const unsigned int degree);
+
+  /// The truncation order on a mesh: that of the parameter file, or, with
+  /// FMA truncation order from the mesh, the larger of it and mesh_order().
+  unsigned int
+  truncation_order(const double       diameter,
+                   const double       cell_size,
+                   const unsigned int degree) const;
 
   /// Opening criterion of the octree.
   double
@@ -111,6 +148,7 @@ public:
 
 private:
   unsigned int trunc_order                             = 6;
+  bool         trunc_order_from_mesh                   = true;
   double       galerkin_opening_criterion              = 0.5;
   unsigned int galerkin_points_per_leaf                = 64;
   unsigned int galerkin_dipole_order_increase          = 2;

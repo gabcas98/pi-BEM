@@ -103,6 +103,25 @@ set Galerkin relaxed opening criterion = 0.6
 `FMA Truncation Order`, `Galerkin opening criterion` and `Galerkin maximum
 points per leaf` also set the collocation FMM (`CollocationFMMOperator`),
 despite their names; the other entries belong to the mixed Galerkin problem.
+
+The order grows with the mesh unless `FMA truncation order from the mesh =
+false`: `FMA Truncation Order` is then the smallest order, and the solver
+takes `ceil(2 (p+1) log10(D/h) - 2)` where the mesh needs more, for
+elements of degree `p`, the diagonal `D` of the bounding box of the surface
+and the mean size `h` of its cells (the square root of the area per cell).
+The log prints both orders (`FMM truncation order 12: the mesh asks for
+12 ...`). The products of the multipole method carry an error that
+decreases by about a digit every two orders and does not decrease with the
+mesh, while the discretisation error of a smooth solution decreases as
+`(h/D)^(p+1)`: at `p = 2` a fixed order stops the convergence. On the
+sphere of the campaign of the report (section 12) the rule gives the orders
+that were needed there: at `p = 2` order 8 with 1536 cells, 10 with 6144
+and 12 with 24576, for which order 8 left the flux 2.5 to 9.5 times its
+best approximation; at `p = 1` order 8 up to 98304 cells. On a singular
+solution the discretisation error is larger and the rule asks for more than
+is needed: on the NACA wing at level 3, `p = 2`, it asks for 12, where the
+flux error, 9e-4, is far above the floor of order 8 on the sphere, 5e-5;
+`false` keeps order 8 there at about half the time of the solve.
 The collocation FMM takes its near field from the singular and quasi-singular
 rules of the matrices, so it reproduces `Solution method = Direct` up to the
 truncation: order 10 matches six digits with the Laplace kernel. The screened
@@ -125,6 +144,9 @@ them changes the solution.
 `RUN_REGRESSION/run_regression.py` exercises these settings:
 
 - `naca_mixed_exact_p2_fmm`: kinked order 10 and kinked ratio 1.0;
+- `naca_mixed_exact_p2_fmm_order_from_mesh`: the same with `FMA Truncation
+  Order = 4`, which the mesh raises to 8, so that its values are those of
+  the case above;
 - `naca_mixed_curvature_p2_fmm`: curvature refinement;
 - `naca_mixed_tips_dirichlet_p1_fmm`: a Dirichlet part in several pieces,
   relaxed products, and a coarse preconditioner with separate relaxed

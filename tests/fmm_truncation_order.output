@@ -1,0 +1,8 @@
+
+DEAL::96 cells, D/h 10: degree 1 order 2, degree 2 order 4, with the default order 6
+DEAL::384 cells, D/h 19: degree 1 order 4, degree 2 order 6, with the default order 6
+DEAL::1536 cells, D/h 38: degree 1 order 5, degree 2 order 8, with the default order 8
+DEAL::6144 cells, D/h 77: degree 1 order 6, degree 2 order 10, with the default order 10
+DEAL::24576 cells, D/h 153: degree 1 order 7, degree 2 order 12, with the default order 12
+DEAL::98304 cells: degree 1 order 8
+DEAL::degenerate 0 0

@@ -76,6 +76,7 @@ QUANTITIES = {
     'mixed_potential_real': (r'real part: flux on the Dirichlet part, '
                              r'relative L2 error \S+; potential on the '
                              r'Neumann part, relative L2 error (\S+)', 'six'),
+    'fmm_order': (r'FMM truncation order (\d+):', 'exact'),
 }
 
 # The mixed problem on the NACA wing: flux on the lower surface, potential
@@ -165,6 +166,20 @@ CASES = {
                                  'kinked pairs': '10',
                                  'Galerkin near singular distance ratio '
                                  'for kinked pairs': '1.0'}, MIXED),
+    # The same with order 4 in the parameter file: the mesh asks for 8 at
+    # p = 2 (FMA truncation order from the mesh), so that the values are
+    # those of the case above.
+    'naca_mixed_exact_p2_fmm_order_from_mesh': ('naca_mixed.prm',
+                                                {'Exact geometry': 'true',
+                                                 'Exact geometry map':
+                                                   'parametric',
+                                                 'Galerkin singular quadrature '
+                                                 'order for kinked pairs': '10',
+                                                 'Galerkin near singular '
+                                                 'distance ratio for kinked '
+                                                 'pairs': '1.0',
+                                                 'FMA Truncation Order': '4'},
+                                                MIXED + ['fmm_order']),
     # One cycle of refinement by the curvature of the surface at 10
     # degrees on the exact geometry: the cells of the nose cut along the
     # chord, the tips made conforming along their edges.

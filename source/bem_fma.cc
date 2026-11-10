@@ -16,6 +16,9 @@
 
 #include "../include/bem_fma.h"
 
+#include <algorithm>
+#include <cmath>
+
 template <int dim>
 void
 BEMFMA<dim>::declare_parameters(ParameterHandler &prm)
@@ -41,7 +44,23 @@ BEMFMA<dim>::declare_parameters(ParameterHandler &prm)
 
   prm.enter_subsection("FMA Params");
   {
-    prm.declare_entry("FMA Truncation Order", "6", Patterns::Integer());
+    prm.declare_entry(
+      "FMA Truncation Order",
+      "6",
+      Patterns::Integer(0),
+      "Collocation and Galerkin FMM: the order of the expansions; with FMA "
+      "truncation order from the mesh, the smallest order.");
+    prm.declare_entry(
+      "FMA truncation order from the mesh",
+      "true",
+      Patterns::Bool(),
+      "Collocation and Galerkin FMM: raise the order where the mesh needs "
+      "more, to ceil(2 (p+1) log10(D/h) - 2) for elements of degree p, the "
+      "diameter D of the surface and the mean size h of its cells, so that "
+      "the error of the products stays below the discretisation error of a "
+      "smooth solution (degree 2: order 8 with about 1500 cells on a sphere, "
+      "10 with 6000, 12 with 25000). Higher than needed on singular "
+      "solutions; false keeps FMA Truncation Order.");
     prm.declare_entry(
       "Galerkin opening criterion",
       "0.5",
@@ -112,7 +131,8 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
 {
   prm.enter_subsection("FMA Params");
   {
-    trunc_order                = prm.get_integer("FMA Truncation Order");
+    trunc_order           = prm.get_integer("FMA Truncation Order");
+    trunc_order_from_mesh = prm.get_bool("FMA truncation order from the mesh");
     galerkin_opening_criterion = prm.get_double("Galerkin opening criterion");
     galerkin_points_per_leaf =
       prm.get_integer("Galerkin maximum points per leaf");
@@ -130,6 +150,30 @@ BEMFMA<dim>::parse_parameters(ParameterHandler &prm)
       prm.get_double("Galerkin relaxed opening criterion");
   }
   prm.leave_subsection();
+}
+
+template <int dim>
+unsigned int
+BEMFMA<dim>::mesh_order(const double       diameter,
+                        const double       cell_size,
+                        const unsigned int degree)
+{
+  if (!(diameter > cell_size) || !(cell_size > 0.))
+    return 0;
+  const double order =
+    2. * (degree + 1.) * std::log10(diameter / cell_size) - 2.;
+  return static_cast<unsigned int>(std::clamp(std::ceil(order), 0., 24.));
+}
+
+template <int dim>
+unsigned int
+BEMFMA<dim>::truncation_order(const double       diameter,
+                              const double       cell_size,
+                              const unsigned int degree) const
+{
+  return trunc_order_from_mesh ?
+           std::max(trunc_order, mesh_order(diameter, cell_size, degree)) :
+           trunc_order;
 }
 
 template class BEMFMA<2>;

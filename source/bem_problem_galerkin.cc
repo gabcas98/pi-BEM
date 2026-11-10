@@ -448,7 +448,8 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
   Teuchos::TimeMonitor LocalTimer(*AssembleTime);
   if constexpr (dim == 3)
     {
-      pcout << "Setting up the Galerkin FMM: order " << fma.truncation_order()
+      const unsigned int order = fmm_truncation_order();
+      pcout << "Setting up the Galerkin FMM: order " << order
             << ", opening criterion " << fma.opening_criterion() << ", at most "
             << fma.points_per_leaf() << " points per leaf; quadrature order "
             << galerkin_quadrature_order << ", near field with singular order "
@@ -493,7 +494,7 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       data.quadrature_order    = galerkin_quadrature_order;
       data.near_distance_ratio = std::max(galerkin_near_singular_distance_ratio,
                                           galerkin_kinked_distance_ratio);
-      data.fmm.order           = fma.truncation_order();
+      data.fmm.order           = order;
       data.fmm.theta           = fma.opening_criterion();
       data.fmm.max_points_per_leaf = fma.points_per_leaf();
       // The near field of the right-hand sides is integrated together with

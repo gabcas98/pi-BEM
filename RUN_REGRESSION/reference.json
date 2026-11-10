@@ -148,6 +148,14 @@
   "mixed_gauss": "7.76333e-07",
   "mixed_potential": "0.00548079"
  },
+ "naca_mixed_exact_p2_fmm_order_from_mesh": {
+  "fmm_order": "8",
+  "iterations": "49",
+  "memory_kb": "673984",
+  "mixed_flux": "0.0152186",
+  "mixed_gauss": "7.76343e-07",
+  "mixed_potential": "0.00548079"
+ },
  "naca_mixed_graded_p1_dense": {
   "iterations": "44",
   "memory_kb": "631668",

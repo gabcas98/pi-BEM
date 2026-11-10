@@ -417,6 +417,14 @@ public:
   void
   setup_collocation_fmm();
 
+  /// The truncation order of the multipole method on the current mesh
+  /// (BEMFMA::truncation_order(diameter, cell_size, degree)): the diameter
+  /// of the bounding box of the surface, the mean size of its cells
+  /// (surface measure over their number, to the power 1/(dim-1)) and the
+  /// degree of the element. Printed with the quantities it comes from.
+  unsigned int
+  fmm_truncation_order() const;
+
   /// The preconditioner of the collocation system through the FMM, the
   /// ILU (or AMG) of the system on the near band, assembled as by
   /// assemble_preconditioner().

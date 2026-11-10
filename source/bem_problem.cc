@@ -5402,6 +5402,29 @@ BEMProblem<dim>::assemble_preconditioner()
 }
 
 template <int dim>
+unsigned int
+BEMProblem<dim>::fmm_truncation_order() const
+{
+  // The triangulation is the same on every process.
+  const auto &tria = dh.get_triangulation();
+  const auto  corners =
+    GridTools::compute_bounding_box(tria).get_boundary_points();
+  const double diameter = corners.first.distance(corners.second);
+  const double cell_size =
+    std::pow(GridTools::volume(tria) / tria.n_active_cells(), 1. / (dim - 1));
+  const unsigned int order =
+    fma.truncation_order(diameter, cell_size, fe->degree);
+  if (fma.order_from_mesh())
+    pcout << "FMM truncation order " << order << ": the mesh asks for "
+          << BEMFMA<dim>::mesh_order(diameter, cell_size, fe->degree)
+          << " (degree " << fe->degree << ", diameter " << diameter
+          << " over mean cell size " << cell_size << " = "
+          << diameter / cell_size << "), the parameter file for "
+          << fma.truncation_order() << std::endl;
+  return order;
+}
+
+template <int dim>
 void
 BEMProblem<dim>::setup_collocation_fmm()
 {
@@ -5409,7 +5432,7 @@ BEMProblem<dim>::setup_collocation_fmm()
     {
       Teuchos::TimeMonitor       LocalTimer(*AssembleTime);
       LaplaceFMM::AdditionalData data;
-      data.order               = fma.truncation_order();
+      data.order               = fmm_truncation_order();
       data.theta               = fma.opening_criterion();
       data.max_points_per_leaf = fma.points_per_leaf();
       data.kappa      = kernel_type == "screened" ? screened_kappa : 0.;

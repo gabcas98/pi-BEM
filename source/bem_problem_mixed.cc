@@ -702,7 +702,7 @@ BEMProblem<dim>::solve_galerkin_mixed(
           data.near_distance_ratio =
             std::max(galerkin_near_singular_distance_ratio,
                      galerkin_kinked_distance_ratio);
-          data.fmm.order               = fma.truncation_order();
+          data.fmm.order               = fmm_truncation_order();
           data.fmm.theta               = fma.opening_criterion();
           data.fmm.max_points_per_leaf = fma.points_per_leaf();
           data.dipole_order_increase   = fma.dipole_order_increase();
