@@ -57,6 +57,29 @@ set Galerkin near singular distance ratio for kinked pairs = 1.0
   aft error falls from 2.75e-3 to 4.5e-4. Pairs between the base ratio (0.5)
   and this one take a single tensor rule of matching order (at most 12),
   not a subdivision.
+- *Adapted rules* (`Galerkin singular quadrature adaptation = true`, off by
+  default): the Sauter-Schwab rules follow the shape of each singular pair.
+  After the Duffy transformations `x - y = xi D(eta)`, with `D` affine in
+  the angular variables `eta` on affine cells. On a skewed cell, or across
+  a sharp edge next to one, `|D|` falls to a fraction of its size at a
+  point of the box of `eta` or just outside, and the kernels have a peak
+  there that the Gauss points resolve slowly. Where the smallest `|D|` is
+  below `Galerkin singular quadrature adaptation ratio` (0.3) times the
+  largest, the angular variables take the iterated sinh transformation of
+  Johnston, Johnston and Elliott, centred where `|D|`, minimised over the
+  inner variables, is smallest, on the scale of the width of its peak. The
+  number of points does not change, and the rules of well-shaped pairs are
+  the same to the last bit. On the thin rhombi (20 degrees) of the tips at
+  the trailing edge of the wing, with seven points per variable, the double
+  layer of the pair across the edge of the tip goes from an error of 1.5e-3
+  to 9.4e-6, the single layer of two rhombi with a common edge from 1.5e-5
+  to 4.2e-8; with the ratio 0.5 a rhombus with itself from 1.9e-4 to 7.6e-7.
+  At level 3 the flux error at the corners of the trailing edge and the
+  tips falls four times (7.6e-5 to 1.9e-5 of the largest flux for the point
+  source), ten times with the tips in the Dirichlet part, at the cost of
+  the plain rules; a higher order for the skewed cells then changes
+  nothing more. Pairs with a common vertex across a sharp edge do not
+  improve.
 
 ### Mesh (`ComputationalDomain<3>`)
 
@@ -147,6 +170,8 @@ them changes the solution.
 - `naca_mixed_exact_p2_fmm_order_from_mesh`: the same with `FMA Truncation
   Order = 4`, which the mesh raises to 8, so that its values are those of
   the case above;
+- `naca_mixed_exact_p2_fmm_adapted`: the same with the adapted singular
+  rules;
 - `naca_mixed_curvature_p2_fmm`: curvature refinement;
 - `naca_mixed_tips_dirichlet_p1_fmm`: a Dirichlet part in several pieces,
   relaxed products, and a coarse preconditioner with separate relaxed

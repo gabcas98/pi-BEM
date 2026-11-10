@@ -180,6 +180,19 @@ CASES = {
                                                  'pairs': '1.0',
                                                  'FMA Truncation Order': '4'},
                                                 MIXED + ['fmm_order']),
+    # The same with the Sauter-Schwab rules adapted to each singular pair
+    # (the sinh transformation of their angular variables where the cells
+    # are skewed or meet at a sharp edge): the thin rhombi of the tips at
+    # the trailing edge.
+    'naca_mixed_exact_p2_fmm_adapted': ('naca_mixed.prm',
+                                        {'Exact geometry': 'true',
+                                         'Exact geometry map': 'parametric',
+                                         'Galerkin singular quadrature order '
+                                         'for kinked pairs': '10',
+                                         'Galerkin near singular distance '
+                                         'ratio for kinked pairs': '1.0',
+                                         'Galerkin singular quadrature '
+                                         'adaptation': 'true'}, MIXED),
     # One cycle of refinement by the curvature of the surface at 10
     # degrees on the exact geometry: the cells of the nose cut along the
     # chord, the tips made conforming along their edges.

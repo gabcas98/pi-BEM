@@ -763,6 +763,8 @@ BEMProblem<dim>::compute_gradients_hypersingular_weak(
         integrator.set_material_singular_order(
           galerkin_singular_quadrature_material_ids,
           galerkin_material_singular_quadrature_order);
+        integrator.set_singular_adaptation(galerkin_singular_adaptation,
+                                           galerkin_singular_adaptation_ratio);
         integrator.set_skewed_singular_order(
           galerkin_skewed_singular_quadrature_order,
           galerkin_skewed_minimum_angle);

@@ -1,0 +1,4 @@
+
+DEAL::Rhombus and square across a sharp edge: OK
+DEAL::Rhombus with itself: OK
+DEAL::Squares in a plane: OK

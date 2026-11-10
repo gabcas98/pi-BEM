@@ -239,6 +239,8 @@ BEMProblem<dim>::assemble_galerkin_system()
       integrator.set_material_singular_order(
         galerkin_singular_quadrature_material_ids,
         galerkin_material_singular_quadrature_order);
+      integrator.set_singular_adaptation(galerkin_singular_adaptation,
+                                         galerkin_singular_adaptation_ratio);
       integrator.set_skewed_singular_order(
         galerkin_skewed_singular_quadrature_order,
         galerkin_skewed_minimum_angle);
@@ -391,6 +393,8 @@ BEMProblem<dim>::assemble_galerkin_system()
           auxiliary_integrator.set_material_singular_order(
             galerkin_singular_quadrature_material_ids,
             galerkin_material_singular_quadrature_order);
+          auxiliary_integrator.set_singular_adaptation(
+            galerkin_singular_adaptation, galerkin_singular_adaptation_ratio);
           auxiliary_integrator.set_skewed_singular_order(
             galerkin_skewed_singular_quadrature_order,
             galerkin_skewed_minimum_angle);
@@ -482,6 +486,8 @@ BEMProblem<dim>::setup_galerkin_fmm(const Function<dim> *dirichlet_function,
       integrator.set_material_singular_order(
         galerkin_singular_quadrature_material_ids,
         galerkin_material_singular_quadrature_order);
+      integrator.set_singular_adaptation(galerkin_singular_adaptation,
+                                         galerkin_singular_adaptation_ratio);
       integrator.set_skewed_singular_order(
         galerkin_skewed_singular_quadrature_order,
         galerkin_skewed_minimum_angle);
@@ -597,6 +603,8 @@ BEMProblem<dim>::assemble_exact_galerkin_dirichlet_rhs(
       integrator.set_material_singular_order(
         galerkin_singular_quadrature_material_ids,
         galerkin_material_singular_quadrature_order);
+      integrator.set_singular_adaptation(galerkin_singular_adaptation,
+                                         galerkin_singular_adaptation_ratio);
       integrator.set_skewed_singular_order(
         galerkin_skewed_singular_quadrature_order,
         galerkin_skewed_minimum_angle);
@@ -782,6 +790,8 @@ BEMProblem<dim>::compute_energy_norm_error(
       integrator.set_material_singular_order(
         galerkin_singular_quadrature_material_ids,
         galerkin_material_singular_quadrature_order);
+      integrator.set_singular_adaptation(galerkin_singular_adaptation,
+                                         galerkin_singular_adaptation_ratio);
       integrator.set_skewed_singular_order(
         galerkin_skewed_singular_quadrature_order,
         galerkin_skewed_minimum_angle);

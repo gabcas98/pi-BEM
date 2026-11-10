@@ -108,6 +108,7 @@ subsection BEMProblem<3>
     set Galerkin singular quadrature           = sauter_schwab
     set Galerkin singular quadrature order     = 7
     set Galerkin skewed cell angle = 30
+    set Galerkin singular quadrature adaptation = false
     set Galerkin singular quadrature order for kinked pairs = 0
     set Galerkin kinked pair angle = 60
     set Galerkin singular quadrature order for skewed cells = 12

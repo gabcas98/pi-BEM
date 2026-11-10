@@ -1356,6 +1356,22 @@ BEMProblem<dim>::declare_parameters(ParameterHandler &prm)
     prm.declare_entry("Galerkin skewed cell angle",
                       "30",
                       Patterns::Double(0., 90.));
+    // Sauter-Schwab rules adapted to the geometry of each singular pair:
+    // the sinh transformation of their angular variables where the distance
+    // of the two points, at a fixed radial variable, falls below the given
+    // fraction of its largest value, as on skewed cells.
+    prm.declare_entry(
+      "Galerkin singular quadrature adaptation",
+      "false",
+      Patterns::Bool(),
+      "Adapt the Sauter-Schwab rules to the shape of each singular pair: "
+      "where |x - y| / xi falls below the adaptation ratio times its largest "
+      "value over the angular variables (skewed cells, sharp edges), these "
+      "variables get a sinh transformation centred at its minimum, with the "
+      "same number of points.");
+    prm.declare_entry("Galerkin singular quadrature adaptation ratio",
+                      "0.3",
+                      Patterns::Double(0., 1.));
     // The singular rule for kinked pairs, touching cells whose normals make
     // an angle above the given one (degrees), the two sides of a sharp edge
     // of the surface such as the edge between the tip and the surface of a
@@ -1630,6 +1646,10 @@ BEMProblem<dim>::parse_parameters(ParameterHandler &prm)
       prm.get_integer("Galerkin singular quadrature order for skewed cells");
     galerkin_skewed_minimum_angle =
       prm.get_double("Galerkin skewed cell angle");
+    galerkin_singular_adaptation =
+      prm.get_bool("Galerkin singular quadrature adaptation");
+    galerkin_singular_adaptation_ratio =
+      prm.get_double("Galerkin singular quadrature adaptation ratio");
     galerkin_kinked_singular_quadrature_order =
       prm.get_integer("Galerkin singular quadrature order for kinked pairs");
     galerkin_kinked_minimum_angle =

@@ -949,6 +949,8 @@ public:
   unsigned int galerkin_material_singular_quadrature_order = 0;
   unsigned int galerkin_skewed_singular_quadrature_order   = 0;
   double       galerkin_skewed_minimum_angle               = 30.;
+  bool         galerkin_singular_adaptation                = false;
+  double       galerkin_singular_adaptation_ratio          = 0.3;
   unsigned int galerkin_kinked_singular_quadrature_order   = 0;
   double       galerkin_kinked_minimum_angle               = 60.;
   double       galerkin_kinked_distance_ratio              = 0.;

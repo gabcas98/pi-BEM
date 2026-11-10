@@ -131,6 +131,36 @@ public:
     skewed_minimum_angle  = minimum_angle_degrees * M_PI / 180.;
   }
 
+  /** Adapt the Sauter-Schwab rules to the geometry of each singular pair.
+   * After the Duffy transformations of a region, x - y = xi D(eta), where xi
+   * is the radial variable and D is affine in the angular variables eta (one
+   * for a panel with itself, two for a common edge, three for a common
+   * vertex) on a pair of affine cells. On a skewed cell, as the thin rhombi
+   * at a sharp corner of a planar face, |D| falls to a small fraction of
+   * its size at a point of the box of eta or just outside it, and the
+   * kernels 1/|D| and (D . n)/|D|^3 have there a peak that the Gauss rule
+   * resolves only with many points. Where the smallest |D| on the box is
+   * below the given fraction of the largest, each angular variable gets the
+   * sinh transformation of Johnston and Elliott centred at the minimum of
+   * |D| on its line, with the width of the peak there: the points gather
+   * where the peak is, and the number of points stays the same. The
+   * transformation is computed per pair from the maps of the two cells, so
+   * these rules are not cached.
+   */
+  void
+  set_singular_adaptation(const bool adapt, const double ratio = 0.3)
+  {
+    singular_adaptation       = adapt;
+    singular_adaptation_ratio = ratio;
+  }
+
+  /// The singular pairs (and subpatches) integrated with an adapted rule.
+  unsigned long
+  n_adapted_pairs() const
+  {
+    return adapted_pairs;
+  }
+
   /** Promote touching pairs whose normals make an angle above the given
    * one, the cells on the two sides of a sharp edge of the surface, as the
    * edge between the tip and the surface of a wing, at about 90 degrees:
@@ -969,6 +999,38 @@ private:
                                   const unsigned int    order,
                                   const unsigned int    depth) const;
 
+  /// The Sauter-Schwab rule at a point p of the unit cube of one region:
+  /// the reference points of the two patches and the Jacobian of the
+  /// transformation (unit_pair_rule()).
+  void
+  sauter_schwab_point(const GalerkinPanelPairType      type,
+                      const unsigned int               region,
+                      const Point<4>                  &p,
+                      const std::vector<CommonVertex> &shared,
+                      Point<2>                        &x,
+                      Point<2>                        &y,
+                      double                          &jacobian) const;
+
+  /// The regions of the Sauter-Schwab rule of a configuration.
+  static unsigned int
+  sauter_schwab_regions(const GalerkinPanelPairType type, const bool half);
+
+  /// The Sauter-Schwab rule of a singular pair with the sinh transformation
+  /// of the angular variables where the pair needs it
+  /// (set_singular_adaptation()), in the coordinates of the two patches;
+  /// false, and nothing written, where no region needs it.
+  bool
+  adapted_pair_rule(const GalerkinPanelPairType      type,
+                    const std::vector<CommonVertex> &shared,
+                    const unsigned int               order,
+                    const CellIterator              &test_cell,
+                    const ReferencePatch            &test_patch,
+                    const CellIterator              &trial_cell,
+                    const ReferencePatch            &trial_patch,
+                    std::vector<Point<2>>           &test_points,
+                    std::vector<Point<2>>           &trial_points,
+                    std::vector<double>             &weights) const;
+
   Point<2>
   orient_from_canonical_vertex(const Point<2>    &point,
                                const unsigned int local_vertex) const;
@@ -1177,6 +1239,9 @@ private:
   /// The leaf of the direct path, kept from pair to pair so that its arrays
   /// keep their memory; one leaf is in use at a time.
   mutable LightLeaf light_leaf;
+  /// The adapted rule of the pair at hand on the direct path
+  /// (set_singular_adaptation()), not cached.
+  mutable LightRule adapted_light_rule;
 
   /// W, or V, K and W, of a leaf of the direct path, whose point sets carry
   /// tangents and whose leaf carries the derivatives of the shape functions.
@@ -1318,8 +1383,13 @@ private:
   double       skewed_minimum_angle  = 0.;
   /// The order for kinked pairs, and the cosine of the angle of their
   /// normals above which a pair is kinked (set_kinked_singular_order()).
-  unsigned int kinked_singular_order  = 0;
-  double       kinked_singular_cosine = 0.5;
+  unsigned int kinked_singular_order = 0;
+  /// The sinh transformation of the angular variables of the singular rules
+  /// (set_singular_adaptation()), and the pairs that took it.
+  bool                  singular_adaptation       = false;
+  double                singular_adaptation_ratio = 0.3;
+  mutable unsigned long adapted_pairs             = 0;
+  double                kinked_singular_cosine    = 0.5;
   /// The near-singular distance ratio of kinked pairs
   /// (set_kinked_distance_ratio()).
   double kinked_distance_ratio = 0.;

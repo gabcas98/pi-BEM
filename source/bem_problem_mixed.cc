@@ -666,6 +666,8 @@ BEMProblem<dim>::solve_galerkin_mixed(
         result->set_material_singular_order(
           galerkin_singular_quadrature_material_ids,
           galerkin_material_singular_quadrature_order);
+        result->set_singular_adaptation(galerkin_singular_adaptation,
+                                        galerkin_singular_adaptation_ratio);
         result->set_skewed_singular_order(
           galerkin_skewed_singular_quadrature_order,
           galerkin_skewed_minimum_angle);
@@ -738,7 +740,10 @@ BEMProblem<dim>::solve_galerkin_mixed(
                 galerkin_kinked_minimum_angle,
                 galerkin_kinked_distance_ratio,
                 double(galerkin_material_singular_quadrature_order),
-                data.near_distance_ratio};
+                data.near_distance_ratio,
+                galerkin_singular_adaptation ?
+                  galerkin_singular_adaptation_ratio :
+                  0.};
               if (signature != near_field_signature)
                 {
                   near_field_cache.blocks.clear();

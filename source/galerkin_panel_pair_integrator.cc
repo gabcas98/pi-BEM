@@ -10,9 +10,11 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <sstream>
 #include <tuple>
+#include <vector>
 
 #include "../include/cellwise_function.h"
 #include "../include/tensor_map_kernel.h"
@@ -1961,10 +1963,7 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
                   one_dimensional_quadrature.weight(q2) *
                   one_dimensional_quadrature.weight(q3));
               }
-      const unsigned int n_regions =
-        type == GalerkinPanelPairType::same_panel  ? (half ? 4 : 8) :
-        type == GalerkinPanelPairType::common_edge ? 6 :
-                                                     4;
+      const unsigned int n_regions = sauter_schwab_regions(type, half);
       test_reference_points.reserve(n_regions * parametric_points.size());
       trial_reference_points.reserve(n_regions * parametric_points.size());
       pair_weights.reserve(n_regions * parametric_points.size());
@@ -1977,76 +1976,8 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
               Point<2> x;
               Point<2> y;
               double   transformation_jacobian = 0.0;
-
-              if (type == GalerkinPanelPairType::same_panel)
-                {
-                  const std::array<double, 4> z = {
-                    {(1.0 - p[0]) * p[3],
-                     (1.0 - p[0] * p[1]) * p[2],
-                     p[0] + (1.0 - p[0]) * p[3],
-                     p[0] * p[1] + (1.0 - p[0] * p[1]) * p[2]}};
-                  const std::array<std::array<unsigned int, 4>, 8> indices = {
-                    {{{0, 1, 2, 3}},
-                     {{1, 0, 3, 2}},
-                     {{0, 3, 2, 1}},
-                     {{1, 2, 3, 0}},
-                     {{2, 1, 0, 3}},
-                     {{3, 0, 1, 2}},
-                     {{2, 3, 0, 1}},
-                     {{3, 2, 1, 0}}}};
-                  x = Point<2>(z[indices[region][0]], z[indices[region][1]]);
-                  y = Point<2>(z[indices[region][2]], z[indices[region][3]]);
-                  transformation_jacobian =
-                    p[0] * (1.0 - p[0]) * (1.0 - p[0] * p[1]);
-                }
-              else if (type == GalerkinPanelPairType::common_edge)
-                {
-                  const std::array<double, 4> z1 = {{(1.0 - p[0]) * p[3] + p[0],
-                                                     p[0] * p[2],
-                                                     (1.0 - p[0]) * p[3],
-                                                     p[0] * p[1]}};
-                  const std::array<double, 4> z2 = {
-                    {(1.0 - p[0] * p[1]) * p[3] + p[0] * p[1],
-                     p[0] * p[2],
-                     (1.0 - p[0] * p[1]) * p[3],
-                     p[0]}};
-                  const std::array<std::array<unsigned int, 4>, 2> first = {
-                    {{{0, 1, 2, 3}}, {{2, 1, 0, 3}}}};
-                  const std::array<std::array<unsigned int, 4>, 4> second = {
-                    {{{0, 1, 2, 3}},
-                     {{0, 3, 2, 1}},
-                     {{2, 1, 0, 3}},
-                     {{2, 3, 0, 1}}}};
-                  const auto &z = region < 2 ? z1 : z2;
-                  const auto &idx =
-                    region < 2 ? first[region] : second[region - 2];
-                  x                       = Point<2>(z[idx[0]], z[idx[1]]);
-                  y                       = Point<2>(z[idx[2]], z[idx[3]]);
-                  transformation_jacobian = region < 2 ?
-                                              p[0] * p[0] * (1.0 - p[0]) :
-                                              p[0] * p[0] * (1.0 - p[0] * p[1]);
-                  x                       = orient_from_canonical_edge(x,
-                                                 shared[0].test_index,
-                                                 shared[1].test_index);
-                  y                       = orient_from_canonical_edge(y,
-                                                 shared[0].trial_index,
-                                                 shared[1].trial_index);
-                }
-              else
-                {
-                  const std::array<double, 4> z = {
-                    {p[0], p[0] * p[1], p[0] * p[2], p[0] * p[3]}};
-                  const std::array<std::array<unsigned int, 4>, 4> indices = {
-                    {{{0, 1, 2, 3}},
-                     {{1, 0, 2, 3}},
-                     {{1, 2, 0, 3}},
-                     {{1, 2, 3, 0}}}};
-                  x = Point<2>(z[indices[region][0]], z[indices[region][1]]);
-                  y = Point<2>(z[indices[region][2]], z[indices[region][3]]);
-                  transformation_jacobian = p[0] * p[0] * p[0];
-                  x = orient_from_canonical_vertex(x, shared[0].test_index);
-                  y = orient_from_canonical_vertex(y, shared[0].trial_index);
-                }
+              sauter_schwab_point(
+                type, region, p, shared, x, y, transformation_jacobian);
 
               test_reference_points.push_back(x);
               trial_reference_points.push_back(y);
@@ -2055,6 +1986,399 @@ GalerkinPanelPairIntegrator<spacedim>::unit_pair_rule(
             }
         }
     }
+}
+
+
+template <int spacedim>
+unsigned int
+GalerkinPanelPairIntegrator<spacedim>::sauter_schwab_regions(
+  const GalerkinPanelPairType type,
+  const bool                  half)
+{
+  return type == GalerkinPanelPairType::same_panel  ? (half ? 4 : 8) :
+         type == GalerkinPanelPairType::common_edge ? 6 :
+                                                      4;
+}
+
+
+template <int spacedim>
+void
+GalerkinPanelPairIntegrator<spacedim>::sauter_schwab_point(
+  const GalerkinPanelPairType      type,
+  const unsigned int               region,
+  const Point<4>                  &p,
+  const std::vector<CommonVertex> &shared,
+  Point<2>                        &x,
+  Point<2>                        &y,
+  double                          &jacobian) const
+{
+  if (type == GalerkinPanelPairType::same_panel)
+    {
+      const std::array<double, 4> z = {
+        {(1.0 - p[0]) * p[3],
+         (1.0 - p[0] * p[1]) * p[2],
+         p[0] + (1.0 - p[0]) * p[3],
+         p[0] * p[1] + (1.0 - p[0] * p[1]) * p[2]}};
+      const std::array<std::array<unsigned int, 4>, 8> indices = {
+        {{{0, 1, 2, 3}},
+         {{1, 0, 3, 2}},
+         {{0, 3, 2, 1}},
+         {{1, 2, 3, 0}},
+         {{2, 1, 0, 3}},
+         {{3, 0, 1, 2}},
+         {{2, 3, 0, 1}},
+         {{3, 2, 1, 0}}}};
+      x        = Point<2>(z[indices[region][0]], z[indices[region][1]]);
+      y        = Point<2>(z[indices[region][2]], z[indices[region][3]]);
+      jacobian = p[0] * (1.0 - p[0]) * (1.0 - p[0] * p[1]);
+    }
+  else if (type == GalerkinPanelPairType::common_edge)
+    {
+      const std::array<double, 4> z1 = {{(1.0 - p[0]) * p[3] + p[0],
+                                         p[0] * p[2],
+                                         (1.0 - p[0]) * p[3],
+                                         p[0] * p[1]}};
+      const std::array<double, 4> z2 = {
+        {(1.0 - p[0] * p[1]) * p[3] + p[0] * p[1],
+         p[0] * p[2],
+         (1.0 - p[0] * p[1]) * p[3],
+         p[0]}};
+      const std::array<std::array<unsigned int, 4>, 2> first = {
+        {{{0, 1, 2, 3}}, {{2, 1, 0, 3}}}};
+      const std::array<std::array<unsigned int, 4>, 4> second = {
+        {{{0, 1, 2, 3}}, {{0, 3, 2, 1}}, {{2, 1, 0, 3}}, {{2, 3, 0, 1}}}};
+      const auto &z   = region < 2 ? z1 : z2;
+      const auto &idx = region < 2 ? first[region] : second[region - 2];
+      x               = Point<2>(z[idx[0]], z[idx[1]]);
+      y               = Point<2>(z[idx[2]], z[idx[3]]);
+      jacobian        = region < 2 ? p[0] * p[0] * (1.0 - p[0]) :
+                                     p[0] * p[0] * (1.0 - p[0] * p[1]);
+      x               = orient_from_canonical_edge(x,
+                                     shared[0].test_index,
+                                     shared[1].test_index);
+      y               = orient_from_canonical_edge(y,
+                                     shared[0].trial_index,
+                                     shared[1].trial_index);
+    }
+  else
+    {
+      const std::array<double, 4> z = {
+        {p[0], p[0] * p[1], p[0] * p[2], p[0] * p[3]}};
+      const std::array<std::array<unsigned int, 4>, 4> indices = {
+        {{{0, 1, 2, 3}}, {{1, 0, 2, 3}}, {{1, 2, 0, 3}}, {{1, 2, 3, 0}}}};
+      x        = Point<2>(z[indices[region][0]], z[indices[region][1]]);
+      y        = Point<2>(z[indices[region][2]], z[indices[region][3]]);
+      jacobian = p[0] * p[0] * p[0];
+      x        = orient_from_canonical_vertex(x, shared[0].test_index);
+      y        = orient_from_canonical_vertex(y, shared[0].trial_index);
+    }
+}
+
+
+template <int spacedim>
+bool
+GalerkinPanelPairIntegrator<spacedim>::adapted_pair_rule(
+  const GalerkinPanelPairType      type,
+  const std::vector<CommonVertex> &shared,
+  const unsigned int               order,
+  const CellIterator              &test_cell,
+  const ReferencePatch            &test_patch,
+  const CellIterator              &trial_cell,
+  const ReferencePatch            &trial_patch,
+  std::vector<Point<2>>           &test_points,
+  std::vector<Point<2>>           &trial_points,
+  std::vector<double>             &weights) const
+{
+  // The angular variables of the unit cube of a region: p[1] for a panel
+  // with itself (p[2] and p[3] place the pair in the cell), p[1] and p[2]
+  // for a common edge (p[3] runs along it), all three for a common vertex.
+  const unsigned int n_angles  = type == GalerkinPanelPairType::same_panel ? 1 :
+                                 type == GalerkinPanelPairType::common_edge ? 2 :
+                                                                              3;
+  const unsigned int n_regions = sauter_schwab_regions(type, false);
+
+  // D(eta) = (x - y) / xi for a small radial variable xi, in the physical
+  // space, the other variables in the middle of their range: affine in eta
+  // on affine cells, D0 + sum_k eta_k d_k.
+  constexpr double xi       = 1e-5;
+  const auto       relative = [&](const unsigned int           region,
+                            const std::array<double, 3> &eta) {
+    Point<4> p;
+    p[0] = xi;
+    p[1] = p[2] = p[3] = 0.5;
+    for (unsigned int k = 0; k < n_angles; ++k)
+      p[1 + k] = eta[k];
+    Point<2> x, y;
+    double   jacobian;
+    sauter_schwab_point(type, region, p, shared, x, y, jacobian);
+    const Point<spacedim> X = map_to_real_cell(
+      test_cell, transform_patch_point(x, test_patch.lower, test_patch.upper));
+    const Point<spacedim> Y = map_to_real_cell(
+      trial_cell,
+      transform_patch_point(y, trial_patch.lower, trial_patch.upper));
+    return Tensor<1, spacedim>((X - Y) / xi);
+  };
+
+  struct Region
+  {
+    bool                               adapted = false;
+    Tensor<1, spacedim>                D0;
+    std::array<Tensor<1, spacedim>, 3> d;
+  };
+  std::vector<Region> regions(n_regions);
+  bool                any = false;
+  for (unsigned int r = 0; r < n_regions; ++r)
+    {
+      Region &region = regions[r];
+      region.D0      = relative(r, {{0., 0., 0.}});
+      for (unsigned int k = 0; k < n_angles; ++k)
+        {
+          std::array<double, 3> e = {{0., 0., 0.}};
+          e[k]                    = 1.;
+          region.d[k]             = relative(r, e) - region.D0;
+        }
+      // The largest |D| on the corners of the box, and the smallest on a
+      // grid of it: below the ratio, the region is adapted.
+      double largest = 0., smallest = std::numeric_limits<double>::max();
+      const unsigned int m         = 8;
+      unsigned int       n_samples = 1;
+      for (unsigned int k = 0; k < n_angles; ++k)
+        n_samples *= m + 1;
+      for (unsigned int i = 0; i < n_samples; ++i)
+        {
+          Tensor<1, spacedim> D      = region.D0;
+          bool                corner = true;
+          for (unsigned int k = 0, code = i; k < n_angles; ++k, code /= m + 1)
+            {
+              const unsigned int j = code % (m + 1);
+              D += (double(j) / m) * region.d[k];
+              corner &= j == 0 || j == m;
+            }
+          smallest = std::min(smallest, D.norm());
+          if (corner)
+            largest = std::max(largest, D.norm());
+        }
+      if (!(largest > 0.) || smallest >= singular_adaptation_ratio * largest)
+        continue;
+      region.adapted = true;
+      any            = true;
+    }
+  if (!any)
+    return false;
+
+  // The iterated sinh transformation (Johnston, Johnston and Elliott): the
+  // variables in turn, outer to inner. Given the outer ones, the smallest
+  // |D| over the inner ones in their unit box, g(t), is convex in the
+  // variable t at hand: the transformation is centred at its minimum, on
+  // the scale of the width of its peak there. A variable on whose unit
+  // interval g stays above the ratio times its largest value keeps its
+  // Gauss points.
+  const auto smallest_over = [](Tensor<1, spacedim>                     v,
+                                const std::vector<Tensor<1, spacedim>> &dirs) {
+    // min |v + sum_j s_j dirs_j| over s in [0,1]^m, m <= 2, by the active
+    // sets: each s_j free, at 0 or at 1.
+    const unsigned int m = dirs.size();
+    if (m == 0)
+      return v.norm();
+    double       best    = std::numeric_limits<double>::max();
+    unsigned int n_cases = 1;
+    for (unsigned int j = 0; j < m; ++j)
+      n_cases *= 3;
+    for (unsigned int c = 0; c < n_cases; ++c)
+      {
+        Tensor<1, spacedim>       r = v;
+        std::vector<unsigned int> unknown;
+        for (unsigned int j = 0, code = c; j < m; ++j, code /= 3)
+          {
+            const unsigned int state = code % 3;
+            if (state == 0)
+              unknown.push_back(j);
+            else
+              r += double(state - 1) * dirs[j];
+          }
+        if (unknown.size() == 1)
+          {
+            const Tensor<1, spacedim> &e  = dirs[unknown[0]];
+            const double               ee = e * e;
+            if (!(ee > 0.))
+              continue;
+            const double t = -(r * e) / ee;
+            if (t < 0. || t > 1.)
+              continue;
+            r += t * e;
+          }
+        else if (unknown.size() == 2)
+          {
+            const Tensor<1, spacedim> &e = dirs[unknown[0]],
+                                      &f = dirs[unknown[1]];
+            const double ee = e * e, ef = e * f, ff = f * f;
+            const double det = ee * ff - ef * ef;
+            if (!(det > 1e-12 * ee * ff))
+              continue;
+            const double re = r * e, rf = r * f;
+            const double t = (-re * ff + rf * ef) / det;
+            const double u = (-rf * ee + re * ef) / det;
+            if (t < 0. || t > 1. || u < 0. || u > 1.)
+              continue;
+            r += t * e + u * f;
+          }
+        best = std::min(best, r.norm());
+      }
+    return best;
+  };
+  struct Placement
+  {
+    double value;
+    double weight;
+  };
+  // The transformation of variable k of a region given the outer value r
+  // of D, as the images of the Gauss points.
+  const QGauss<1>    gauss(order);
+  const unsigned int n          = gauss.size();
+  const auto         placements = [&](const Region              &region,
+                              const unsigned int         k,
+                              const Tensor<1, spacedim> &r) {
+    std::vector<Tensor<1, spacedim>> inner;
+    for (unsigned int j = k + 1; j < n_angles; ++j)
+      inner.push_back(region.d[j]);
+    const auto g = [&](const double t) {
+      return smallest_over(r + t * region.d[k], inner);
+    };
+    std::vector<Placement> result(n);
+    for (unsigned int i = 0; i < n; ++i)
+      result[i] = {gauss.point(i)[0], gauss.weight(i)};
+    // The minimum of the convex g, on a range that holds the peaks just
+    // outside the interval, by golden sections.
+    double       lo = -2., hi = 3.;
+    const double golden = 0.5 * (std::sqrt(5.) - 1.);
+    double       x1 = hi - golden * (hi - lo), x2 = lo + golden * (hi - lo);
+    double       g1 = g(x1), g2 = g(x2);
+    for (unsigned int it = 0; it < 60; ++it)
+      if (g1 < g2)
+        {
+          hi = x2;
+          x2 = x1;
+          g2 = g1;
+          x1 = hi - golden * (hi - lo);
+          g1 = g(x1);
+        }
+      else
+        {
+          lo = x1;
+          x1 = x2;
+          g1 = g2;
+          x2 = lo + golden * (hi - lo);
+          g2 = g(x2);
+        }
+    const double c       = 0.5 * (lo + hi);
+    const double minimum = g(c);
+    // The width of the peak: g^2 = minimum^2 + kappa (t - c)^2 near c.
+    const double delta = std::max(1e-3, 0.1 * minimum / region.d[k].norm());
+    const double kappa = (std::pow(g(c + delta), 2) +
+                          std::pow(g(c - delta), 2) - 2. * minimum * minimum) /
+                         (2. * delta * delta);
+    if (!(kappa > 0.))
+      return result;
+    const double h = std::max(minimum / std::sqrt(kappa), 1e-8);
+    // A peak as wide as the interval, or farther from it than twice its
+    // width, needs no transformation.
+    const double outside = c < 0. ? -c : c > 1. ? c - 1. : 0.;
+    if (h >= 1. || outside >= 2. * h)
+      return result;
+    const double above = std::asinh((1. - c) / h);
+    const double below = std::asinh(c / h);
+    const double mu    = 0.5 * (above + below);
+    const double nu    = 0.5 * (below - above);
+    for (unsigned int i = 0; i < n; ++i)
+      {
+        const double s = mu * (2. * gauss.point(i)[0] - 1.) - nu;
+        result[i]      = {c + h * std::sinh(s),
+                          gauss.weight(i) * 2. * h * mu * std::cosh(s)};
+      }
+    return result;
+  };
+
+  ++adapted_pairs;
+  test_points.clear();
+  trial_points.clear();
+  weights.clear();
+  test_points.reserve(n_regions * n * n * n * n);
+  trial_points.reserve(n_regions * n * n * n * n);
+  weights.reserve(n_regions * n * n * n * n);
+  for (unsigned int r = 0; r < n_regions; ++r)
+    {
+      const Region &region = regions[r];
+      // The angular values and weights of the region, for every tuple of
+      // indices of its angular variables (outer first).
+      unsigned int n_tuples = 1;
+      for (unsigned int k = 0; k < n_angles; ++k)
+        n_tuples *= n;
+      std::vector<std::array<double, 3>> angles(n_tuples);
+      std::vector<double>                angle_weights(n_tuples, 1.);
+      if (region.adapted)
+        {
+          const std::vector<Placement> first = placements(region, 0, region.D0);
+          for (unsigned int i0 = 0; i0 < n; ++i0)
+            {
+              const Tensor<1, spacedim> r0 =
+                region.D0 + first[i0].value * region.d[0];
+              const std::vector<Placement> second =
+                n_angles > 1 ? placements(region, 1, r0) :
+                               std::vector<Placement>(1, {0., 1.});
+              for (unsigned int i1 = 0; i1 < second.size(); ++i1)
+                {
+                  const Tensor<1, spacedim> r1 =
+                    n_angles > 1 ? r0 + second[i1].value * region.d[1] : r0;
+                  const std::vector<Placement> third =
+                    n_angles > 2 ? placements(region, 2, r1) :
+                                   std::vector<Placement>(1, {0., 1.});
+                  for (unsigned int i2 = 0; i2 < third.size(); ++i2)
+                    {
+                      const unsigned int t =
+                        i0 + n * (i1 + n * i2 * (n_angles > 2));
+                      angles[t] = {
+                        {first[i0].value, second[i1].value, third[i2].value}};
+                      angle_weights[t] =
+                        first[i0].weight * second[i1].weight * third[i2].weight;
+                    }
+                }
+            }
+        }
+      else
+        for (unsigned int t = 0; t < n_tuples; ++t)
+          for (unsigned int k = 0, code = t; k < n_angles; ++k, code /= n)
+            {
+              angles[t][k] = gauss.point(code % n)[0];
+              angle_weights[t] *= gauss.weight(code % n);
+            }
+
+      // The radial and the positional variables keep their Gauss points.
+      unsigned int n_other = 1;
+      for (unsigned int k = n_angles; k < 3; ++k)
+        n_other *= n;
+      for (unsigned int q0 = 0; q0 < n; ++q0)
+        for (unsigned int t = 0; t < n_tuples; ++t)
+          for (unsigned int o = 0; o < n_other; ++o)
+            {
+              Point<4> q;
+              q[0]          = gauss.point(q0)[0];
+              double weight = gauss.weight(q0) * angle_weights[t];
+              for (unsigned int k = 0; k < n_angles; ++k)
+                q[1 + k] = angles[t][k];
+              for (unsigned int k = n_angles, code = o; k < 3; ++k, code /= n)
+                {
+                  q[1 + k] = gauss.point(code % n)[0];
+                  weight *= gauss.weight(code % n);
+                }
+              Point<2> x, y;
+              double   jacobian;
+              sauter_schwab_point(type, r, q, shared, x, y, jacobian);
+              test_points.push_back(x);
+              trial_points.push_back(y);
+              weights.push_back(weight * jacobian);
+            }
+    }
+  return true;
 }
 
 
@@ -2112,12 +2436,24 @@ GalerkinPanelPairIntegrator<spacedim>::pair_quadrature(
     {
       const std::vector<CommonVertex> shared =
         common_vertices(test_cell, test_patch, trial_cell, trial_patch);
-      unit_pair_rule(pair_type,
-                     shared,
-                     order,
-                     test_reference_points,
-                     trial_reference_points,
-                     pair_weights);
+      if (!(singular_adaptation &&
+            singular_quadrature == GalerkinSingularQuadrature::sauter_schwab &&
+            adapted_pair_rule(pair_type,
+                              shared,
+                              order,
+                              test_cell,
+                              test_patch,
+                              trial_cell,
+                              trial_patch,
+                              test_reference_points,
+                              trial_reference_points,
+                              pair_weights)))
+        unit_pair_rule(pair_type,
+                       shared,
+                       order,
+                       test_reference_points,
+                       trial_reference_points,
+                       pair_weights);
       for (Point<2> &point : test_reference_points)
         point =
           transform_patch_point(point, test_patch.lower, test_patch.upper);
@@ -3393,8 +3729,24 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
     type == GalerkinPanelPairType::same_panel ?
       std::vector<CommonVertex>() :
       common_vertices(test_cell, test_patch, trial_cell, trial_patch);
+  // A rule adapted to the geometry of the pair (set_singular_adaptation())
+  // is built for it alone, with all its regions, and its shapes are
+  // evaluated as for a rule of a raised order.
+  const bool adapted =
+    singular_adaptation &&
+    singular_quadrature == GalerkinSingularQuadrature::sauter_schwab &&
+    adapted_pair_rule(type,
+                      shared,
+                      order,
+                      test_cell,
+                      test_patch,
+                      trial_cell,
+                      trial_patch,
+                      adapted_light_rule.test_points,
+                      adapted_light_rule.trial_points,
+                      adapted_light_rule.weights);
   const bool half =
-    light_half && type == GalerkinPanelPairType::same_panel &&
+    !adapted && light_half && type == GalerkinPanelPairType::same_panel &&
     singular_quadrature == GalerkinSingularQuadrature::sauter_schwab;
   std::array<int, 7> key{{static_cast<int>(type),
                           static_cast<int>(order),
@@ -3414,9 +3766,10 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
   // few pairs but have many points, 6 n^4 for a common edge: they keep only
   // their points and weights, about a sixth of the memory at degree two, and
   // the shapes are evaluated for each pair as for a subpatch.
-  const bool raised = singular_order != 0 && order > singular_order;
-  auto       hit    = light_rule_cache.find(key);
-  if (hit == light_rule_cache.end())
+  const bool raised =
+    adapted || (singular_order != 0 && order > singular_order);
+  auto hit = adapted ? light_rule_cache.end() : light_rule_cache.find(key);
+  if (!adapted && hit == light_rule_cache.end())
     {
       ++profile.uncached_pairs;
       LightRule built;
@@ -3498,8 +3851,9 @@ GalerkinPanelPairIntegrator<spacedim>::prepare_light_leaf(
         }
       hit = light_rule_cache.emplace(key, std::move(built)).first;
     }
-  hit->second.last_use  = ++light_rule_clock;
-  const LightRule &rule = hit->second;
+  if (!adapted)
+    hit->second.last_use = ++light_rule_clock;
+  const LightRule &rule = adapted ? adapted_light_rule : hit->second;
 
   leaf.tensor = false;
   leaf.half   = half;
