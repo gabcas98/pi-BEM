@@ -12,8 +12,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    # The packages come from Launchpad and the Ubuntu archive, whose
+    # transient failures (a stalled download, a mirror in sync) failed the
+    # job before: retry the build, which keeps the layers that passed.
     - name: Build deal.II 9.8.0 CI environment
-      run: docker build -f docker/Dockerfile.ci -t pi-bem-ci:9.8.0 .
+      timeout-minutes: 60
+      run: |
+        set -o pipefail
+        for attempt in 1 2 3; do
+          if docker build --progress=plain -f docker/Dockerfile.ci \
+               -t pi-bem-ci:9.8.0 . 2>&1 | tee docker.log; then
+            exit 0
+          fi
+          echo "::warning title=Docker build::attempt $attempt failed"
+          sleep 60
+        done
+        exit 1
     - name: Test Debug and Release without compiler warnings
       run: |
         set -o pipefail
@@ -29,7 +43,7 @@ jobs:
             test -x build-docker/9.8.0-ci/bem_fma_3d
             test -x build-docker/9.8.0-ci/bem_fma_3d.g
             cd build-docker/9.8.0-ci
-            ctest --output-on-failure
+            ctest -j 2 --output-on-failure
           ' 2>&1 | tee ci.log
     # Only members of the repository can read the log of a job; annotations
     # are public, and show next to the changes of a pull request.
@@ -39,6 +53,12 @@ jobs:
         annotate() {
           echo "::error title=$1::$(sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
         }
+        if [ ! -f ci.log ]; then
+          if [ -f docker.log ]; then
+            tail -60 docker.log | annotate "End of the docker build"
+          fi
+          exit 0
+        fi
         first=$(grep -n -m 1 -E 'error:|warning:|CMake Error' ci.log | cut -d: -f1)
         if [ -n "$first" ]; then
           start=$(( first > 15 ? first - 15 : 1 ))

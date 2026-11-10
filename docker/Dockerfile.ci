@@ -4,6 +4,10 @@ FROM ubuntu:26.04
 
 ARG DEAL_II_PACKAGE_VERSION=9.8.0-1~ubuntu26.04.1~ppa2
 ENV DEBIAN_FRONTEND=noninteractive
+# A download that stalls is abandoned after a minute and retried, instead of
+# holding the build until the job fails.
+RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\nAcquire::https::Timeout "60";\n' \
+       > /etc/apt/apt.conf.d/80-retries
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates software-properties-common \
