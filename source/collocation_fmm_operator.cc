@@ -113,9 +113,41 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
   setup_geometry = seconds_since(start);
 
   // The support points are the only targets.
-  start = std::chrono::steady_clock::now();
   std::vector<bool> targets(points.size(), false);
   std::fill(targets.begin() + n_sources, targets.end(), true);
+
+  // The row sums of the double layer of the Laplace kernel, for the jump
+  // coefficient of the other kernels: its multipole method with unit
+  // dipoles at all points, as vmult() takes phi = 1, set up and freed
+  // before that of the kernel so that the two are not held at once; the
+  // corrections of the near pairs are added below.
+  const bool laplace_sums = fmm_data.kappa > 0. || fmm_data.wavenumber > 0.;
+  laplace_row_sums.clear();
+  setup_jump = 0;
+  if (laplace_sums)
+    {
+      start = std::chrono::steady_clock::now();
+      laplace_row_sums.reinit(owned, mpi_communicator);
+      LaplaceFMM                 laplace(mpi_communicator);
+      LaplaceFMM::AdditionalData laplace_data = fmm_data;
+      laplace_data.kappa                      = 0.;
+      laplace_data.wavenumber                 = 0.;
+      laplace.reinit(points, laplace_data, targets);
+      std::vector<std::vector<double>>       charges(1), potentials;
+      std::vector<std::vector<Tensor<1, 3>>> dipoles(1);
+      charges[0].assign(n_sources + n_dofs, 0.);
+      dipoles[0].assign(n_sources + n_dofs, Tensor<1, 3>());
+      for (unsigned int p = 0; p < n_sources; ++p)
+        dipoles[0][p] =
+          inverse_4pi * JxW[p] * shape_sum[p % n_q_points] * normals[p];
+      laplace.evaluate_combined_sets(charges, dipoles, potentials);
+      for (const auto i : owned)
+        laplace_row_sums(i) = potentials[0][n_sources + i];
+      laplace_row_sums.compress(VectorOperation::insert);
+      setup_jump = seconds_since(start);
+    }
+
+  start = std::chrono::steady_clock::now();
   fmm.reinit(points, fmm_data, targets);
   setup_tree = seconds_since(start);
 
@@ -143,9 +175,8 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
   const double kappa = fmm_data.kappa;
   const double k     = fmm_data.wavenumber;
   wavenumber         = k;
-  // The corrections of the row sums of the double layer of the Laplace
-  // kernel, for the jump coefficient of the other kernels.
-  const bool          laplace_sums = kappa > 0. || k > 0.;
+  // The corrections of the near pairs of the row sums of the Laplace
+  // kernel.
   std::vector<double> laplace_corrections(laplace_sums ? own_rows.size() : 0,
                                           0.);
   const auto integrate = [&](const std::size_t begin, const std::size_t end) {
@@ -256,35 +287,18 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
       }
   for (auto *matrix : {&correction_n, &correction_d, &band_n, &band_d})
     matrix->compress(VectorOperation::insert);
+  // The entries are in the matrices.
+  std::vector<std::map<types::global_dof_index, std::array<double, 4>>>().swap(
+    entries);
+  sparsity.clear();
   setup_near = seconds_since(start);
 
-  // The row sums of the double layer of the Laplace kernel: its multipole
-  // method with unit dipoles at all points, as vmult() takes phi = 1, and
-  // the corrections of the near pairs.
-  start = std::chrono::steady_clock::now();
-  laplace_row_sums.clear();
   if (laplace_sums)
     {
-      laplace_row_sums.reinit(owned, mpi_communicator);
-      LaplaceFMM                 laplace(mpi_communicator);
-      LaplaceFMM::AdditionalData laplace_data = fmm_data;
-      laplace_data.kappa                      = 0.;
-      laplace_data.wavenumber                 = 0.;
-      laplace.reinit(points, laplace_data, targets);
-      std::vector<std::vector<double>>       charges(1), potentials;
-      std::vector<std::vector<Tensor<1, 3>>> dipoles(1);
-      charges[0].assign(n_sources + n_dofs, 0.);
-      dipoles[0].assign(n_sources + n_dofs, Tensor<1, 3>());
-      for (unsigned int p = 0; p < n_sources; ++p)
-        dipoles[0][p] =
-          inverse_4pi * JxW[p] * shape_sum[p % n_q_points] * normals[p];
-      laplace.evaluate_combined_sets(charges, dipoles, potentials);
       for (std::size_t r = 0; r < own_rows.size(); ++r)
-        laplace_row_sums(own_rows[r]) =
-          potentials[0][n_sources + own_rows[r]] + laplace_corrections[r];
-      laplace_row_sums.compress(VectorOperation::insert);
+        laplace_row_sums(own_rows[r]) += laplace_corrections[r];
+      laplace_row_sums.compress(VectorOperation::add);
     }
-  setup_jump    = seconds_since(start);
   time_products = 0;
   n_products    = 0;
 }
