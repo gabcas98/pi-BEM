@@ -224,11 +224,18 @@ into `neumann_matrix` and `dirichlet_matrix`. Its imaginary part
 `sin(k r) / (4 pi r)` is analytic, and the regular rule integrates it on
 every cell, into `neumann_matrix_imag` and `dirichlet_matrix_imag`. The
 complex products couple the two parts: `(N_r + i N_i) phi - (D_r + i D_i)
-dphi_dn`. The jump coefficient is the geometric one, as for the screened
-kernel; the row sums of the double layer give that of the Laplace kernel
-only. (The complex solve took the row sums for every kernel; it now takes the
-geometric coefficient for the screened kernel too.) The preconditioner is
-that of the real part, on each block.
+dphi_dn`. The jump coefficient is, as for the screened kernel, minus the row
+sums of the double layer of the Laplace kernel, integrated with the same
+rules (`laplace_alpha`): the row sums of the double layer of the kernel
+itself give the jump of the Laplace kernel only, and the geometric
+coefficient leaves the error of the rules on a constant, which the equation
+of the first kind on the Dirichlet part amplifies as the mesh is refined (at
+`p = 2` the flux error grew to 17 times its best approximation with 24578
+unknowns for the screened kernel, `kappa = 2`, and to 40 times for the real
+part of the Helmholtz kernel, `k = 2`). The multipole method sums the same
+rows from its near corrections and one evaluation of the Laplace kernel
+(`CollocationFMMOperator::laplace_neumann_row_sums()`). The preconditioner
+is that of the real part, on each block.
 
 `RUN_REGRESSION/base/sphere_helmholtz_robin.prm` solves the plane wave
 `u = exp(i k d.x)`, `d = (1,1,1)/sqrt(3)`, `k = 2`, inside the sample

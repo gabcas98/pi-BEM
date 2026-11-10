@@ -30,6 +30,7 @@
 #include <complex>
 #include <map>
 #include <ostream>
+#include <string>
 
 namespace
 {
@@ -80,9 +81,13 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
     }
   n_q_points = quadrature.size();
   shape.reinit(n_q_points, dpc);
+  std::vector<double> shape_sum(n_q_points, 0.);
   for (unsigned int q = 0; q < n_q_points; ++q)
     for (unsigned int j = 0; j < dpc; ++j)
-      shape(q, j) = fe.shape_value(j, quadrature.point(q));
+      {
+        shape(q, j) = fe.shape_value(j, quadrature.point(q));
+        shape_sum[q] += shape(q, j);
+      }
   FEValues<2, 3> values(mapping,
                         fe,
                         quadrature,
@@ -135,9 +140,14 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
     own_rows.size());
   std::vector<unsigned long> row_pairs(own_rows.size(), 0),
     row_corrections(own_rows.size(), 0);
-  const double kappa   = fmm_data.kappa;
-  const double k       = fmm_data.wavenumber;
-  wavenumber           = k;
+  const double kappa = fmm_data.kappa;
+  const double k     = fmm_data.wavenumber;
+  wavenumber         = k;
+  // The corrections of the row sums of the double layer of the Laplace
+  // kernel, for the jump coefficient of the other kernels.
+  const bool          laplace_sums = kappa > 0. || k > 0.;
+  std::vector<double> laplace_corrections(laplace_sums ? own_rows.size() : 0,
+                                          0.);
   const auto integrate = [&](const std::size_t begin, const std::size_t end) {
     Vector<double> exact_n(dpc), exact_d(dpc), point_n(dpc), point_d(dpc);
     std::vector<std::pair<BoundingBox<3>, unsigned int>> hits;
@@ -151,12 +161,16 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
                    std::back_inserter(hits));
         for (const auto &hit : hits)
           {
-            const unsigned int c = hit.second;
-            const bool near = rows(cells[c], cell_dofs[c], i, exact_n, exact_d);
+            const unsigned int c           = hit.second;
+            double             laplace_sum = 0;
+            const bool         near =
+              rows(cells[c], cell_dofs[c], i, exact_n, exact_d, laplace_sum);
             // The regular rule, as the multipole method sums it: the kernel
             // of the dense assembly, without a point at the support point.
-            point_n = 0;
-            point_d = 0;
+            point_n                  = 0;
+            point_d                  = 0;
+            double     laplace_point = 0;
+            const bool laplace_pair  = laplace_sums && near;
             for (unsigned int q = 0; q < n_q_points; ++q)
               {
                 const unsigned int p = c * n_q_points + q;
@@ -189,7 +203,12 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
                     point_n[j] += dipole * shape(q, j);
                     point_d[j] += single * shape(q, j);
                   }
+                if (laplace_pair)
+                  laplace_point += -inverse_4pi * (R * normals[p]) /
+                                   (r * r * r) * JxW[p] * shape_sum[q];
               }
+            if (laplace_pair)
+              laplace_corrections[r] += laplace_sum - laplace_point;
             auto &row = entries[r];
             for (unsigned int j = 0; j < dpc; ++j)
               {
@@ -237,7 +256,35 @@ CollocationFMMOperator::reinit(const DoFHandler<2, 3>           &dh,
       }
   for (auto *matrix : {&correction_n, &correction_d, &band_n, &band_d})
     matrix->compress(VectorOperation::insert);
-  setup_near    = seconds_since(start);
+  setup_near = seconds_since(start);
+
+  // The row sums of the double layer of the Laplace kernel: its multipole
+  // method with unit dipoles at all points, as vmult() takes phi = 1, and
+  // the corrections of the near pairs.
+  start = std::chrono::steady_clock::now();
+  laplace_row_sums.clear();
+  if (laplace_sums)
+    {
+      laplace_row_sums.reinit(owned, mpi_communicator);
+      LaplaceFMM                 laplace(mpi_communicator);
+      LaplaceFMM::AdditionalData laplace_data = fmm_data;
+      laplace_data.kappa                      = 0.;
+      laplace_data.wavenumber                 = 0.;
+      laplace.reinit(points, laplace_data, targets);
+      std::vector<std::vector<double>>       charges(1), potentials;
+      std::vector<std::vector<Tensor<1, 3>>> dipoles(1);
+      charges[0].assign(n_sources + n_dofs, 0.);
+      dipoles[0].assign(n_sources + n_dofs, Tensor<1, 3>());
+      for (unsigned int p = 0; p < n_sources; ++p)
+        dipoles[0][p] =
+          inverse_4pi * JxW[p] * shape_sum[p % n_q_points] * normals[p];
+      laplace.evaluate_combined_sets(charges, dipoles, potentials);
+      for (std::size_t r = 0; r < own_rows.size(); ++r)
+        laplace_row_sums(own_rows[r]) =
+          potentials[0][n_sources + own_rows[r]] + laplace_corrections[r];
+      laplace_row_sums.compress(VectorOperation::insert);
+    }
+  setup_jump    = seconds_since(start);
   time_products = 0;
   n_products    = 0;
 }
@@ -379,6 +426,7 @@ CollocationFMMOperator::print_statistics(std::ostream &out) const
     Utilities::MPI::sum(static_cast<double>(n_corrected_pairs),
                         mpi_communicator);
   const double near_time = Utilities::MPI::max(setup_near, mpi_communicator);
+  const double jump_time = Utilities::MPI::max(setup_jump, mpi_communicator);
   const double product_time =
     Utilities::MPI::max(time_products, mpi_communicator);
   fmm.print_statistics(out);
@@ -388,7 +436,11 @@ CollocationFMMOperator::print_statistics(std::ostream &out) const
         << " pairs of a support point and a cell in the near band, of which "
         << corrected << " corrected; setup: geometry " << setup_geometry
         << " s, tree " << setup_tree << " s, near field " << near_time
-        << " s (slowest process); " << n_products << " products, "
+        << " s (slowest process)"
+        << (laplace_row_sums.size() > 0 ?
+              ", jump coefficient " + std::to_string(jump_time) + " s" :
+              std::string())
+        << "; " << n_products << " products, "
         << (n_products > 0 ? product_time / n_products : 0.)
         << " s each (slowest process)" << std::endl;
 }

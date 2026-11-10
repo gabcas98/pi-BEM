@@ -267,6 +267,19 @@ CASES = {
     'screened_collocation_robin_fma': ('sphere_screened_robin.prm', {},
                                        ['phi_nodes', 'robin_residual',
                                         'iterations']),
+    # Its jump coefficient at p=2, kappa = 0.5, 6146 unknowns: the row sums
+    # of the double layer of the Laplace kernel with the rules of the
+    # operator. The geometric one left the error of the rules on a
+    # constant, which the equation of the first kind amplified: flux error
+    # 4.50e-5 against a best approximation of 1.35e-5.
+    'screened_collocation_jump_p2_fma': ('sphere_screened_robin.prm',
+                                         {'Finite element order': '2',
+                                          'Number of cycles': '2',
+                                          'Function constants': 'kappa=0.5',
+                                          'Screened Kappa': '0.5',
+                                          'FMA Truncation Order': '10',
+                                          'Errors': 'exact solution'},
+                                         ['flux', 'phi_nodes', 'iterations']),
     # The Helmholtz kernel exp(i k r) / (4 pi r), k = 2, in the collocation
     # problem with Dirichlet and impedance parts: the plane wave against the
     # exact solution, real and imaginary part of the kernel coupled.

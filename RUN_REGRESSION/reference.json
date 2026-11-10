@@ -125,7 +125,7 @@
  },
  "helmholtz_collocation_robin_fma": {
   "flux": "0.158263",
-  "gradient": "0.0883493",
+  "gradient": "0.0883492",
   "phi_nodes": "0.00693229",
   "steps": "43"
  },
@@ -217,6 +217,11 @@
   "phi_nodes": "0",
   "robin_residual": "0.0125917"
  },
+ "screened_collocation_jump_p2_fma": {
+  "flux": "1.36752e-05",
+  "iterations": "32",
+  "phi_nodes": "2.85264e-07"
+ },
  "screened_collocation_robin": {
   "iterations": "23",
   "phi_nodes": "0",
@@ -225,7 +230,7 @@
  "screened_collocation_robin_fma": {
   "iterations": "22",
   "phi_nodes": "0",
-  "robin_residual": "0.160912"
+  "robin_residual": "0.160859"
  },
  "screened_mixed_robin": {
   "iterations": "19",

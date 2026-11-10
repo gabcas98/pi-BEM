@@ -138,6 +138,9 @@ them changes the solution.
 - `screened_collocation_robin`, `screened_collocation_robin_fma`: the
   screened kernel in the collocation problem with Dirichlet and Robin parts,
   with the matrices and with the multipole method.
+- `screened_collocation_jump_p2_fma`: its jump coefficient, the row sums of
+  the double layer of the Laplace kernel, at `p = 2`, `kappa = 0.5`, 6146
+  unknowns, where the geometric coefficient gave three times the flux error.
 - `helmholtz_collocation_robin`, `helmholtz_galerkin_robin`,
   `helmholtz_collocation_robin_fma`, `helmholtz_galerkin_robin_fma`: the
   Helmholtz kernel, the plane wave with Dirichlet and impedance parts

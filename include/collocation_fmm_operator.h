@@ -60,6 +60,12 @@ using namespace dealii;
  * assembly takes; the preconditioner of the collocation system is built on
  * it.
  *
+ * For the screened and the Helmholtz kernel the setup also sums the rows of
+ * the double layer of the Laplace kernel with the same rules, the
+ * corrections and one evaluation of the multipole method of the Laplace
+ * kernel: minus these sums is the jump coefficient consistent with the
+ * rules, which the other kernels, of the same singular part, take.
+ *
  * Every process evaluates the sources on all cells, as the multipole
  * method needs, and holds the corrections and the band of its own rows.
  */
@@ -71,14 +77,16 @@ public:
   /// The rows of the dense assembly at the support point of i on a cell,
   /// for the cells within the reach of the quasi-singular rule: true, with
   /// the rows, if they are those of the singular or of the quasi-singular
-  /// rule; false if they are those of the regular rule, which it need not
-  /// fill.
+  /// rule, and in laplace_neumann_sum the sum of the row of the double
+  /// layer of the Laplace kernel with that rule; false if they are those of
+  /// the regular rule, which it need not fill.
   using RowIntegrator =
     std::function<bool(const CellIterator                         &cell,
                        const std::vector<types::global_dof_index> &dofs,
                        const types::global_dof_index               i,
                        Vector<double>                             &neumann_row,
-                       Vector<double> &dirichlet_row)>;
+                       Vector<double> &dirichlet_row,
+                       double         &laplace_neumann_sum)>;
 
   explicit CollocationFMMOperator(const MPI_Comm comm);
 
@@ -146,6 +154,15 @@ public:
     return band_d;
   }
 
+  /// The row sums of the double layer of the Laplace kernel with the rules
+  /// of the operator, on the own rows, for the screened and the Helmholtz
+  /// kernel; empty for the Laplace kernel, whose own products give them.
+  const TrilinosWrappers::MPI::Vector &
+  laplace_neumann_row_sums() const
+  {
+    return laplace_row_sums;
+  }
+
   /// Sizes, times of the setup and mean time of a product; collective.
   void
   print_statistics(std::ostream &out) const;
@@ -173,8 +190,11 @@ private:
   /// The corrections of the near pairs of the own rows, and the near band.
   TrilinosWrappers::SparseMatrix correction_n, correction_d, band_n, band_d;
 
-  unsigned long        n_band_pairs = 0, n_corrected_pairs = 0;
-  double               setup_geometry = 0, setup_tree = 0, setup_near = 0;
+  /// See laplace_neumann_row_sums().
+  TrilinosWrappers::MPI::Vector laplace_row_sums;
+
+  unsigned long n_band_pairs = 0, n_corrected_pairs = 0;
+  double setup_geometry = 0, setup_tree = 0, setup_near = 0, setup_jump = 0;
   mutable double       time_products = 0;
   mutable unsigned int n_products    = 0;
 };

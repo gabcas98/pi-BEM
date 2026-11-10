@@ -239,6 +239,14 @@ public:
    * ratio, and else the regular rule of regular_values, reinitialized on
    * the cell; without them the regular rows are left zero. Returns the
    * rule.
+   *
+   * If laplace_neumann_sum is given, it is set to the sum over the degrees
+   * of freedom of the cell of the row of the double layer of the Laplace
+   * kernel, with the same rule at the order the kernel took: summed over
+   * the cells, minus the jump coefficient consistent with the rules. The
+   * other kernels share the singular part of the Laplace kernel, so that
+   * this coefficient cancels the error of the rules on a constant, as the
+   * row sums of the double layer do for the Laplace kernel.
    */
   CollocationRule
   integrate_collocation_rows(
@@ -249,7 +257,8 @@ public:
     const FEValues<dim - 1, dim>               *regular_values,
     Vector<double>                             &neumann_row,
     Vector<double>                             &dirichlet_row,
-    CollocationRuleStatistics                  &statistics) const;
+    CollocationRuleStatistics                  &statistics,
+    double *laplace_neumann_sum = nullptr) const;
 
   /// This function compute a very specific case, a double node that has a
   /// dirichlet-dirichlet condition. In this case there is a constraint for
@@ -987,6 +996,13 @@ public:
   /// an alternatively computed alpha vector (obtained with geometric
   /// computations)
   TrilinosWrappers::MPI::Vector hyp_alpha;
+  /// The jump coefficient of the collocation for the kernels other than
+  /// Laplace's: minus the row sums of the double layer of the Laplace
+  /// kernel, integrated with the rules of the assembly or of the multipole
+  /// method (integrate_collocation_rows()). The geometric one leaves the
+  /// error of the rules on a constant, which the equation of the first kind
+  /// on the Dirichlet part amplifies as the mesh is refined.
+  TrilinosWrappers::MPI::Vector laplace_alpha;
   /// a set of distributed vectors which contain all the entries of the
   /// C_ij tensor appearing in the hypersingular BIE
   std::vector<TrilinosWrappers::MPI::Vector> C_ij;

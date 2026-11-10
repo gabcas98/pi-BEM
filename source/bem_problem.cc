@@ -971,6 +971,7 @@ BEMProblem<dim>::reinit()
 
 
   hyp_alpha.reinit(this_cpu_set, mpi_communicator);
+  laplace_alpha.reinit(this_cpu_set, mpi_communicator);
   C_ij.resize(dim * dim);
   for (unsigned int i = 0; i < dim * dim; ++i)
     C_ij[i].reinit(this_cpu_set, mpi_communicator);
@@ -2090,6 +2091,10 @@ BEMProblem<dim>::assemble_system()
     helmholtz ? rows.size() : 0, Vector<double>(fe->dofs_per_cell)),
     dirichlet_rows_imag(helmholtz ? rows.size() : 0,
                         Vector<double>(fe->dofs_per_cell));
+  // The row sums of the double layer of the Laplace kernel with the same
+  // rules, for the jump coefficient of the other kernels.
+  const bool          laplace_sums = kernel_type != "laplace";
+  std::vector<double> laplace_row_sums(laplace_sums ? rows.size() : 0, 0.);
 
   // Now that we have checked that
   // the number of vertices is equal
@@ -2140,7 +2145,8 @@ BEMProblem<dim>::assemble_system()
                                       const std::size_t end) {
         for (std::size_t r = begin; r < end; ++r)
           {
-            const types::global_dof_index i = rows[r];
+            const types::global_dof_index i           = rows[r];
+            double                        laplace_sum = 0;
             integrate_collocation_rows(cell,
                                        local_dof_indices,
                                        i,
@@ -2148,7 +2154,10 @@ BEMProblem<dim>::assemble_system()
                                        &fe_v,
                                        neumann_rows[r],
                                        dirichlet_rows[r],
-                                       statistics);
+                                       statistics,
+                                       laplace_sums ? &laplace_sum : nullptr);
+            if (laplace_sums)
+              laplace_row_sums[r] += laplace_sum;
             if (helmholtz)
               {
                 neumann_rows_imag[r]   = 0;
@@ -2203,6 +2212,13 @@ BEMProblem<dim>::assemble_system()
               }
           }
     } // end loop on cells
+
+  if (laplace_sums)
+    {
+      for (std::size_t r = 0; r < rows.size(); ++r)
+        laplace_alpha[rows[r]] = -laplace_row_sums[r];
+      laplace_alpha.compress(VectorOperation::insert);
+    }
 
   // The second part of the integral
   // operator is the term
@@ -2324,13 +2340,19 @@ BEMProblem<dim>::integrate_collocation_rows(
   const FEValues<dim - 1, dim>               *regular_values,
   Vector<double>                             &local_neumann_matrix_row_i,
   Vector<double>                             &local_dirichlet_matrix_row_i,
-  CollocationRuleStatistics                  &statistics) const
+  CollocationRuleStatistics                  &statistics,
+  double                                     *laplace_neumann_sum) const
 {
   Point<dim> D;
   double     s;
   local_neumann_matrix_row_i   = 0;
   local_dirichlet_matrix_row_i = 0;
-  Point<dim>     singularity   = support_points[i];
+  // The Laplace kernel has it in its own rows, summed at the end.
+  const bool laplace_sum =
+    laplace_neumann_sum != nullptr && kernel_type != "laplace";
+  if (laplace_neumann_sum != nullptr)
+    *laplace_neumann_sum = 0;
+  Point<dim>     singularity = support_points[i];
   Point<dim - 1> ref_projection(0.0, 0.0);
   bool           is_singular    = false;
   unsigned int   singular_index = numbers::invalid_unsigned_int;
@@ -2403,12 +2425,22 @@ BEMProblem<dim>::integrate_collocation_rows(
                                  "assembly."));
           // if(support_points[i][0]==0.25&&support_points[i][1]==0.25)
           //   pcout<<"D "<<D<<" s "<<s<<" , ";
+          double shape_sum = 0;
           for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
             {
               local_neumann_matrix_row_i(j) +=
                 ((D * normals[q]) * fe_v.shape_value(j, q) * fe_v.JxW(q));
               local_dirichlet_matrix_row_i(j) +=
                 (s * fe_v.shape_value(j, q) * fe_v.JxW(q));
+              shape_sum += fe_v.shape_value(j, q);
+            }
+          if (laplace_sum)
+            {
+              Tensor<1, dim> D_laplace;
+              double         s_laplace;
+              LaplaceKernel::kernels(R, D_laplace, s_laplace);
+              *laplace_neumann_sum +=
+                (D_laplace * normals[q]) * shape_sum * fe_v.JxW(q);
             }
         }
     }
@@ -2416,7 +2448,8 @@ BEMProblem<dim>::integrate_collocation_rows(
     {
       const auto integrate_quasi_singular =
         [&](const unsigned int exponent,
-            const unsigned int order) -> Vector<double> {
+            const unsigned int order,
+            const bool         laplace) -> Vector<double> {
         const Quadrature<dim - 1> transformed_quadrature =
           get_quasi_singular_quadrature(cell,
                                         *mapping,
@@ -2443,7 +2476,7 @@ BEMProblem<dim>::integrate_collocation_rows(
         for (unsigned int q = 0; q < transformed_quadrature.size(); ++q)
           {
             const Tensor<1, dim> R = transformed_points[q] - support_points[i];
-            if (kernel_type == "laplace")
+            if (laplace || kernel_type == "laplace")
               LaplaceKernel::kernels(R, D, s);
             else if (kernel_type == "screened")
               ScreenedKernel::kernels(R, D, s, screened_kappa);
@@ -2467,9 +2500,10 @@ BEMProblem<dim>::integrate_collocation_rows(
 
       const auto adapt_quasi_singular =
         [&](const unsigned int exponent,
-            const unsigned int initial_order) -> Vector<double> {
+            const unsigned int initial_order,
+            unsigned int      &final_order) -> Vector<double> {
         Vector<double> result =
-          integrate_quasi_singular(exponent, initial_order);
+          integrate_quasi_singular(exponent, initial_order, false);
         QuadratureConvergenceState convergence_state;
         unsigned int               used_order = initial_order;
         bool                       converged  = !adaptive_quadrature;
@@ -2481,7 +2515,7 @@ BEMProblem<dim>::integrate_collocation_rows(
                                   adaptive_quadrature_max_order,
                                   adaptive_quadrature_order_growth);
             Vector<double> refined =
-              integrate_quasi_singular(exponent, next_order);
+              integrate_quasi_singular(exponent, next_order, false);
             converged = quadrature_vectors_converged(
               result,
               refined,
@@ -2501,15 +2535,28 @@ BEMProblem<dim>::integrate_collocation_rows(
             else
               ++statistics.adaptive_unconverged_quasi_dirichlet;
           }
+        final_order = used_order;
         return result;
       };
 
+      unsigned int neumann_order = 0, dirichlet_order = 0;
       local_neumann_matrix_row_i +=
-        adapt_quasi_singular(2, quasi_singular_neumann_quadrature_order);
+        adapt_quasi_singular(2,
+                             quasi_singular_neumann_quadrature_order,
+                             neumann_order);
       ++statistics.adaptive_quasi_neumann_interactions;
       local_dirichlet_matrix_row_i +=
-        adapt_quasi_singular(1, quasi_singular_dirichlet_quadrature_order);
+        adapt_quasi_singular(1,
+                             quasi_singular_dirichlet_quadrature_order,
+                             dirichlet_order);
       ++statistics.adaptive_quasi_dirichlet_interactions;
+      if (laplace_sum)
+        {
+          const Vector<double> laplace_row =
+            integrate_quasi_singular(2, neumann_order, true);
+          for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+            *laplace_neumann_sum += laplace_row[j];
+        }
     }
   else
     {
@@ -2739,8 +2786,8 @@ BEMProblem<dim>::integrate_collocation_rows(
         {}
       };
 
-      const auto integrate_singular =
-        [&](const unsigned int order) -> SingularRows {
+      const auto integrate_singular = [&](const unsigned int order,
+                                          const bool laplace) -> SingularRows {
         Quadrature<dim - 1> singular_quadrature;
         if constexpr (dim == 3)
           singular_quadrature =
@@ -2766,7 +2813,7 @@ BEMProblem<dim>::integrate_collocation_rows(
         for (unsigned int q = 0; q < singular_quadrature.size(); ++q)
           {
             const Tensor<1, dim> R = singular_points[q] - support_points[i];
-            if (kernel_type == "laplace")
+            if (laplace || kernel_type == "laplace")
               LaplaceKernel::kernels(R, D, s);
             else if (kernel_type == "screened")
               ScreenedKernel::kernels(R, D, s, screened_kappa);
@@ -2794,7 +2841,7 @@ BEMProblem<dim>::integrate_collocation_rows(
       };
 
       SingularRows singular_rows =
-        integrate_singular(singular_quadrature_order);
+        integrate_singular(singular_quadrature_order, false);
       unsigned int               used_order        = singular_quadrature_order;
       bool                       neumann_converged = !adaptive_quadrature;
       bool                       dirichlet_converged = !adaptive_quadrature;
@@ -2806,7 +2853,7 @@ BEMProblem<dim>::integrate_collocation_rows(
             next_adaptive_order(used_order,
                                 adaptive_quadrature_max_order,
                                 adaptive_quadrature_order_growth);
-          SingularRows refined = integrate_singular(next_order);
+          SingularRows refined = integrate_singular(next_order, false);
           neumann_converged =
             quadrature_vectors_converged(singular_rows.neumann,
                                          refined.neumann,
@@ -2832,7 +2879,17 @@ BEMProblem<dim>::integrate_collocation_rows(
       ++statistics.adaptive_singular_interactions;
       local_neumann_matrix_row_i += singular_rows.neumann;
       local_dirichlet_matrix_row_i += singular_rows.dirichlet;
+      if (laplace_sum)
+        {
+          const SingularRows laplace_rows =
+            integrate_singular(used_order, true);
+          for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+            *laplace_neumann_sum += laplace_rows.neumann[j];
+        }
     } // end else
+  if (laplace_neumann_sum != nullptr && !laplace_sum)
+    for (unsigned int j = 0; j < fe->dofs_per_cell; ++j)
+      *laplace_neumann_sum += local_neumann_matrix_row_i[j];
   return is_singular       ? CollocationRule::singular :
          is_quasi_singular ? CollocationRule::quasi_singular :
                              CollocationRule::regular;
@@ -3332,8 +3389,9 @@ BEMProblem<dim>::compute_hypersingular_free_coeffs()
 
   pcout << "Done computing C_ij tensor" << endl;
 
-  if (kernel_type == "laplace" &&
-      boundary_integral_formulation == "collocation")
+  // The jump coefficient of the collocation is the consistent one, set
+  // before: the row sums of the double layer of the Laplace kernel.
+  if (boundary_integral_formulation == "collocation")
     {
       for (types::global_dof_index i = 0; i < dh.n_dofs(); ++i)
         if (this_cpu_set.is_element(i))
@@ -3352,21 +3410,11 @@ BEMProblem<dim>::compute_hypersingular_free_coeffs()
       pcout << "Alpha maximum error: " << error.linfty_norm() << endl;
       if (fe->degree > 1)
         pcout << "  (diagnostic geometric discrepancy; the consistent "
-                 "row-sum alpha is retained for Laplace)"
+                 "row-sum alpha is retained)"
               << endl;
     }
-  else if (kernel_type == "laplace")
-    pcout << "Galerkin jump term uses the consistent 0.5 mass matrix" << endl;
   else
-    pcout << "Using geometric alpha for the " << kernel_type << " kernel"
-          << endl;
-
-  // For Laplace, compute_alpha() obtains a discretely consistent jump
-  // coefficient from the assembled double-layer row sum.  In particular this
-  // enforces the constant patch at higher-order interior collocation points.
-  // Screened kernels have no constant-solution identity and use geometry.
-  if (kernel_type != "laplace")
-    alpha = hyp_alpha;
+    pcout << "Galerkin jump term uses the consistent 0.5 mass matrix" << endl;
 
   // Calculating second free term as in Mantic et al. paper
   // Existence and evaluation of the two free terms in the hypersingular
@@ -4283,25 +4331,27 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
     }
   else if (kernel_type == "screened" || kernel_type == "helmholtz")
     {
-      // The jump coefficient is geometric also for the screened and the
-      // Helmholtz kernel. compute_hypersingular_free_coeffs() evaluates it
-      // below.
+      // The row sums of the double layer of the Laplace kernel, of the same
+      // singular part and integrated with the same rules: the geometric
+      // jump would leave the error of the rules on a constant, which the
+      // equation of the first kind on the Dirichlet part amplifies as the
+      // mesh is refined.
+      alpha = laplace_alpha;
+      pcout << "Jump coefficient of the " << kernel_type
+            << " kernel from the row sums of the Laplace double layer"
+            << std::endl;
     }
   else
     AssertThrow(false, ExcMessage("Unknown kernel type: " + kernel_type));
 
   // The free coefficients are the matrix C of the hypersingular equation, so
-  // recovering the gradient that way needs them too; without them C is zero
-  // and its inverse is not a number.
-  // The Galerkin formulation has no free term: the screened case needs the
-  // coefficients only for collocation.
-  if ((kernel_type != "laplace" &&
-       boundary_integral_formulation != "galerkin") ||
-      gradient_recovery == "hypersingular")
+  // recovering the gradient that way needs them; without them C is zero and
+  // its inverse is not a number.
+  if (gradient_recovery == "hypersingular")
     compute_hypersingular_free_coeffs();
   else
     pcout << "Skipping hypersingular free coefficients: not required by the "
-             "current Laplace solve"
+             "current solve"
           << std::endl;
   //   for (unsigned int i = 0; i < alpha.size(); i++)
   //      if (this_cpu_set.is_element(i))
@@ -4664,11 +4714,14 @@ BEMProblem<dim>::solve_system(TrilinosWrappers::MPI::Vector       &phi,
   sol_blocked        = 0;
   alpha              = 0;
 
-  // The row sums of the double layer give the jump of the Laplace kernel
-  // only; that of the others is geometric, as in the real problem.
+  // The row sums of the double layer give the jump of the Laplace kernel;
+  // the others take those of the double layer of the Laplace kernel, as in
+  // the real problem.
   if (kernel_type == "laplace")
     compute_alpha();
   else
+    alpha = laplace_alpha;
+  if (gradient_recovery == "hypersingular")
     compute_hypersingular_free_coeffs();
   compute_rhs(system_rhs_blocked.block(0),
               system_rhs_blocked.block(1),
@@ -5359,7 +5412,8 @@ BEMProblem<dim>::setup_collocation_fmm()
             const std::vector<types::global_dof_index>                    &dofs,
             const types::global_dof_index                                  i,
             Vector<double> &neumann_row,
-            Vector<double> &dirichlet_row) {
+            Vector<double> &dirichlet_row,
+            double         &laplace_neumann_sum) {
           return integrate_collocation_rows(cell,
                                             dofs,
                                             i,
@@ -5367,10 +5421,16 @@ BEMProblem<dim>::setup_collocation_fmm()
                                             nullptr,
                                             neumann_row,
                                             dirichlet_row,
-                                            statistics) !=
+                                            statistics,
+                                            &laplace_neumann_sum) !=
                  CollocationRule::regular;
         },
         data);
+      if (kernel_type != "laplace")
+        {
+          laplace_alpha = collocation_fmm.laplace_neumann_row_sums();
+          laplace_alpha *= -1.;
+        }
     }
   else
     AssertThrow(false, ExcMessage("FMA only works in 3D"));
