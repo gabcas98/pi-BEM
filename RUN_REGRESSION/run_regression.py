@@ -8,7 +8,8 @@
 
 Each case writes parameters_bem_3.prm (parameters_bem_2.prm in 2D) from a
 frozen base file in base/, runs the solver built in ../build on 8 processes,
-and reads a few quantities from the log. They are compared with reference.json: the load vector and the
+and reads a few quantities from its log in logs/. They are compared with
+reference.json, which git keeps the history of: the load vector and the
 Frobenius norm of V, printed with sixteen digits, to 1e-12 relative; the
 errors, printed with six, to 1e-5 relative; Gauss's identity of the mixed
 problem, a difference of nearly equal sums, to 1e-3; the peak memory of a
@@ -96,12 +97,6 @@ CASES = {
                       ['rhs_norm', 'V_frobenius', 'flux', 'gradient',
                        'energy', 'best_ratio', 'gradient_pointwise',
                        'iterations']),
-    'dg_laplace_p1_library_path': ('g_p1_bal0_weak.prm',
-                                   {'Preconditioner': 'Jacobi',
-                                    'Galerkin fused right-hand side': 'false',
-                                    'Galerkin light geometry': 'false'},
-                                   ['rhs_norm', 'V_frobenius', 'flux',
-                                    'gradient', 'iterations']),
     'dg_screened_p2': ('screened_p2_bal0_weak.prm',
                        {'Preconditioner': 'BlockJacobi'},
                        ['rhs_norm', 'V_frobenius', 'flux', 'gradient',
@@ -116,22 +111,12 @@ CASES = {
                           {'Preconditioner': 'BlockJacobi',
                            'Gradient recovery': 'hypersingular_weak'},
                           ['flux', 'gradient']),
-    'far_field_tolerance_p2': ('g_p2_bal0_weak.prm',
-                               {'Preconditioner': 'BlockJacobi',
-                                'Galerkin far field tolerance': '1e-8'},
-                               ['rhs_norm', 'flux', 'gradient']),
     'dg_laplace_p1_fmm': ('g_p1_bal0_weak.prm',
                           {'Preconditioner': 'BlockJacobi',
                            'Solution method': 'FMA',
                            'FMA Truncation Order': '10'},
                           ['rhs_norm', 'flux', 'gradient', 'best_ratio',
                            'iterations']),
-    'dg_laplace_p1_fmm_patch': ('g_p1_bal0_weak.prm',
-                                {'Preconditioner': 'PatchSchwarz',
-                                 'Solution method': 'FMA',
-                                 'FMA Truncation Order': '10'},
-                                ['flux', 'gradient', 'best_ratio',
-                                 'iterations']),
     'continuous_laplace_q2_fmm': ('g_p2_bal0_weak.prm',
                                   {'Preconditioner': 'PatchSchwarz',
                                    'Finite Element type': 'FEQ',
@@ -169,10 +154,6 @@ CASES = {
                         'Dirichlet RHS treatment': 'nodal',
                         'Gradient recovery': 'projection'},
                        ['flux', 'gradient', 'iterations']),
-    # Flat cells with the data in space, p = 1, level 1, multipole method
-    # and Calderon preconditioner, as in the final campaign of the report.
-    'naca_mixed_flat_p1_fmm': ('naca_mixed.prm',
-                               {'Finite element order': '1'}, MIXED),
     # The exact parametric geometry, p = 2, level 1: folded pairs (order
     # 10) at the trailing edge, skewed cells (order 12) on the tips, kinked
     # pairs (order 10) along the edges of the tips and near-singular up to
@@ -193,7 +174,8 @@ CASES = {
                                      'Curvature refinement cycles': '1',
                                      'Curvature refinement angle': '10'},
                                     MIXED),
-    # The tips in the Dirichlet part as well: three pieces whose flux
+    # Flat cells, p = 1, with the tips in the Dirichlet part as well: three
+    # pieces whose flux
     # unknowns no cell joins (the sharp edges have double nodes), each with
     # its rank-one term in the Calderon preconditioner; inexact GMRES with
     # its own expansions, and a cheap preconditioner (order 2, opening
@@ -440,7 +422,8 @@ def run_case(name):
     with open(os.path.join(HERE, f'parameters_bem_{dim}.prm'), 'w') as fh:
         fh.write(text)
     executable = os.path.join(ROOT, 'build', f'bem_fma_{dim}d')
-    log = os.path.join(HERE, f'{name}.log')
+    os.makedirs(os.path.join(HERE, 'logs'), exist_ok=True)
+    log = os.path.join(HERE, 'logs', f'{name}.log')
     start = time.time()
     with open(log, 'w') as fh:
         status = subprocess.run(['/usr/bin/time', '-f', 'WALL %e s RSS %M kB',

@@ -19,6 +19,7 @@ __pycache__/
 /RUN*/
 !/RUN_REGRESSION/
 /RUN_REGRESSION/*.log
+/RUN_REGRESSION/logs/
 /RUN_REGRESSION/*.inp
 /RUN_REGRESSION/parameters_bem_[23].prm
 /RUN_REGRESSION/used_parameters_bem_[23].prm
