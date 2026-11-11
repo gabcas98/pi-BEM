@@ -32,10 +32,12 @@ field on fine meshes. 1e-8 changes results by about 1e-5, and 1e-6 is wrong.
 
 ```text
 set Galerkin singular quadrature order = 7
-set Galerkin singular quadrature order for kinked pairs = 10
+set Galerkin singular quadrature order for kinked pairs = 14
 set Galerkin kinked pair angle = 60
 set Galerkin singular quadrature order for folded pairs = 14
+set Galerkin singular quadrature order for skewed cells = 12
 set Galerkin near singular distance ratio for kinked pairs = 1.0
+set Galerkin singular quadrature adaptation = true
 ```
 
 - The base singular order stays 7. On the finest quadratic mesh, order 6
@@ -46,7 +48,16 @@ set Galerkin near singular distance ratio for kinked pairs = 1.0
   between the angles of touching cells in the smooth surfaces (0–45 degrees
   on the wing, nose included) and those across the edges (75–105 degrees).
   Order 10 removes the peaks of the flux at the corners of the leading edge
-  with the tips, at no measurable cost.
+  with the tips, at no measurable cost. With the adapted rules and the
+  multipole order of the mesh, order 10 still leaves the flux along the
+  edges of the tips growing with the mesh: at level 3 the cells of the
+  wing next to the trailing edge of the tips err by 4.1e-5 of the largest
+  flux with 10 points, 1.0e-5 with 14 (linear solution); with the tips in
+  the Dirichlet part, the flux on the tips next to their edges grows from
+  1.4e-4 to 6.9e-4 between levels 2 and 3 with 10 and falls from 1.4e-4 to
+  2.7e-5 with 14. Order 18 changes nothing more; the near field takes about
+  15% longer. The adaptation ratio 0.5 does the same at order 10 but takes
+  half as long again.
 - *Folded pairs*: these are touching pairs with nearly opposite normals, as
   at the trailing edge. Order 10 leaves 2e-3 there at level 3, while order 14
   leaves 1e-4.
@@ -88,9 +99,30 @@ set Galerkin near singular distance ratio for kinked pairs = 1.0
 ### Mesh (`ComputationalDomain<3>`)
 
 ```text
+set Input grid name = cad_smooth/naca0012_smooth_tips
 set Curvature refinement cycles = 1
 set Curvature refinement angle = 10
 ```
+
+A planar face whose boundary is smooth at a vertex of the coarse mesh, as
+the tip of the wing at its leading edge, must not have a cell with its
+corner there: the two boundary arcs of that cell are tangent (180
+degrees), and every refinement makes its child flatter (largest angle 110,
+137 and 157 degrees at levels 1, 2 and 3 on the original NACA mesh, with a
+flux error at the corner of the leading edge and the tip 40 times the local
+best approximation at level 3). `RUN_NACA/corner3/make_tip_mesh.py --wide`
+writes a coarse mesh with eight cells per tip: an edge from the leading
+edge along the chord, a ring of cells around the nose with a core cell, a
+vertex at mid arc of the nose; the corner angles in the limit of
+refinement lie between 46 and 149 degrees. Two constraints set the
+positions: with a span of 5 and `Max aspect ratio = 3.5`, every strip of
+the surfaces between two stations of the contour must be at least 0.0893
+long in a straight line, or every strip gets twice the divisions along the
+span; and the cells of the tip at the nose must keep an aspect ratio below
+3.5, or their refinement cuts the strips of the surfaces along the chord.
+The mesh has 12% more cells at level 3; the error at the corner of the
+leading edge and the tip falls from 5.2e-4 to 2.6e-5 of the largest flux
+(point source), from 1.7e-2 to 8.0e-4 (linear solution).
 
 These cut, in one direction only, the cells across which the surface turns
 by more than the angle. At the nose of the wing that direction is the
@@ -111,6 +143,15 @@ right-hand side, the products use cheaper expansions. Take the fraction as
 about the reduction divided by the relative error of the relaxed products.
 `PIBEM_MIXED_DIAGNOSTICS` prints that error: 1.3–1.7e-4 for order 4 and
 opening 0.6. The flux then changes in the fourth digit.
+
+With Dirichlet data on both sides of a thin part, as the lower surface and
+the tips of the wing near the trailing edge, the Calderon preconditioner
+stops GMRES at a true relative residual of 2–3e-6 (the log prints it after
+the solve): the flux on the tips then errs by 2.5e-3 at level 2 where the
+converged solution errs by 1.4e-4. The reduction 1e-12 without relaxed
+products (`Mixed Galerkin relaxed products below = 0`), or the diagonal
+preconditioner, converge to 1e-11, in about twice the time. With the tips
+in the Neumann part the residual reaches 5.6e-8 and nothing changes.
 
 ### FMM (`BEMProblem<3>` and `BEMFMA<3>/FMA Params`)
 
